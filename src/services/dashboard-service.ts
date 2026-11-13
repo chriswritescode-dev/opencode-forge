@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import { z } from 'zod'
 import {
   createLoopsRepo,
   createLoopSessionUsageRepo,
@@ -16,6 +17,7 @@ import type { LoopRow } from '../storage/repos/loops-repo'
 import {
   type ForgeAmendmentDiff,
   type ForgeAmendmentDiffOutput,
+  type ForgeAmendmentSectionDiff,
   type ForgeDashboardLoopSummary,
   type ForgeDashboardProjectSummary,
   type ForgeDashboardSummary,
@@ -41,14 +43,11 @@ import {
 } from '../utils/amendment-diff'
 import { extractPlanTitle } from '../utils/plan-execution'
 
-/** Newest transitions shipped for one loop; reaching it means older rows may be missing. */
 const DASHBOARD_TRANSITIONS_WINDOW = 100
 
 export interface DashboardServiceDeps {
-  /** Raw handle used only for the project-discovery queries no repo exposes. */
   db: Database
   loopsRepo: ReturnType<typeof createLoopsRepo>
-  /** Wrapped plan repo the write path uses, so deleting a plan publishes `plansChanged`. */
   plansRepo: ReturnType<typeof createPlansRepo>
   sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
@@ -59,20 +58,17 @@ export interface DashboardServiceDeps {
 
 interface DashboardProjectDiscovery {
   projectId: string
-  /** Unexecuted session plans for this project, computed once for the whole discovery scan. */
   unexecutedPlanCount: number
 }
 
-/**
- * Every project the dashboard reports on: the union of loop projects and
- * projects with unexecuted session plans, sorted by project id.
- */
 function listDashboardProjects(deps: DashboardServiceDeps): DashboardProjectDiscovery[] {
   const { db, plansRepo } = deps
 
-  const loopProjectIds = db.prepare(
+  const loopProjectRows = db.prepare(
     'SELECT DISTINCT project_id FROM loops ORDER BY project_id'
-  ).all() as { project_id: string }[]
+  ).all()
+  const parsedLoopProjects = z.array(z.looseObject({ project_id: z.string() })).safeParse(loopProjectRows)
+  const loopProjectIds = parsedLoopProjects.success ? parsedLoopProjects.data : []
 
   const unexecutedCounts = plansRepo.unexecutedCountsByProject()
 
@@ -102,7 +98,7 @@ function loopSummary(
 ): ForgeDashboardLoopSummary {
   const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
   const totalCost = totalCosts.get(loop.loopName)
-  return {
+  const summary: ForgeDashboardLoopSummary = {
     loopName: loop.loopName,
     status: loop.status,
     phase: loop.phase,
@@ -114,14 +110,15 @@ function loopSummary(
     bugCount: bugCounts.get(loop.loopName) ?? 0,
     hasPlan: planLoopNames.has(loop.loopName),
     startedAt: loop.startedAt,
-    ...(loop.completedAt !== null ? { completedAt: loop.completedAt } : {}),
     activityAt: loop.completedAt ?? loop.startedAt,
-    ...(elapsedSeconds > 0 ? { durationText: formatDuration(elapsedSeconds) } : {}),
-    ...(totalCost !== undefined ? { totalCost } : {}),
-    ...(loop.worktreeBranch ? { branch: loop.worktreeBranch } : {}),
-    ...(loop.executionModel ? { executionModel: loop.executionModel } : {}),
-    ...(loop.auditorModel ? { auditorModel: loop.auditorModel } : {}),
   }
+  if (loop.completedAt !== null) summary.completedAt = loop.completedAt
+  if (elapsedSeconds > 0) summary.durationText = formatDuration(elapsedSeconds)
+  if (totalCost !== undefined) summary.totalCost = totalCost
+  if (loop.worktreeBranch) summary.branch = loop.worktreeBranch
+  if (loop.executionModel) summary.executionModel = loop.executionModel
+  if (loop.auditorModel) summary.auditorModel = loop.auditorModel
+  return summary
 }
 
 function planTitle(content: string): string {
@@ -140,38 +137,39 @@ function planSummary(row: { sessionId: string; content: string; updatedAt: numbe
 }
 
 function loopDetailRow(loop: LoopRow): ForgeLoopDetailRow {
-  return {
+  const row: ForgeLoopDetailRow = {
     projectId: loop.projectId,
     loopName: loop.loopName,
     status: loop.status,
     currentSessionId: loop.currentSessionId,
     worktree: loop.worktree,
     worktreeDir: loop.worktreeDir,
-    ...(loop.worktreeBranch != null ? { worktreeBranch: loop.worktreeBranch } : {}),
     projectDir: loop.projectDir,
     maxIterations: loop.maxIterations,
     iteration: loop.iteration,
     auditCount: loop.auditCount,
     errorCount: loop.errorCount,
     phase: loop.phase,
-    ...(loop.executionModel != null ? { executionModel: loop.executionModel } : {}),
-    ...(loop.executionVariant != null ? { executionVariant: loop.executionVariant } : {}),
-    ...(loop.auditorModel != null ? { auditorModel: loop.auditorModel } : {}),
-    ...(loop.auditorVariant != null ? { auditorVariant: loop.auditorVariant } : {}),
     auditorFallbackIndex: loop.auditorFallbackIndex ?? 0,
     modelFailed: loop.modelFailed,
     sandbox: loop.sandbox,
     startedAt: loop.startedAt,
-    ...(loop.completedAt != null ? { completedAt: loop.completedAt } : {}),
-    ...(loop.terminationReason != null ? { terminationReason: loop.terminationReason } : {}),
     currentSectionIndex: loop.currentSectionIndex,
     totalSections: loop.totalSections,
-    ...(loop.baseCommit != null ? { baseCommit: loop.baseCommit } : {}),
   }
+  if (loop.worktreeBranch != null) row.worktreeBranch = loop.worktreeBranch
+  if (loop.executionModel != null) row.executionModel = loop.executionModel
+  if (loop.executionVariant != null) row.executionVariant = loop.executionVariant
+  if (loop.auditorModel != null) row.auditorModel = loop.auditorModel
+  if (loop.auditorVariant != null) row.auditorVariant = loop.auditorVariant
+  if (loop.completedAt != null) row.completedAt = loop.completedAt
+  if (loop.terminationReason != null) row.terminationReason = loop.terminationReason
+  if (loop.baseCommit != null) row.baseCommit = loop.baseCommit
+  return row
 }
 
 function sectionPlanRow(row: SectionPlanRow): ForgeSectionPlan {
-  return {
+  const plan: ForgeSectionPlan = {
     projectId: row.projectId,
     loopName: row.loopName,
     sectionIndex: row.sectionIndex,
@@ -181,43 +179,46 @@ function sectionPlanRow(row: SectionPlanRow): ForgeSectionPlan {
     content: row.content,
     status: row.status,
     attempts: row.attempts,
-    ...(row.summaryDone != null ? { summaryDone: row.summaryDone } : {}),
-    ...(row.summaryDeviations != null ? { summaryDeviations: row.summaryDeviations } : {}),
-    ...(row.summaryFollowUps != null ? { summaryFollowUps: row.summaryFollowUps } : {}),
-    ...(row.startedAt != null ? { startedAt: row.startedAt } : {}),
-    ...(row.completedAt != null ? { completedAt: row.completedAt } : {}),
   }
+  if (row.summaryDone != null) plan.summaryDone = row.summaryDone
+  if (row.summaryDeviations != null) plan.summaryDeviations = row.summaryDeviations
+  if (row.summaryFollowUps != null) plan.summaryFollowUps = row.summaryFollowUps
+  if (row.startedAt != null) plan.startedAt = row.startedAt
+  if (row.completedAt != null) plan.completedAt = row.completedAt
+  return plan
 }
 
 function reviewFindingRow(row: ReviewFindingRow): ForgeReviewFinding {
-  return {
+  const finding: ForgeReviewFinding = {
     projectId: row.projectId,
     file: row.file,
     line: row.line,
     severity: row.severity,
     description: row.description,
-    ...(row.scenario != null ? { scenario: row.scenario } : {}),
-    ...(row.loopName != null ? { loopName: row.loopName } : {}),
-    ...(row.sectionIndex != null ? { sectionIndex: row.sectionIndex } : {}),
     createdAt: row.createdAt,
   }
+  if (row.scenario != null) finding.scenario = row.scenario
+  if (row.loopName != null) finding.loopName = row.loopName
+  if (row.sectionIndex != null) finding.sectionIndex = row.sectionIndex
+  return finding
 }
 
 function loopTransitionRow(row: LoopTransitionRow): ForgeLoopTransition {
-  return {
+  const transition: ForgeLoopTransition = {
     id: row.id,
     projectId: row.projectId,
     loopName: row.loopName,
     eventType: row.eventType,
     transitionKind: row.transitionKind,
     fromPhase: row.fromPhase,
-    ...(row.toPhase != null ? { toPhase: row.toPhase } : {}),
-    ...(row.status != null ? { status: row.status } : {}),
-    ...(row.reason != null ? { reason: row.reason } : {}),
     iteration: row.iteration,
-    ...(row.sectionIndex != null ? { sectionIndex: row.sectionIndex } : {}),
     createdAt: row.createdAt,
   }
+  if (row.toPhase != null) transition.toPhase = row.toPhase
+  if (row.status != null) transition.status = row.status
+  if (row.reason != null) transition.reason = row.reason
+  if (row.sectionIndex != null) transition.sectionIndex = row.sectionIndex
+  return transition
 }
 
 function planAmendmentRow(row: PlanAmendmentRow): ForgePlanAmendment {
@@ -236,13 +237,16 @@ function planAmendmentRow(row: PlanAmendmentRow): ForgePlanAmendment {
 function amendmentDiffResult(diff: AmendmentDiff): ForgeAmendmentDiff {
   return {
     summary: diff.summary,
-    sections: diff.sections.map((section) => ({
-      index: section.index,
-      change: section.change,
-      title: section.title,
-      ...(section.previousTitle != null ? { previousTitle: section.previousTitle } : {}),
-      lines: section.lines.map((line) => ({ kind: line.kind, text: line.text })),
-    })),
+    sections: diff.sections.map((section) => {
+      const change: ForgeAmendmentSectionDiff = {
+        index: section.index,
+        change: section.change,
+        title: section.title,
+        lines: section.lines.map((line) => ({ kind: line.kind, text: line.text })),
+      }
+      if (section.previousTitle != null) change.previousTitle = section.previousTitle
+      return change
+    }),
   }
 }
 
@@ -264,20 +268,21 @@ function buildLoopDetail(deps: DashboardServiceDeps, loop: LoopRow): ForgeLoopDe
   const amendments = amendmentsRepo.listForLoop(projectId, loopName)
   const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
 
-  return {
+  const detail: ForgeLoopDetail = {
     loop: loopDetailRow(loop),
-    ...(elapsedSeconds > 0 ? { durationText: formatDuration(elapsedSeconds) } : {}),
-    ...(large?.lastAuditResult != null ? { lastAuditResult: large.lastAuditResult } : {}),
-    ...(large?.postActionReport != null ? { postActionReport: large.postActionReport } : {}),
-    ...(loop.completionSummary != null ? { completionSummary: loop.completionSummary } : {}),
-    ...(plan !== undefined ? { plan } : {}),
     sections: sectionPlansRepo.list(projectId, loopName).map(sectionPlanRow),
     findings: reviewFindingsRepo.listByLoopName(projectId, loopName).map(reviewFindingRow),
-    ...(usage ? { usage } : {}),
     transitions: transitions.map(loopTransitionRow),
     transitionsCapped: transitions.length >= DASHBOARD_TRANSITIONS_WINDOW,
     amendments: amendments.map(planAmendmentRow),
   }
+  if (elapsedSeconds > 0) detail.durationText = formatDuration(elapsedSeconds)
+  if (large?.lastAuditResult != null) detail.lastAuditResult = large.lastAuditResult
+  if (large?.postActionReport != null) detail.postActionReport = large.postActionReport
+  if (loop.completionSummary != null) detail.completionSummary = loop.completionSummary
+  if (plan !== undefined) detail.plan = plan
+  if (usage) detail.usage = usage
+  return detail
 }
 
 function buildProjectFindings(deps: DashboardServiceDeps, projectId: string): ForgeProjectFindings {
@@ -321,15 +326,16 @@ function buildSummary(deps: DashboardServiceDeps): ForgeDashboardSummary {
     const unexecutedPlans = plansRepo.listUnexecuted(entry.projectId).map(planSummary)
     const projectDir = loopRows.length > 0 ? loopRows[0].projectDir : null
 
-    return {
+    const summary: ForgeDashboardProjectSummary = {
       projectId: entry.projectId,
-      ...(projectDir ? { projectDir } : {}),
       loopCount: loops.length,
       unexecutedPlanCount: entry.unexecutedPlanCount,
       bugCount: loops.reduce((sum, loop) => sum + loop.bugCount, 0),
       loops,
       unexecutedPlans,
     }
+    if (projectDir) summary.projectDir = projectDir
+    return summary
   })
 
   return { generatedAt: Date.now(), projects }
@@ -343,7 +349,6 @@ export interface DashboardService {
   deletePlan(projectId: string, sessionId: string): ForgePlanDeleteOutput
 }
 
-/** Read model the dashboard RPC serves; every method returns the shared error envelope on failure. */
 export function createDashboardService(deps: DashboardServiceDeps): DashboardService {
   return {
     getSummary(): ForgeDashboardSummaryOutput {

@@ -1,4 +1,4 @@
-import type { ToolDefinition } from './tool'
+
 import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createPlanAuthoringTools } from './plan-authoring'
@@ -10,13 +10,7 @@ import type { ToolContext } from './types'
 
 export type { ToolContext } from './types'
 
-/**
- * Creates all plugin tools by combining review, plan, and loop tools.
- *
- * @param ctx - Tool context with access to plugin services.
- * @returns Record of tool name to tool implementation.
- */
-export function createTools(ctx: ToolContext): Record<string, ToolDefinition> {
+export function createTools(ctx: ToolContext) {
   return {
     ...createReviewTools(ctx),
     ...createPlanTools(ctx),

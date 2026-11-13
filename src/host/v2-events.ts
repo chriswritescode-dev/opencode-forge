@@ -1,5 +1,6 @@
 import type { V2Event } from '@opencode/client'
-import type { ForgeEvent, Session } from '../client/port'
+import { z } from 'zod'
+import type { ForgeEvent, Session, SessionErrorInfo, SessionMessagePart } from '../client/port'
 
 export const V2_EVENT_TYPES = {
   sessionExecutionStarted: 'session.execution.started',
@@ -82,9 +83,11 @@ export function v2EventDirectory(event: V2Event): string | undefined {
   return event.location?.directory
 }
 
+const sessionIdCarrierSchema = z.looseObject({ sessionID: z.string() })
+
 export function v2EventSessionId(event: V2Event): string | undefined {
-  const data = (event as { data?: { sessionID?: unknown } }).data
-  return typeof data?.sessionID === 'string' ? data.sessionID : undefined
+  const parsed = sessionIdCarrierSchema.safeParse(event.data)
+  return parsed.success ? parsed.data.sessionID : undefined
 }
 
 export interface V2InboxEvent {
@@ -98,17 +101,13 @@ type V2InboxEventType =
   | typeof V2_EVENT_TYPES.sessionInboxDelivered
   | typeof V2_EVENT_TYPES.sessionInboxCancelled
 
+const inboxEventDataSchema = z.looseObject({ sessionID: z.string().min(1), inboxID: z.string().min(1) })
+
 function readInboxEventData(event: Extract<V2Event, { type: V2InboxEventType }>): { sessionId: string; inboxId: string } | null {
-  const data = event.data as { sessionID?: unknown; inboxID?: unknown }
-  if (typeof data?.sessionID !== 'string' || data.sessionID === '') return null
-  if (typeof data?.inboxID !== 'string' || data.inboxID === '') return null
-  return { sessionId: data.sessionID, inboxId: data.inboxID }
+  const parsed = inboxEventDataSchema.safeParse(event.data)
+  return parsed.success ? { sessionId: parsed.data.sessionID, inboxId: parsed.data.inboxID } : null
 }
 
-/**
- * Reads an inbox lifecycle event for the process-wide queued-prompt tracker.
- * These events are never normalized into loop events.
- */
 export function readV2InboxEvent(event: V2Event): V2InboxEvent | null {
   switch (event.type) {
     case V2_EVENT_TYPES.sessionInboxEnqueued: {
@@ -181,7 +180,7 @@ export interface V2SessionInfoLike {
 }
 
 export function mapV2SessionInfo(info: V2SessionInfoLike): Session {
-  return {
+  const session: Session = {
     id: info.id,
     slug: info.slug ?? '',
     projectID: info.projectID,
@@ -189,25 +188,21 @@ export function mapV2SessionInfo(info: V2SessionInfoLike): Session {
     title: info.title ?? '',
     version: info.version ?? '',
     time: info.time ?? { created: 0, updated: 0 },
-    ...(info.parentID ? { parentID: info.parentID } : {}),
-    ...(info.location.workspaceID ? { workspaceID: info.location.workspaceID } : {}),
   }
+  if (info.parentID) session.parentID = info.parentID
+  if (info.location.workspaceID) session.workspaceID = info.location.workspaceID
+  return session
 }
 
-export function mapV2Error(error: { type: string; message: string; status?: number }): Record<string, unknown> {
-  return {
+export function mapV2Error(error: { type: string; message: string; status?: number }): SessionErrorInfo {
+  const mapped: SessionErrorInfo = {
     name: error.type,
-    data: {
-      message: error.message,
-      ...(error.status === undefined ? {} : { statusCode: error.status }),
-    },
+    data: { message: error.message },
   }
+  if (error.status !== undefined) mapped.data.statusCode = error.status
+  return mapped
 }
 
-/**
- * Builds the normalized events a session emits when it goes idle. The inbox-cancel
- * replay path reuses these so a replayed idle is byte-identical to a real one.
- */
 export function v2IdleEvents(sessionID: string): ForgeEvent[] {
   return [
     {
@@ -224,17 +219,12 @@ function partEvent(
   messageID?: string,
   text?: string,
 ): ForgeEvent {
+  const part: SessionMessagePart = { sessionID, type }
+  if (messageID) part.messageID = messageID
+  if (text !== undefined) part.text = text
   return {
     type: FORGE_EVENT_TYPES.messagePartUpdated,
-    properties: {
-      sessionID,
-      part: {
-        sessionID,
-        type,
-        ...(messageID ? { messageID } : {}),
-        ...(text === undefined ? {} : { text }),
-      },
-    },
+    properties: { sessionID, part },
   }
 }
 

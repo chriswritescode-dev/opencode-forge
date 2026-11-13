@@ -27,6 +27,7 @@ import { terminationStatusFor, terminationReasonToString, type TerminationReason
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
+import { errorMessage } from '../utils/error-message'
 import { blockingBugFindings, isFindingInSectionScope, resolveSectionScope, type SectionScope } from './section-scope'
 import { generatedSectionId, isLastOpenSectionIndex, selectNextSection, validateSectionGraph, type SectionGraphNode } from './section-graph'
 import type { PlanSection } from '../services/deterministic-decomposer'
@@ -39,15 +40,15 @@ const STALL_TIMEOUT_MS = 60_000
 const MAX_CONSECUTIVE_STALLS = 5
 const BUSY_STALL_TIMEOUT_MS = 900_000
 
+export interface LoopMatchResolution {
+  match: LoopState | null
+  candidates: LoopState[]
+}
+
 function isBlank(value: string): boolean {
   return value.trim().length === 0
 }
 
-/**
- * Reasons a loop row changed. `terminate` fires when the terminal status is
- * persisted; `settled` fires once afterwards, once termination side effects
- * (teardown commit, sandbox stop, worktree cleanup) have finished.
- */
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate' | 'settled'
   | 'rotate' | 'phase' | 'iteration'
@@ -61,22 +62,14 @@ export interface LoopService {
   getActiveState(name: string): LoopState | null
   getAnyState(name: string): LoopState | null
   setState(name: string, state: LoopState): void
-  /** In-place row restore via UPDATE (preserves child rows such as loop_transitions/section_plans that would be cascade-deleted by deleteState + setState). Falls back to INSERT if the row was concurrently deleted. */
   restoreState(name: string, state: LoopState): void
   deleteState(name: string): void
   registerLoopSession(sessionId: string, loopName: string): void
   resolveLoopName(sessionId: string): string | null
-  /**
-   * The loop this session is currently driving, or null. `resolveLoopName`
-   * matches terminated loops too, so every "is this session inside a running
-   * loop" check must go through here instead of testing loop-row existence.
-   */
   resolveActiveLoopForSession(sessionId: string): LoopState | null
   findActiveByWorktreeDir(directory: string, options?: { worktreeOnly?: boolean }): LoopState | null
   buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string
-  /** Short same-section retry prompt for a reused coder session; the session already holds the plan and history. */
   buildCoderFollowUpPrompt(state: LoopState, outstandingBugs?: ReviewFindingRow[], notice?: string): string
-  /** Short same-section follow-up prompt for a reused audit session. */
   buildAuditFollowUpPrompt(state: LoopState): string
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
@@ -88,20 +81,8 @@ export interface LoopService {
   terminateAll(): Promise<void>
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
-  /**
-   * Bug findings that block the current section: cross-section findings and
-   * findings attributed to the current section or a section it depends on. On
-   * the last open section every finding blocks. Every bug blocks a
-   * non-sectioned loop.
-   */
   getBlockingBugFindings(state: LoopState): ReviewFindingRow[]
-  /** The sections whose findings block the current section (see `resolveSectionScope`). */
   getSectionScope(state: LoopState): SectionScope
-  /**
-   * Whether any bug finding that blocks the current section (sectioned loops)
-   * or the plan (non-sectioned loops) has reached the recurrence escalation
-   * threshold. Escalated findings force fresh sessions for both roles.
-   */
   hasEscalatedBugFindings(state: LoopState): boolean
   setCoderDecisions(name: string, decisions: string | null): void
   captureAttempt(state: LoopState, completionKey: string, decisions: string | null): Promise<boolean>
@@ -112,9 +93,7 @@ export interface LoopService {
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(name: string): number
   resetError(name: string): void
-  /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the loop is absent/non-running/index mismatch. */
   advanceAuditorFallbackIndex(name: string, fromIndex: number, toIndex: number): number | null
-  /** Reset the auditor fallback index to 0 after a successful audit; returns true when a running row was actually changed. */
   resetAuditorFallbackIndex(name: string): boolean
   setPhase(name: string, phase: LoopState['phase']): void
   setPhaseAndResetError(name: string, phase: LoopState['phase']): void
@@ -123,10 +102,6 @@ export interface LoopService {
   clearLastAuditResult(name: string): void
   setPostActionReport(name: string, text: string): void
   setSandboxContainer(name: string, containerName: string | null): void
-  /**
-   * Record (or clear, with null) the other role's session kept for reuse on the
-   * next same-section phase switch.
-   */
   setStandbySessionId(name: string, sessionId: string | null): void
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
   clearWorkspaceId(name: string): void
@@ -135,13 +110,9 @@ export interface LoopService {
   replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getSectionPlans(state: LoopState): SectionPlanRow[]
-  /** Persist a section's code-graph report and write it into the loop worktree. */
   recordSectionCodeGraph(state: LoopState, index: number, text: string): void
-  /** Record the commit sha of a completed section's checkpoint commit. */
   setSectionCheckpointCommit(loopName: string, index: number, sha: string): void
-  /** Persist an audit attempt's code-graph report and write it into the loop worktree. */
   recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void
-  /** The newest attempt row for the state's current audit scope, or null when attempts are not stored. */
   getLatestAttempt(state: LoopState): LoopAttemptRow | null
   getNextReadySectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
@@ -155,11 +126,6 @@ export interface LoopService {
   incrementSectionAttempts(loopName: string, index: number): void
   resetSectionForRewind(loopName: string, index: number): void
   setCurrentSectionIndex(loopName: string, index: number): void
-  /**
-   * Whether `state` is the loop's last open section: every other section plan
-   * row is already completed. Covers both the final index and the rewind case
-   * where all later sections finished before the current one.
-   */
   isLastOpenSection(state: LoopState): boolean
   startSection(loopName: string, index: number): void
   bulkInsertSections(loopName: string, sections: PlanSection[]): void
@@ -183,7 +149,6 @@ export interface LoopService {
   }): void
   recordPendingHandoff(input: LoopHandoffWriteInput): { record: LoopHandoffRecord; replaced: boolean }
   getPendingHandoff(loopName: string): LoopHandoffRecord | null
-  /** Applies the session's pending handoff only when its role matches; any other pending row is left untouched. */
   applyPendingHandoff<R extends LoopHandoffRole>(loopName: string, sessionId: string, role: R): LoopHandoffRecordFor<R> | null
   discardPendingHandoff(loopName: string): void
   listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[]
@@ -238,10 +203,6 @@ export function createLoopService(
     return state
   }
 
-  /**
-   * Shared persistence body for {@link setState} (fresh INSERT) and
-   * {@link restoreState} (in-place UPDATE preserving child rows).
-   */
   function persistState(name: string, state: LoopState, mode: 'insert' | 'restore'): void {
     const label = mode === 'insert' ? 'setState' : 'restoreState'
     if (state.loopName !== name) {
@@ -417,7 +378,7 @@ export function createLoopService(
     })
   }
 
-  function findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] } {
+  function findMatchByName(name: string): LoopMatchResolution {
     const result = loopsRepo.findPartial(projectId, name)
     const mapResult = (row: LoopRow | null): LoopState | null => {
       if (!row) return null
@@ -738,12 +699,6 @@ export function createLoopService(
     sectionPlansRepo.setCheckpointCommit(projectId, loopName, index, sha)
   }
 
-  /**
-   * The `## Code graph` pointer rendered into this section's coder prompts. The
-   * snapshot wrote the report inside the sandbox before the row was stored; the
-   * host never writes it into the agent-writable worktree. A non-sandboxed loop
-   * or a disabled `codeGraph.enabled` setting drops the pointer entirely.
-   */
   function getSectionCodeGraphBlock(state: LoopState): string {
     if (!state.sandbox || !codeGraphEnabled) return ''
     const index = state.currentSectionIndex
@@ -756,11 +711,6 @@ export function createLoopService(
     loopAttemptsRepo.setCodeGraph(projectId, state.loopName, attempt.id, text)
   }
 
-  /**
-   * The `## Code graph` pointer rendered into this scope's audit and coder
-   * prompts, for the report snapshot B wrote inside the sandbox. A non-sandboxed
-   * loop or a disabled `codeGraph.enabled` setting drops the pointer entirely.
-   */
   function getAttemptCodeGraphBlock(state: LoopState): string {
     if (!state.sandbox || !codeGraphEnabled) return ''
     const attempt = getLatestAttempt(state)
@@ -835,10 +785,6 @@ export function createLoopService(
   }
 
   function setCurrentSectionIndex(loopName: string, index: number): void {
-    // Defensive clamp against suffix-deletion races: if `current_section_index`
-    // was persisted from a snapshot where `total_sections = N` but the loop row
-    // has since been amended to `total_sections < index`, clamp the index so
-    // the invariant `current_section_index < total_sections` always holds.
     const row = loopsRepo.get(projectId, loopName)
     if (row && row.totalSections > 0 && index >= row.totalSections) {
       index = row.totalSections - 1
@@ -857,12 +803,6 @@ export function createLoopService(
     sectionPlansRepo.bulkInsert({ projectId, loopName, sections })
   }
 
-  /** Defensive clamp for `totalSections` when reduced by a suffix deletion.
-
-   * When `setTotalSections` lowers the total, any already-persisted
-   * `current_section_index` may be in the deleted region.  Clamp it
-   * back to `total - 1` to preserve the invariant that the current index
-   * never exceeds the highest valid section index.  */
   function setTotalSections(loopName: string, total: number): void {
     loopsRepo.setTotalSections(projectId, loopName, total)
     if (total > 0) {
@@ -921,24 +861,16 @@ export function createLoopService(
         iteration: entry.iteration,
         sectionIndex: entry.sectionIndex ?? null,
       })
-    } catch (err) {
-      // Persisted transition logging is best-effort: never propagate into the runtime.
-      logger.error(`Loop: failed to record transition for ${name}`, err as Error)
+    } catch (cause) {
+      logger.error(`Loop: failed to record transition for ${name}`, cause)
     }
   }
 
-  /**
-   * Record the single terminal transition row for a loop. Wraps
-   * `terminationStatusFor`/`terminationReasonToString` so the terminal row
-   * shape (transitionKind 'terminate', toPhase null, derived status/reason)
-   * has exactly one definition across the runtime and execution service.
-   */
   function recordTerminalTransition(name: string, entry: {
     reason: TerminationReason
     fromPhase: string
     iteration: number
     sectionIndex: number | null
-    /** Defaults to `reason.kind`. */
     eventType?: string
   }): void {
     recordTransition(name, {
@@ -992,18 +924,7 @@ export function createLoopService(
     if (args.sections === undefined && args.currentSection === undefined) {
       return { ok: false, error: 'no changes specified: provide sections and/or currentSection' }
     }
-    // `sections` scopes the pending suffix (from current index + 1): omit it to
-    // leave future sections untouched, or pass an empty array to remove the
-    // entire suffix. `currentSection` edits the in-progress section being
-    // audited in place, preserving its status/attempts. Completed sections
-    // (index < current) are never touched — the repo only replaces pending rows.
 
-    // Serialization with the runtime's `tick()` promise chain prevents a
-    // stale in-memory decision from the auditing runner from racing against
-    // a concurrent section advance.  `BEGIN IMMEDIATE` still serialises the
-    // writes, but runExclusive serialises the read-then-write decision so
-    // the phase / index we operate on is the authoritative one at lock
-    // acquisition time.
     type AdjustResult =
       | { ok: true; totalSections: number; hint: { projectDir: string; worktreeDir: string } }
       | { ok: false; error: string }
@@ -1029,9 +950,6 @@ export function createLoopService(
           if (row.phase !== 'auditing') {
             return { ok: false as const, error: `adjustments are only allowed during auditing (current phase: ${row.phase})` }
           }
-          // Defensive session authorization: ensures the caller holds the
-          // loop's current session, preventing a stale auditor session from
-          // modifying the plan after session rotation.
           if (row.currentSessionId !== args.auditorSessionId) {
             return { ok: false as const, error: `session mismatch: only the current auditor session may adjust the plan for loop ${name}` }
           }
@@ -1063,8 +981,6 @@ export function createLoopService(
             }
           }
 
-          // Snapshot from the earliest changed index: the current section when
-          // it is being edited, otherwise the pending suffix start.
           const snapshotFrom = args.currentSection ? currentIndex : fromIndex
           const beforeRows = sectionPlansRepo!.list(projectId, name)
             .filter((r) => r.sectionIndex >= snapshotFrom)
@@ -1148,9 +1064,9 @@ export function createLoopService(
             hint: { projectDir: row.projectDir, worktreeDir: row.worktreeDir },
           }
         })
-      } catch (err) {
-        logger.error(`Loop: failed to apply section adjustment for ${name}`, err as Error)
-        return { ok: false, error: (err as Error).message ?? 'section adjustment failed' }
+      } catch (cause) {
+        logger.error(`Loop: failed to apply section adjustment for ${name}`, cause)
+        return { ok: false, error: errorMessage(cause) || 'section adjustment failed' }
       }
 
       if (!isAdjustedOk(txnResult)) {
@@ -1162,13 +1078,12 @@ export function createLoopService(
           projectDir: txnResult.hint.projectDir,
           worktreeDir: txnResult.hint.worktreeDir,
         })
-      } catch (notifyErr) {
-        logger.error(`Loop: sections-adjusted notification failed for ${name}`, notifyErr as Error)
+      } catch (cause) {
+        logger.error(`Loop: sections-adjusted notification failed for ${name}`, cause)
       }
       return { ok: true, totalSections: txnResult.totalSections, hint: txnResult.hint }
     }
 
-    // Strip the `hint` before returning to callers — it's only used for the notification inside inner().
     function stripHint(r: AdjustResult): { ok: true; totalSections: number } | { ok: false; error: string } {
       if (isAdjustedOk(r)) return { ok: r.ok, totalSections: r.totalSections }
       return r

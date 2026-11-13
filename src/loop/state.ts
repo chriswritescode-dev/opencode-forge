@@ -28,17 +28,13 @@ interface LoopStateBase {
   auditorModel?: string
   workspaceId?: string
   hostSessionId?: string
-  /** Index into the auditor model fallback chain; 0 is the preferred model. */
   auditorFallbackIndex?: number
   currentSectionIndex: number
   totalSections: number
   executionVariant?: string
   auditorVariant?: string
-  /** Per-loop sandbox overrides; undefined when the loop uses config defaults. */
   sandboxSettings?: LoopSandboxSettings
-  /** Exact commit sha the loop's worktree branched from; undefined for legacy rows started before base commits were recorded. */
   baseCommit?: string
-  /** The other role's session for the current section, kept for reuse on the next same-section phase switch: the coder session while auditing, the audit session while coding. */
   standbySessionId?: string
 }
 
@@ -107,11 +103,6 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
   }
 }
 
-/**
- * Section index recorded on a loop_transitions row: the current section for
- * sectioned loops, null for non-sectioned loops. Single source of truth
- * for every transition-recording call site.
- */
 export function transitionSectionIndex(state: Pick<LoopState, 'totalSections' | 'currentSectionIndex'>): number | null {
   return state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null
 }

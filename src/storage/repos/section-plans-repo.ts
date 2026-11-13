@@ -1,9 +1,46 @@
 import type { Database } from 'bun:sqlite'
+import { z } from 'zod'
 import type { Logger } from '../../types'
 import type { ParsedSection } from '../../utils/section-capture'
 import type { PlanSection } from '../../services/deterministic-decomposer'
 import { generatedSectionId } from '../../loop/section-graph'
-import { runImmediateTransaction } from '../sqlite-open'
+import { runImmediateTransaction, statementChanges } from '../sqlite-open'
+
+const sectionPlanRowSchema = z.object({
+  project_id: z.string(),
+  loop_name: z.string(),
+  section_index: z.number(),
+  section_id: z.string(),
+  title: z.string(),
+  content: z.string(),
+  status: z.enum(['pending', 'in_progress', 'completed', 'failed']),
+  attempts: z.number(),
+  summary_done: z.string().nullable(),
+  summary_deviations: z.string().nullable(),
+  summary_follow_ups: z.string().nullable(),
+  code_graph: z.string().nullable(),
+  checkpoint_commit: z.string().nullable(),
+  started_at: z.number().nullable(),
+  completed_at: z.number().nullable(),
+  created_at: z.number(),
+})
+const sectionPlanRowsSchema = z.array(sectionPlanRowSchema)
+
+const sectionDependencyRowSchema = z.object({
+  section_id: z.string(),
+  depends_on_section_id: z.string(),
+})
+const sectionDependencyRowsSchema = z.array(sectionDependencyRowSchema)
+
+const sectionIndexStatusRowSchema = z.object({
+  section_index: z.number(),
+  status: z.string(),
+})
+const sectionIndexStatusRowsSchema = z.array(sectionIndexStatusRowSchema)
+
+const countRowSchema = z.object({ count: z.number() })
+const loopCountRowSchema = z.object({ loop_name: z.string(), cnt: z.number() })
+const loopCountRowsSchema = z.array(loopCountRowSchema)
 
 export interface SectionPlanRow {
   projectId: string
@@ -19,7 +56,6 @@ export interface SectionPlanRow {
   summaryDeviations: string | null
   summaryFollowUps: string | null
   codeGraph: string | null
-  /** Commit sha of the section's checkpoint commit; section audits scope from it. */
   checkpointCommit: string | null
   startedAt: number | null
   completedAt: number | null
@@ -41,21 +77,9 @@ export interface SectionPlansRepo {
   setCompletedAt(projectId: string, loopName: string, index: number, ms: number): void
   updateContent(projectId: string, loopName: string, sections: ParsedSection[]): { updated: number }
   count(projectId: string, loopName: string): number
-  /** Section-plan row count per loop for this project, in one scan. */
   countsByLoop(projectId: string): Map<string, number>
   deleteAll(projectId: string, loopName: string): number
   restoreAll(rows: SectionPlanRow[]): void
-  /**
-   * Run `fn` inside a single database transaction on the shared `db` that every
-   * repo in this composition root is constructed with, acquiring a write lock
-   * up front via `BEGIN IMMEDIATE`. Used to make cross-repo writes (section
-   * replacement, loop-row update, amendment insert) atomic when `fn` reads
-   * authoritative loop row state and writes against it, so a concurrent writer
-   * (e.g. a section advance bumping `current_section_index`) cannot commit
-   * between the read and the write inside `fn`. Nested `db.transaction` calls
-   * inside `fn` become savepoints that roll back with the outer transaction
-   * when `fn` throws.
-   */
   immediateTransaction<T>(fn: () => T): T
   replacePendingSections(args: {
     projectId: string
@@ -194,10 +218,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   `)
 
   function dependenciesBySection(projectId: string, loopName: string): Map<string, string[]> {
-    const rows = stmtListDependencies.all(projectId, loopName) as Array<{
-      section_id: string
-      depends_on_section_id: string
-    }>
+    const rows = sectionDependencyRowsSchema.parse(stmtListDependencies.all(projectId, loopName))
     const bySection = new Map<string, string[]>()
     for (const row of rows) {
       const dependencies = bySection.get(row.section_id) ?? []
@@ -207,25 +228,25 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     return bySection
   }
 
-  function mapRow(row: Record<string, unknown>, dependsOn: string[]): SectionPlanRow {
+  function mapRow(row: z.infer<typeof sectionPlanRowSchema>, dependsOn: string[]): SectionPlanRow {
     return {
-      projectId: row.project_id as string,
-      loopName: row.loop_name as string,
-      sectionIndex: row.section_index as number,
-      sectionId: row.section_id as string,
+      projectId: row.project_id,
+      loopName: row.loop_name,
+      sectionIndex: row.section_index,
+      sectionId: row.section_id,
       dependsOn,
-      title: row.title as string,
-      content: row.content as string,
-      status: row.status as SectionPlanRow['status'],
-      attempts: row.attempts as number,
-      summaryDone: row.summary_done as string | null,
-      summaryDeviations: row.summary_deviations as string | null,
-      summaryFollowUps: row.summary_follow_ups as string | null,
-      codeGraph: row.code_graph as string | null,
-      checkpointCommit: row.checkpoint_commit as string | null,
-      startedAt: row.started_at as number | null,
-      completedAt: row.completed_at as number | null,
-      createdAt: row.created_at as number,
+      title: row.title,
+      content: row.content,
+      status: row.status,
+      attempts: row.attempts,
+      summaryDone: row.summary_done,
+      summaryDeviations: row.summary_deviations,
+      summaryFollowUps: row.summary_follow_ups,
+      codeGraph: row.code_graph,
+      checkpointCommit: row.checkpoint_commit,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      createdAt: row.created_at,
     }
   }
 
@@ -237,10 +258,10 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
         for (const section of args.sections) {
           const id = section.id ?? generatedSectionId(section.index)
           const after = section.after ?? []
-          const result = stmtBulkInsert.run(
+          const changes = statementChanges(stmtBulkInsert.run(
             args.projectId, args.loopName, section.index, section.title, section.content, id, now,
-          ) as unknown as { changes: number }
-          if (result.changes === 0) continue
+          ))
+          if (changes === 0) continue
           inserted++
           for (const dependency of after) {
             stmtInsertDependency.run(args.projectId, args.loopName, id, dependency)
@@ -254,32 +275,32 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     updateContent(projectId, loopName, sections) {
       let updated = 0
       for (const section of sections) {
-        const result = stmtUpdateContent.run(
+        const changes = statementChanges(stmtUpdateContent.run(
           section.content, section.title, section.content,
           projectId, loopName, section.index,
-        ) as unknown as { changes: number }
-        if (result.changes > 0) updated++
+        ))
+        if (changes > 0) updated++
       }
       return { updated }
     },
 
     list(projectId, loopName) {
-      const rows = stmtList.all(projectId, loopName) as Array<Record<string, unknown>>
+      const rows = sectionPlanRowsSchema.parse(stmtList.all(projectId, loopName))
       const dependencies = dependenciesBySection(projectId, loopName)
-      return rows.map((row) => mapRow(row, dependencies.get(row.section_id as string) ?? []))
+      return rows.map((row) => mapRow(row, dependencies.get(row.section_id) ?? []))
     },
 
     listCompleted(projectId, loopName) {
-      const rows = stmtListCompleted.all(projectId, loopName) as Array<Record<string, unknown>>
+      const rows = sectionPlanRowsSchema.parse(stmtListCompleted.all(projectId, loopName))
       const dependencies = dependenciesBySection(projectId, loopName)
-      return rows.map((row) => mapRow(row, dependencies.get(row.section_id as string) ?? []))
+      return rows.map((row) => mapRow(row, dependencies.get(row.section_id) ?? []))
     },
 
     get(projectId, loopName, index) {
-      const row = stmtGet.get(projectId, loopName, index) as Record<string, unknown> | null
+      const row = sectionPlanRowSchema.nullish().parse(stmtGet.get(projectId, loopName, index))
       if (!row) return null
       const dependencies = dependenciesBySection(projectId, loopName)
-      return mapRow(row, dependencies.get(row.section_id as string) ?? [])
+      return mapRow(row, dependencies.get(row.section_id) ?? [])
     },
 
     setStatus(projectId, loopName, index, status) {
@@ -291,7 +312,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     },
 
     setSummary(projectId, loopName, index, parts) {
-      const row = stmtGet.get(projectId, loopName, index) as Record<string, unknown> | null
+      const row = sectionPlanRowSchema.nullish().parse(stmtGet.get(projectId, loopName, index))
       if (!row) return
       stmtSetSummary.run(
         parts.done ?? row.summary_done,
@@ -322,20 +343,19 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     },
 
     count(projectId, loopName) {
-      const result = stmtCount.get(projectId, loopName) as { count: number }
+      const result = countRowSchema.parse(stmtCount.get(projectId, loopName))
       return result.count
     },
 
     countsByLoop(projectId) {
-      const rows = stmtCountsByLoop.all(projectId) as { loop_name: string; cnt: number }[]
+      const rows = loopCountRowsSchema.parse(stmtCountsByLoop.all(projectId))
       return new Map(rows.map(r => [r.loop_name, r.cnt]))
     },
 
     deleteAll(projectId, loopName) {
       const run = db.transaction(() => {
         stmtDeleteDependencies.run(projectId, loopName)
-        const result = stmtDeleteAll.run(projectId, loopName) as unknown as { changes: number }
-        return result.changes
+        return statementChanges(stmtDeleteAll.run(projectId, loopName))
       })
       return run()
     },
@@ -367,18 +387,14 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
     replacePendingSections(args) {
       const run = db.transaction(() => {
-        const existing = stmtListForReplace.all(args.projectId, args.loopName, args.fromIndex) as Array<{ section_index: number; status: string }>
-        // No existing rows at or beyond fromIndex is valid: it means the
-        // auditor is appending new work after the current final section.
-        // Only non-pending rows in the suffix block the operation.
+        const existing = sectionIndexStatusRowsSchema.parse(stmtListForReplace.all(args.projectId, args.loopName, args.fromIndex))
         for (const row of existing) {
           if (row.status !== 'pending') {
             return { ok: false as const, error: `section ${row.section_index} is not pending (status=${row.status})` }
           }
         }
         stmtDeletePendingEdges.run(args.projectId, args.loopName, args.projectId, args.loopName, args.fromIndex)
-        const deleteResult = stmtDeletePendingFrom.run(args.projectId, args.loopName, args.fromIndex) as unknown as { changes: number }
-        const removed = deleteResult.changes
+        const removed = statementChanges(stmtDeletePendingFrom.run(args.projectId, args.loopName, args.fromIndex))
         const now = Date.now()
         let inserted = 0
         for (let i = 0; i < args.sections.length; i++) {

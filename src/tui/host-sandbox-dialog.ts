@@ -6,7 +6,6 @@ import type { HostSandboxToggle } from './host-sandbox'
 import { DEFAULT_SUFFIX, RESOURCE_FIELDS, formatLanAccess, promptResourceOverride } from './loop-settings-dialog'
 import { deriveSessionSandboxAcknowledged, deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
 
-/** The host sandbox exposes only the settings msb can change on an existing sandbox. */
 const HOST_RESOURCE_FIELDS = RESOURCE_FIELDS.filter((field) => field.key === 'cpus' || field.key === 'memory')
 
 const STATUS_LABELS = { enabled: 'on', disabled: 'off', loading: 'starting', failed: 'failed' } as const
@@ -15,7 +14,6 @@ export interface HostSandboxDialogDeps {
   host: ForgeTuiHost
   sandbox: HostSandboxToggle
   currentSessionId(): string | null
-  /** Server defaults for the settings rows; null shows the rows without default values. */
   loadDefaults(): Promise<ForgeLoopDefaults | null>
 }
 
@@ -27,12 +25,10 @@ function effectiveAllowLan(overrides: SandboxOverrides | undefined, defaults: Fo
   return resolveSandboxAllowLan(defaults?.sandbox.allowLan, overrides)
 }
 
-/** Whether the project's host sandbox is currently running for some session. */
 function isHostSandboxRunning(preference: SessionSandboxPreference): boolean {
   return deriveSessionSandboxAcknowledged(preference) !== null
 }
 
-/** Options for the host sandbox menu: the session's on/off row, then the drafted settings. */
 export function buildHostSandboxOptions(
   preference: SessionSandboxPreference,
   sessionId: string,
@@ -82,10 +78,6 @@ export function buildHostSandboxOptions(
   return options
 }
 
-/**
- * Asks before a change that recreates the running sandbox: msb fixes network policy at create
- * time, so a LAN access change on an existing sandbox loses everything outside the mounts.
- */
 async function confirmRecreate(
   host: ForgeTuiHost,
   preference: SessionSandboxPreference,
@@ -104,11 +96,6 @@ async function confirmRecreate(
   return choice === 'recreate'
 }
 
-/**
- * Runs the host sandbox menu for the current session. Settings edits stay in a draft until the
- * user turns the sandbox on or off (which sends them along) or applies them, so several edits
- * cost one restart rather than one each.
- */
 export async function editHostSandbox(deps: HostSandboxDialogDeps): Promise<void> {
   const { host, sandbox } = deps
   const sessionId = deps.currentSessionId()

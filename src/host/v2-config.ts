@@ -1,4 +1,5 @@
 import type { Plugin } from '@opencode/plugin'
+import { z } from 'zod'
 import type { AgentConfig } from '../agents'
 import { DEFAULT_AGENT, USER_REPLACEABLE_AGENTS, type PluginCommand } from '../config'
 import { toV2PermissionMap } from '../client/v2-adapter'
@@ -7,21 +8,64 @@ import type { ForgeCore } from './forge-core'
 
 type V2AgentEditor = Parameters<Parameters<Plugin.Context['agent']['transform']>[0]>[0]
 type V2AgentInfo = Parameters<V2AgentEditor['update']>[1] extends (agent: infer Info) => void ? Info : never
+type V2AgentModel = NonNullable<V2AgentInfo['model']>
 
 export interface ForgeConfigMaps {
   agent: Record<string, AgentConfig>
   command: Record<string, PluginCommand>
 }
 
+type ForgeConfigDocument = Parameters<ForgeCore['applyConfig']>[0]
+
+const agentConfigSchema = z.looseObject({
+  description: z.string().optional(),
+  model: z.string().default(''),
+  prompt: z.string().optional(),
+  mode: z.enum(['primary', 'subagent', 'all']).optional(),
+  tools: z.record(z.string(), z.boolean()).optional(),
+  variant: z.string().optional(),
+  temperature: z.number().optional(),
+  steps: z.number().optional(),
+  hidden: z.boolean().optional(),
+  color: z.string().optional(),
+  permission: z.record(z.string(), z.union([z.string(), z.record(z.string(), z.string())])).optional(),
+})
+
+const pluginCommandSchema = z.looseObject({
+  template: z.string(),
+  description: z.string(),
+  agent: z.string(),
+  subtask: z.boolean(),
+})
+
+const agentConfigMapSchema = z.record(z.string(), agentConfigSchema.optional().catch(undefined))
+const pluginCommandMapSchema = z.record(z.string(), pluginCommandSchema.optional().catch(undefined))
+
+function withoutInvalidEntries<T>(entries: Record<string, T | undefined>) {
+  return Object.fromEntries(
+    Object.entries(entries).flatMap(([name, entry]) => (entry === undefined ? [] : [[name, entry] as const])),
+  )
+}
+
+const brandedStringSchema = z.string()
+
+const modelIdSchema = z.custom<V2AgentModel['id']>((value) => brandedStringSchema.safeParse(value).success)
+const providerIdSchema = z.custom<V2AgentModel['providerID']>((value) => brandedStringSchema.safeParse(value).success)
+const modelVariantSchema = z.custom<NonNullable<V2AgentModel['variant']>>(
+  (value) => brandedStringSchema.safeParse(value).success,
+)
+
 export async function resolveForgeConfigMaps(
   applyConfig: ForgeCore['applyConfig'],
-  overrides?: Record<string, unknown>,
+  overrides?: ForgeConfigDocument,
 ): Promise<ForgeConfigMaps> {
-  const cfg: Record<string, unknown> = { ...overrides }
+  const cfg: ForgeConfigDocument = { ...overrides }
   await applyConfig(cfg)
+  const agent = agentConfigMapSchema.safeParse(cfg.agent)
+  const command = pluginCommandMapSchema.safeParse(cfg.command)
   return {
-    agent: (cfg.agent ?? {}) as Record<string, AgentConfig>,
-    command: (cfg.command ?? {}) as Record<string, PluginCommand>,
+    agent: agent.success ? withoutInvalidEntries(agent.data) : {},
+    command: command.success ? withoutInvalidEntries(command.data) : {},
   }
 }
 
@@ -34,22 +78,17 @@ function applyV2AgentConfig(agent: V2AgentInfo, cfg: AgentConfig): void {
   if (cfg.steps !== undefined) agent.steps = cfg.steps
   const model = parseModelString(cfg.model)
   if (model) {
-    agent.model = {
-      id: model.modelID,
-      providerID: model.providerID,
-      ...(cfg.variant ? { variant: cfg.variant } : {}),
-    } as unknown as NonNullable<V2AgentInfo['model']>
+    const assignment: V2AgentModel = {
+      id: modelIdSchema.parse(model.modelID),
+      providerID: providerIdSchema.parse(model.providerID),
+    }
+    if (cfg.variant) assignment.variant = modelVariantSchema.parse(cfg.variant)
+    agent.model = assignment
   }
   if (cfg.temperature !== undefined) agent.request.body.temperature = cfg.temperature
   agent.permissions.push(...toV2PermissionMap(cfg.permission))
 }
 
-/**
- * Registers Forge's agents on the V2 agent editor. A replaceable agent keeps the user's prompt,
- * model, and description and gains Forge's permission rules whichever order the transforms run
- * in: OpenCode's config plugin overrides Forge's fields when it runs later, and Forge adds only
- * its permission rules when it runs later.
- */
 export function registerForgeAgentsV2(
   ctx: Pick<Plugin.Context, 'agent'>,
   cfgAgent: Record<string, AgentConfig>,

@@ -1,14 +1,5 @@
-/**
- * Forge workspace helpers using the ForgeClient port.
- *
- * The recommended entry point is {@link createBuiltinWorktreeWorkspace}, which creates
- * a Forge workspace with `type: 'forge'` through the ForgeClient adapter.
- *
- * Workspaces are created with `type: 'forge'` (not `type: 'worktree'`) because
- * Forge uses its own adapter registered in the experimental workspace API.
- */
-
-import type { ForgeClient } from '../client/port'
+import { z } from 'zod'
+import type { ForgeClient, WorkspaceExtra, WorkspaceWarpParams } from '../client/port'
 import { FORGE_MANAGED_PERMISSIONS, FORGE_REQUIRED_PERMISSIONS, type PermissionRule } from '../constants/loop'
 import {
   classifyWorkspaceCreateThrow,
@@ -23,8 +14,14 @@ export interface ForgeWorkspaceEntry {
   type?: string | null
   branch?: string | null
   directory?: string | null
-  extra?: Record<string, unknown> | null
+  extra?: WorkspaceExtra | null
 }
+
+const workspaceCreateResultSchema = z.looseObject({
+  id: z.string().optional(),
+  directory: z.string().nullish(),
+  branch: z.string().nullish(),
+})
 
 export interface CreatedWorktreeWorkspace {
   workspaceId: string
@@ -36,12 +33,6 @@ export type CreateWorktreeWorkspaceResult =
   | { ok: true; workspace: CreatedWorktreeWorkspace }
   | { ok: false; error: WorkspaceCreateError }
 
-/**
- * Checks whether the given project ID is valid for worktree loops.
- * Worktree loops require a committed git project — when opencode starts in a
- * directory without a root commit it scopes the instance to project 'global'.
- * Returns an actionable error message string, or `null` if the project is valid.
- */
 export function getWorktreeProjectPreconditionError(projectId: string | null): string | null {
   if (projectId === 'global') {
     return (
@@ -54,83 +45,99 @@ export function getWorktreeProjectPreconditionError(projectId: string | null): s
   return null
 }
 
-/**
- * Reads a non-empty string value for `key` from a workspace opaque `extra` bag, or
- * `undefined` when `extra` is not an object or the value is absent, non-string, or empty.
- */
-function readForgeExtraString(entry: { extra?: unknown }, key: string): string | undefined {
-  const extra = entry.extra
-  if (typeof extra !== 'object' || extra === null) return undefined
-  const raw = (extra as Record<string, unknown>)[key]
-  return typeof raw === 'string' && raw.length > 0 ? raw : undefined
+const extraStringSchema = z.string().min(1)
+const extraFiniteNumberSchema = z.number().refine((value) => Number.isFinite(value))
+
+function readForgeExtraString(entry: Pick<ForgeWorkspaceEntry, 'extra'>, key: keyof WorkspaceExtra): string | undefined {
+  const parsed = extraStringSchema.safeParse(entry.extra?.[key])
+  return parsed.success ? parsed.data : undefined
+}
+
+export function readForgeExtraNumber(entry: Pick<ForgeWorkspaceEntry, 'extra'>, key: keyof WorkspaceExtra): number | undefined {
+  const parsed = extraFiniteNumberSchema.safeParse(entry.extra?.[key])
+  return parsed.success ? parsed.data : undefined
 }
 
 export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
   return readForgeExtraString(entry, 'loopName')
 }
 
-/** Workspace `extra` key carrying the explicit base ref a loop worktree is branched from. */
+const forgeLoopExtraSchema = z.object({
+  hostSessionId: z.string().optional().catch(undefined),
+  title: z.string().optional().catch(undefined),
+  executionModel: z.string().optional().catch(undefined),
+  auditorModel: z.string().optional().catch(undefined),
+  executionVariant: z.string().optional().catch(undefined),
+  auditorVariant: z.string().optional().catch(undefined),
+  planSource: z.enum(['stored', 'inline']).optional().catch(undefined),
+  planText: z.string().optional().catch(undefined),
+  initialPromptOwner: z.enum(['server', 'tui']).optional().catch(undefined),
+  pendingAttachStartedAt: z.number().optional().catch(undefined),
+  sandboxEnabled: z.boolean().optional().catch(undefined),
+  sandboxContainer: z.string().optional().catch(undefined),
+  maxIterations: z.number().optional().catch(undefined),
+})
+
+export type ForgeLoopExtraFields = z.infer<typeof forgeLoopExtraSchema>
+
+export function getForgeWorkspaceForgeLoop(entry: Pick<ForgeWorkspaceEntry, 'extra'>): ForgeLoopExtraFields | undefined {
+  const parsed = forgeLoopExtraSchema.safeParse(entry.extra?.forgeLoop)
+  return parsed.success ? parsed.data : undefined
+}
+
+export function getForgeWorkspaceProjectDirectory(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
+  return readForgeExtraString(entry, 'projectDirectory')
+}
+
 const FORGE_BASE_REF_EXTRA_KEY = 'baseRef'
 
-/** Reads the optional explicit base ref a loop worktree is branched from, or undefined when absent. */
-export function getForgeWorkspaceBaseRef(entry: { extra?: unknown }): string | undefined {
+export function getForgeWorkspaceBaseRef(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
   return readForgeExtraString(entry, FORGE_BASE_REF_EXTRA_KEY)
 }
 
-/** Workspace `extra` key carrying the explicit local branch a loop worktree checks out. */
 const FORGE_BRANCH_EXTRA_KEY = 'branch'
 
-/** Reads the optional explicit local branch a loop worktree checks out, or undefined when absent. */
-export function getForgeWorkspaceBranch(entry: { extra?: unknown }): string | undefined {
+export function getForgeWorkspaceBranch(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
   return readForgeExtraString(entry, FORGE_BRANCH_EXTRA_KEY)
 }
 
+const permissionRuleSchema = z.looseObject({
+  permission: z.string(),
+  pattern: z.string(),
+  action: z.enum(['allow', 'deny']),
+})
+
+const permissionRulesSchema = z.array(permissionRuleSchema.nullable().catch(null))
+
 export function getForgeWorkspacePermissionRules(entry: Pick<ForgeWorkspaceEntry, 'extra'>): PermissionRule[] {
-  const raw = entry.extra?.permissionRules
-  if (!Array.isArray(raw)) return []
-  return (raw as unknown[]).filter(
-    (r): r is PermissionRule =>
-      typeof r === 'object' && r !== null &&
-      typeof (r as PermissionRule).permission === 'string' &&
-      typeof (r as PermissionRule).pattern === 'string' &&
-      (r as PermissionRule).permission.length > 0 &&
-      (r as PermissionRule).pattern.length > 0 &&
-      (r as PermissionRule).action === 'deny' &&
-      !FORGE_MANAGED_PERMISSIONS.has((r as PermissionRule).permission) &&
-      !((r as PermissionRule).pattern === '*' && FORGE_REQUIRED_PERMISSIONS.has((r as PermissionRule).permission)),
+  const parsed = permissionRulesSchema.safeParse(entry.extra?.permissionRules)
+  if (!parsed.success) return []
+  return parsed.data.flatMap((rule) => (rule === null ? [] : [rule])).filter(
+    (rule) =>
+      rule.permission.length > 0 &&
+      rule.pattern.length > 0 &&
+      rule.action === 'deny' &&
+      !FORGE_MANAGED_PERMISSIONS.has(rule.permission) &&
+      !(rule.pattern === '*' && FORGE_REQUIRED_PERMISSIONS.has(rule.permission)),
   )
 }
 
-/**
- * Looks up a single forge workspace by id. Returns `undefined` when the id is absent.
- */
 export async function getForgeWorkspaceEntry(
   client: ForgeClient,
   workspaceId: string,
 ): Promise<ForgeWorkspaceEntry | undefined> {
-  const entries = (await client.workspace.list() ?? []) as ForgeWorkspaceEntry[]
+  const entries = await client.workspace.list()
   return entries.find((entry) => entry.id === workspaceId)
 }
 
-/**
- * Creates a Forge workspace via the ForgeClient port with the `forge` adapter.
- *
- * Uses `client.workspace.create({ type: 'forge', branch: null })`.
- *
- * @returns `{ ok: true, workspace: { workspaceId, directory, branch } }` on success,
- *          or `{ ok: false, error: WorkspaceCreateError }` on failure.
- */
 export async function createBuiltinWorktreeWorkspace(
   client: ForgeClient,
   options: {
     loopName: string
     directory: string
-    /** Explicit base ref the new loop worktree branches from; omitted for the project HEAD. */
     baseRef?: string
-    /** Explicit local branch the worktree checks out; omitted for forge/<slug>. */
     branch?: string
-    /** Caller-supplied extra fields preserved onto the new workspace (e.g. portable permission rules). */
-    extra?: Record<string, unknown>
+    extra?: WorkspaceExtra
   },
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
 ): Promise<CreateWorktreeWorkspaceResult> {
@@ -141,36 +148,23 @@ export async function createBuiltinWorktreeWorkspace(
   try {
     const _wsStart = Date.now()
     ;(logger ?? console).log?.(`[warp] workspace.create.start loopName=${options.loopName}`)
-    const callerExtra: Record<string, unknown> = { ...(options.extra ?? {}) }
+    const callerExtra: WorkspaceExtra = { ...options.extra }
     delete callerExtra[FORGE_BASE_REF_EXTRA_KEY]
     delete callerExtra[FORGE_BRANCH_EXTRA_KEY]
-    const createParams: { type: string; branch: string | null; extra: Record<string, unknown> } = {
-      type: 'forge',
-      branch: null,
-      extra: {
-        ...callerExtra,
-        loopName: options.loopName,
-        projectDirectory: options.directory,
-        workspaceCreatedAt: Date.now(),
-        ...(options.baseRef ? { [FORGE_BASE_REF_EXTRA_KEY]: options.baseRef } : {}),
-        ...(options.branch ? { [FORGE_BRANCH_EXTRA_KEY]: options.branch } : {}),
-      },
+    const extra: WorkspaceExtra = {
+      ...callerExtra,
+      loopName: options.loopName,
+      projectDirectory: options.directory,
+      workspaceCreatedAt: Date.now(),
     }
-    const workspaceData = await client.workspace.create(createParams)
+    if (options.baseRef) extra[FORGE_BASE_REF_EXTRA_KEY] = options.baseRef
+    if (options.branch) extra[FORGE_BRANCH_EXTRA_KEY] = options.branch
+    const workspaceData = await client.workspace.create({ type: 'forge', branch: null, extra })
 
-    const id = typeof workspaceData === 'string'
-      ? workspaceData
-      : workspaceData && typeof workspaceData === 'object' && 'id' in workspaceData && typeof workspaceData.id === 'string'
-        ? workspaceData.id
-        : null
-
-    const directory = workspaceData && typeof workspaceData === 'object' && 'directory' in workspaceData
-      ? String((workspaceData as Record<string, unknown>).directory ?? '')
-      : ''
-
-    const branch = workspaceData && typeof workspaceData === 'object' && 'branch' in workspaceData
-      ? String((workspaceData as Record<string, unknown>).branch ?? '')
-      : ''
+    const created = workspaceCreateResultSchema.safeParse(workspaceData)
+    const id = created.success ? created.data.id : undefined
+    const directory = created.success ? created.data.directory ?? '' : ''
+    const branch = created.success ? created.data.branch ?? '' : ''
 
     if (!id) {
       const error = workspaceCreateMissingId(workspaceData)
@@ -178,9 +172,6 @@ export async function createBuiltinWorktreeWorkspace(
       return { ok: false, error }
     }
 
-    // opencode awaits the connected event internally before returning,
-    // see opencode source workspace.ts (Event.Status loop). The response should
-    // not reach us until the worktree is ready or errored — verify directory is populated.
     if (!directory) {
       const error = workspaceCreateEmptyDirectory(workspaceData)
       ;(logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create returned empty directory', workspaceData)
@@ -206,9 +197,6 @@ export async function createBuiltinWorktreeWorkspace(
   }
 }
 
-/**
- * Binds a session to a workspace by calling the warp API.
- */
 export async function bindSessionToWorkspace(
   client: ForgeClient,
   workspaceId: string,
@@ -216,11 +204,11 @@ export async function bindSessionToWorkspace(
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
   options?: { copyChanges?: boolean; loopName?: string },
 ): Promise<void> {
-  const warpParams: { id: string; sessionID: string; copyChanges?: boolean } = {
+  const warpParams: WorkspaceWarpParams = {
     id: workspaceId,
     sessionID: sessionId,
   }
-  if (typeof options?.copyChanges === 'boolean') warpParams.copyChanges = options.copyChanges
+  if (options?.copyChanges !== undefined) warpParams.copyChanges = options.copyChanges
 
   const _warpStart = Date.now()
   ;(logger ?? console).log?.(`[warp] warp.start loopName=${options?.loopName ?? 'unknown'} workspaceId=${workspaceId} sessionId=${sessionId}`)

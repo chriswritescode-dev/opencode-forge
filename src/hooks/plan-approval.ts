@@ -1,5 +1,7 @@
+import { z } from 'zod'
 import type { ToolContext } from '../tools/types'
-import type { ToolAfterHook, ToolBeforeHook } from './tool-hook-types'
+import type { ToolAfterHook, ToolAfterInput, ToolAfterOutput, ToolArgs, ToolBeforeHook, ToolBeforeInput, ToolBeforeOutput, ToolMetadata } from './tool-hook-types'
+import type { ForgeEvent } from '../client/port'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
@@ -36,12 +38,9 @@ async function abortApprovalSourceSession(ctx: ToolContext, sessionID: string): 
   }
 }
 
-function markApprovalHandled(output: { metadata: unknown }, duplicate = false): void {
-  output.metadata = {
-    ...(typeof output.metadata === 'object' && output.metadata !== null ? output.metadata : {}),
-    forgePlanApprovalHandled: true,
-    ...(duplicate ? { forgePlanApprovalDuplicate: true } : {}),
-  }
+function markApprovalHandled(output: ToolAfterOutput, duplicate = false): void {
+  const handled: ToolMetadata = { ...output.metadata, forgePlanApprovalHandled: true }
+  output.metadata = duplicate ? { ...handled, forgePlanApprovalDuplicate: true } : handled
 }
 
 function scheduleApprovalDispatch(
@@ -54,9 +53,17 @@ function scheduleApprovalDispatch(
   })
 }
 
-const LOOP_BLOCKED_TOOLS: Record<string, string> = {
-  question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-  'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
+const LOOP_BLOCKED_TOOLS = new Map<string, string>([
+  ['question', 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.'],
+  ['execute-plan', 'The execute-plan tool is not available during a loop. Focus on executing the current plan.'],
+])
+
+interface ExecutePromptParams {
+  sessionID: string
+  directory: string
+  agent: string
+  parts: Array<{ type: 'text'; text: string }>
+  model?: { providerID: string; modelID: string }
 }
 
 interface PendingExecution {
@@ -91,13 +98,13 @@ function hashApprovalPlan(planText: string): string {
   return (hash >>> 0).toString(36)
 }
 
-function claimApprovalCall(ctx: ToolContext, input: { sessionID: string }, label: string, planKey: string): boolean {
+function claimApprovalCall(ctx: ToolContext, input: { sessionID: string; callID?: string }, label: string, planKey: string): boolean {
   let processed = processedApprovalCalls.get(ctx)
   if (!processed) {
     processed = new Set<string>()
     processedApprovalCalls.set(ctx, processed)
   }
-  const callKey = `${input.sessionID}:${(input as { callID?: string }).callID ?? ''}:${label}`
+  const callKey = `${input.sessionID}:${input.callID ?? ''}:${label}`
   if (processed.has(callKey)) return false
   if (processed.size > 1000) processed.clear()
   processed.add(callKey)
@@ -117,9 +124,18 @@ function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): { conte
   }
 }
 
-function isPlanApprovalQuestionArgs(args: unknown): boolean {
-  const questionArgs = args as { questions?: Array<{ options?: Array<{ label?: string }> }> } | undefined
-  const options = questionArgs?.questions?.[0]?.options
+const questionAnswersSchema = z.array(z.array(z.string()))
+
+const planApprovalQuestionArgsSchema = z.looseObject({
+  questions: z.array(z.looseObject({
+    options: z.array(z.looseObject({ label: z.string().optional() })).optional(),
+  })).optional(),
+})
+
+function isPlanApprovalQuestionArgs(args: ToolArgs): boolean {
+  const parsed = planApprovalQuestionArgsSchema.safeParse(args)
+  if (!parsed.success) return false
+  const options = parsed.data.questions?.[0]?.options
   if (!options) return false
   const labels = options.map((o) => (o.label ?? '').toLowerCase())
   return PLAN_EXECUTION_LABELS.every((l) => labels.includes(l.toLowerCase()))
@@ -130,20 +146,17 @@ export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBloc
   const { logger } = ctx
 
   return async (
-    input: { tool: string; sessionID: string; callID: string },
-    _output: { args: unknown }
+    input: ToolBeforeInput,
+    _output: ToolBeforeOutput
   ) => {
-    // Only tools that can be blocked during a loop require loop-state resolution. Resolving the
-    // ancestor chain for every tool lets a transient session lookup failure reject host-side
-    // native tools (read/edit/write, etc.) that never consult loop state. Non-blocked tools
-    // return before any resolution.
-    if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
+    const blockedMessage = LOOP_BLOCKED_TOOLS.get(input.tool)
+    if (blockedMessage === undefined) return
     const state = await resolveBlockedLoopToolState(loop, input.sessionID, deps)
     if (!state?.active) return
 
     logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
 
-    throw new Error(LOOP_BLOCKED_TOOLS[input.tool]!)
+    throw new Error(blockedMessage)
   }
 }
 
@@ -152,25 +165,24 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
   const { logger, config } = ctx
 
   return async (
-    input: { tool: string; sessionID: string; callID: string; args: unknown },
-    output: { title: string; output: string; metadata: unknown }
+    input: ToolAfterInput,
+    output: ToolAfterOutput
   ) => {
-    // Resolve loop state only for tools that can be blocked during a loop, so a transient session
-    // lookup failure never rejects host-side native tools that ignore loop state.
+    const blockedMessage = LOOP_BLOCKED_TOOLS.get(input.tool)
     let blockedState: { active?: boolean; loopName?: string; phase?: string } | null = null
-    if (input.tool in LOOP_BLOCKED_TOOLS) {
+    if (blockedMessage !== undefined) {
       blockedState = await resolveBlockedLoopToolState(loop, input.sessionID, deps)
     }
-    if (blockedState?.active && input.tool in LOOP_BLOCKED_TOOLS) {
+    if (blockedState?.active && blockedMessage !== undefined) {
       logger.log(`Loop: blocked ${input.tool} tool in ${blockedState.phase} phase for session ${input.sessionID}`)
       output.title = 'Tool blocked'
-      output.output = LOOP_BLOCKED_TOOLS[input.tool]!
+      output.output = blockedMessage
       return
     }
 
     if (input.tool === 'question' && isPlanApprovalQuestionArgs(input.args)) {
-          const metadata = output.metadata as { answers?: string[][] } | undefined
-          const answer = metadata?.answers?.[0]?.[0]?.trim() ?? output.output.trim()
+          const answers = questionAnswersSchema.safeParse(output.metadata.answers)
+          const answer = (answers.success ? answers.data[0]?.[0]?.trim() : undefined) ?? output.output.trim()
           const answerLower = answer.toLowerCase()
           const matchedLabel = PLAN_EXECUTION_LABELS.find((l) =>
             answerLower === l.toLowerCase() || answerLower.startsWith(l.toLowerCase())
@@ -219,7 +231,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             return
           }
           
-          // Programmatic dispatch for "New session" path
           const plan = resolveCurrentSessionPlan(ctx, input.sessionID)
           if (!plan) {
             publishPlanApprovalToast(ctx, input, 'error', 'Plan not found for execution')
@@ -299,17 +310,22 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
   }
 }
 
+const sessionStatusPropertiesSchema = z.looseObject({
+  sessionID: z.string(),
+  status: z.looseObject({ type: z.string().optional() }).optional(),
+})
+
 export function createPlanApprovalEventHook(ctx: ToolContext) {
   const { logger } = ctx
 
-  return async (eventInput: { event: { type: string; properties?: Record<string, unknown> } }) => {
+  return async (eventInput: { event: { type: string; properties?: ForgeEvent['properties'] } }) => {
     if (eventInput.event?.type !== 'session.status') return
 
-    const status = eventInput.event.properties?.status as { type?: string } | undefined
-    if (status?.type !== 'idle') return
+    const properties = sessionStatusPropertiesSchema.safeParse(eventInput.event.properties)
+    if (!properties.success) return
+    if (properties.data.status?.type !== 'idle') return
 
-    const sessionID = eventInput.event.properties?.sessionID as string
-    if (!sessionID) return
+    const sessionID = properties.data.sessionID
 
     const pending = pendingExecutions.get(sessionID)
     if (!pending) return
@@ -322,40 +338,29 @@ export function createPlanApprovalEventHook(ctx: ToolContext) {
 
     const executeHerePrompt = `The architect agent has created an implementation plan. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.${planRef}`
 
-    // Wraps port-style call (throws on error) into envelope pattern for retryWithModelFallback
-    const promptAsyncEnvelope = (params: {
-      sessionID: string
-      directory: string
-      agent: string
-      parts: Array<{ type: 'text'; text: string }>
-      model?: { providerID: string; modelID: string }
-    }): Promise<{ data?: unknown; error?: unknown }> =>
+    const promptAsyncEnvelope = (params: ExecutePromptParams): Promise<{ error?: unknown }> =>
       ctx.client.session.promptAsync(params).then(
-        () => ({ data: {} as unknown }),
-        (err) => ({ data: undefined, error: err }),
+        () => ({}),
+        (error) => ({ error }),
       )
+
+    const promptParams: ExecutePromptParams = {
+      sessionID,
+      directory: pending.directory,
+      agent: 'code',
+      parts: [{ type: 'text', text: executeHerePrompt }],
+    }
 
     try {
       logger.log(`createPlanApprovalEventHook: prompting session ${sessionID}`)
       const { result, usedModel } = await retryWithModelFallback(
-        () => promptAsyncEnvelope({
-          sessionID,
-          directory: pending.directory,
-          agent: 'code',
-          parts: [{ type: 'text' as const, text: executeHerePrompt }],
-          ...(pending.executionModel ? { model: pending.executionModel } : {}),
-        }),
-        () => promptAsyncEnvelope({
-          sessionID,
-          directory: pending.directory,
-          agent: 'code',
-          parts: [{ type: 'text' as const, text: executeHerePrompt }],
-        }),
+        () => promptAsyncEnvelope(pending.executionModel ? { ...promptParams, model: pending.executionModel } : promptParams),
+        () => promptAsyncEnvelope(promptParams),
         pending.executionModel,
         logger,
       )
-      if ((result as { error?: unknown })?.error) {
-        logger.error('Plan approval: promptAsync returned error', (result as { error?: unknown }).error)
+      if (result.error) {
+        logger.error('Plan approval: promptAsync returned error', result.error)
         return
       }
       const modelInfo = usedModel ? `${usedModel.providerID}/${usedModel.modelID}` : 'default'

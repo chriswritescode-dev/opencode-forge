@@ -10,35 +10,15 @@ export interface SessionSandboxPreference {
   applied: SessionSandboxAppliedState | null
   controller?: SessionSandboxControllerState | null
   activeLoopSandboxes?: Record<string, boolean>
-  /**
-   * True when the preference read could not reach the server or the server could
-   * not resolve it. This lets callers distinguish "no persisted state" from "the
-   * read failed" so a transient failure is not permanently treated as OFF.
-   */
   unavailable?: boolean
-  /** Why the read was unavailable, for the failure toast. */
   unavailableReason?: string
 }
 
-/**
- * Returns a blocking reason when the toggle must not write desired state, or
- * null to proceed. When sandboxing is disabled by configuration the server
- * never constructs a reconciler, so a persisted request could never be
- * acknowledged and would linger until it is unexpectedly applied after
- * sandboxing is re-enabled.
- */
 export function hostSandboxToggleBlocked(configEnabled: boolean): string | null {
   if (!configEnabled) return FORGE_HOST_SANDBOX_DISABLED_ERROR
   return null
 }
 
-/**
- * Returns the trusted applied state for a preference pair, or null. ON is trusted
- * only when the desired and applied revisions match, both target the same session,
- * desired is enabled, and the applied row carries no error. Stale or mismatched
- * revisions always derive to null so a late or superseded acknowledgement never
- * falsely reports ON.
- */
 export function deriveSessionSandboxAcknowledged(
   pref: SessionSandboxPreference,
 ): SessionSandboxAppliedState | null {
@@ -57,13 +37,6 @@ export function deriveSessionSandboxAcknowledged(
   return null
 }
 
-/**
- * Returns true when the preference pair has reached a terminal state and no
- * acknowledgement is pending: either no desired state is persisted, or the
- * applied row carries the desired revision (regardless of enabled/error). A
- * pair is pending only while a desired state awaits its matching applied
- * acknowledgement.
- */
 export function isSessionSandboxPreferenceSettled(pref: SessionSandboxPreference): boolean {
   const { desired, applied } = pref
   if (!desired) return true

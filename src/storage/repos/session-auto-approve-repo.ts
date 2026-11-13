@@ -1,4 +1,8 @@
 import type { Database } from 'bun:sqlite'
+import { z } from 'zod'
+
+const enabledRowSchema = z.object({ enabled: z.number() })
+const changeCountRowSchema = z.object({ count: z.number() })
 
 export const SESSION_AUTO_APPROVE_KEY_PREFIX = 'session-auto-approve.'
 export const SESSION_AUTO_APPROVE_TTL_MS = 15 * 24 * 60 * 60 * 1000
@@ -61,7 +65,7 @@ export function createSessionAutoApproveRepo(
 
   return {
     isEnabled(projectId: string, sessionId: string, now: number): boolean {
-      const row = isEnabledStmt.get(projectId, sessionKey(sessionId), now) as { enabled: number } | null | undefined
+      const row = enabledRowSchema.nullish().parse(isEnabledStmt.get(projectId, sessionKey(sessionId), now))
       return row !== null && row !== undefined
     },
 
@@ -76,13 +80,13 @@ export function createSessionAutoApproveRepo(
 
     touch(projectId: string, sessionId: string, now: number): boolean {
       touchStmt.run(now + ttlMs, now, projectId, sessionKey(sessionId), now)
-      const result = changesStmt.get() as { count: number }
+      const result = changeCountRowSchema.parse(changesStmt.get())
       return result.count === 1
     },
 
     purgeExpired(now: number): number {
       purgeStmt.run(now)
-      const result = changesStmt.get() as { count: number }
+      const result = changeCountRowSchema.parse(changesStmt.get())
       return result.count
     },
   }

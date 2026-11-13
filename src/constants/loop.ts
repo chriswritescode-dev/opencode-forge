@@ -1,34 +1,21 @@
-import { isRecord } from '../utils/is-record'
-import type { PluginConfig, LoopPermissionsConfig } from '../types'
+import { z } from 'zod'
+import type { PluginConfig, LoopPermissionRuleConfig, LoopPermissionsConfig, LoopSessionReuseConfig } from '../types'
 import type { LoopHandoffPhase } from '../loop/handoff'
 
-/** Context-window percentage a retained coder session may use and still be reused on a same-section retry. */
 export const DEFAULT_CODER_SESSION_REUSE_CONTEXT_PERCENT = 50
 
-/** Context-window percentage a retained audit session may use and still be reused on a same-section retry. */
 export const DEFAULT_AUDITOR_SESSION_REUSE_CONTEXT_PERCENT = 50
 
-/** Loop session role that owns a retained standby session. */
 export type LoopSessionReuseRole = 'code' | 'auditor'
 
-/** Worktree path of the code-graph index link Forge writes for sandboxed loops. */
 export const CODE_GRAPH_LINK_NAME = '.codegraph'
 
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
-/** Maximum number of plan sections a loop may execute. Shared by the
- *  deterministic decomposer, section bootstrap, the plan-structure report,
- *  the architect agent's prose, and the plan-adjust cap so all agree. */
 export const MAX_TOTAL_SECTIONS = 24
 
-/**
- * Tools that author the session's plan of record. Architect agents may call
- * them; implementation and audit sessions deny this one list rather than
- * repeating the names, and the code agent excludes it.
- */
 export const PLAN_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit'] as const
 
-/** Structural deny names shared by both loop and audit rulesets, in emit order. */
 export const SHARED_STRUCTURAL_DENY_PERMISSIONS = [
   ...PLAN_AUTHORING_TOOL_NAMES,
   'execute-plan',
@@ -37,27 +24,21 @@ export const SHARED_STRUCTURAL_DENY_PERMISSIONS = [
   'loop-status',
 ] as const
 
-/** Structural deny names exclusive to loop sessions (review tools). */
 export const LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS = ['review-write', 'review-delete'] as const
 
-/** Structural deny names exclusive to audit sessions (code-mutation tools). */
 export const AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS = ['edit', 'write'] as const
 
-/** Tools that end a loop phase turn by recording the role's handoff. */
 export const LOOP_HANDOFF_TOOL_NAME = 'loop-handoff'
 export const LOOP_COMPLETE_TOOL_NAME = 'loop-complete'
 export const LOOP_PHASE_TOOL_NAMES = [LOOP_HANDOFF_TOOL_NAME, LOOP_COMPLETE_TOOL_NAME] as const
 export type LoopPhaseToolName = (typeof LOOP_PHASE_TOOL_NAMES)[number]
 
-/** Tools an audit session denies: code mutation, the shared structural tools, and `loop-complete`. */
 export const AUDIT_SESSION_DENIED_TOOL_NAMES = [
   ...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS,
   ...SHARED_STRUCTURAL_DENY_PERMISSIONS,
   LOOP_COMPLETE_TOOL_NAME,
 ] as const
 
-/** Permissions config may not name: the blanket allow, the external_directory key, and
- *  every structural deny. Loop/audit rulesets are the only legal consumers of these. */
 export const FORGE_MANAGED_PERMISSIONS: ReadonlySet<string> = new Set([
   '*',
   'external_directory',
@@ -67,11 +48,6 @@ export const FORGE_MANAGED_PERMISSIONS: ReadonlySet<string> = new Set([
   ...LOOP_PHASE_TOOL_NAMES,
 ])
 
-/** Loop-protocol and core tools a loop cannot function without. Only a *blanket* deny (pattern `*`)
- *  of one of these is rejected: a loop that cannot read its findings, section plan, or
- *  plan-of-record — or cannot run `bash` or `read` at all — silently burns iterations to
- *  maxIterations with nothing pointing at the config. A scoped deny such as
- *  `{ permission: 'bash', pattern: 'git push *' }` is honoured. */
 export const FORGE_REQUIRED_PERMISSIONS: ReadonlySet<string> = new Set([
   'review-read',
   'plan-read',
@@ -85,62 +61,68 @@ function denyRulesFor(names: readonly string[]): PermissionRule[] {
   return names.map((permission) => ({ permission, pattern: '*', action: 'deny' as const }))
 }
 
-/** Normalizes one configured rule into a typed `PermissionRule`, or `null` if it must be dropped. */
-function parseLoopPermissionEntry(index: number, raw: unknown, warnings: string[]): PermissionRule | null {
+const loopPermissionEntryObjectSchema = z.looseObject({
+  permission: z.string(),
+  pattern: z.string().optional(),
+})
+
+function parseLoopPermissionEntry(index: number, raw: LoopPermissionRuleConfig, warnings: string[]): PermissionRule | null {
   const drop = (): null => {
     warnings.push(`loop.permissions.deny[${index}] is ignored: expected a tool name or { permission, pattern }`)
     return null
   }
 
-  if (typeof raw === 'string') {
-    const permission = raw.trim()
+  const asString = z.string().safeParse(raw)
+  if (asString.success) {
+    const permission = asString.data.trim()
     if (!permission) return drop()
     return { permission, pattern: '*', action: 'deny' }
   }
 
-  if (isRecord(raw)) {
-    const obj = raw as { permission?: unknown; pattern?: unknown }
-    if (typeof obj.permission !== 'string') return drop()
-    const permission = obj.permission.trim()
+  const asObject = loopPermissionEntryObjectSchema.safeParse(raw)
+  if (asObject.success) {
+    const permission = asObject.data.permission.trim()
     if (!permission) return drop()
-    if (obj.pattern !== undefined && typeof obj.pattern !== 'string') return drop()
-    const pattern = typeof obj.pattern === 'string' ? obj.pattern.trim() : ''
+    const pattern = asObject.data.pattern?.trim() ?? ''
     return { permission, pattern: pattern || '*', action: 'deny' }
   }
 
   return drop()
 }
 
-/**
- * Parses the user-supplied `loop.permissions` config into typed rules plus warnings for dropped
- * entries. Only `deny` entries are supported; a legacy `allow` array is ignored with a migration
- * warning. Entries naming a Forge-managed permission are dropped, as are blanket (`*`) denies of a
- * Forge-required permission. Returns the same `PermissionRule` shape used by the loop and audit
- * rulesets, so parsed rules layer directly onto them.
- */
-export function parseLoopPermissionRules(raw: unknown): { rules: PermissionRule[]; warnings: string[] } {
+const loopPermissionsInputSchema = z.looseObject({
+  deny: z.unknown().optional(),
+  allow: z.unknown().optional(),
+})
+
+export interface ParsedLoopPermissionRules {
+  rules: PermissionRule[]
+  warnings: string[]
+}
+
+export function parseLoopPermissionRules(raw: LoopPermissionsConfig | null | undefined): ParsedLoopPermissionRules {
   const warnings: string[] = []
   if (raw === undefined || raw === null) return { rules: [], warnings }
 
-  if (!isRecord(raw)) {
+  const input = loopPermissionsInputSchema.safeParse(raw)
+  if (!input.success) {
     warnings.push('loop.permissions is ignored: expected an object with a "deny" array')
     return { rules: [], warnings }
   }
 
-  const config = raw as LoopPermissionsConfig
   const rules: PermissionRule[] = []
   const seen = new Set<string>()
 
-  if (raw.allow !== undefined) {
+  if (input.data.allow !== undefined) {
     warnings.push('loop.permissions.allow is ignored: only deny entries are supported')
   }
 
-  if (config.deny !== undefined) {
-    if (!Array.isArray(config.deny)) {
+  if (input.data.deny !== undefined) {
+    if (!Array.isArray(raw.deny)) {
       warnings.push('loop.permissions.deny is ignored: expected an array')
     } else {
-      for (let i = 0; i < config.deny.length; i++) {
-        const rule = parseLoopPermissionEntry(i, config.deny[i], warnings)
+      for (let i = 0; i < raw.deny.length; i++) {
+        const rule = parseLoopPermissionEntry(i, raw.deny[i], warnings)
         if (!rule) continue
         if (rule.pattern === '*' && FORGE_REQUIRED_PERMISSIONS.has(rule.permission)) {
           warnings.push(
@@ -169,16 +151,10 @@ export function parseLoopPermissionRules(raw: unknown): { rules: PermissionRule[
   return { rules, warnings }
 }
 
-/** Resolves the parsed `loop.permissions` rules for a config, or an empty list when unset. */
 export function resolveLoopPermissionRules(config: PluginConfig | undefined): PermissionRule[] {
   return parseLoopPermissionRules(config?.loop?.permissions).rules
 }
 
-/**
- * Resolves the full ruleset options (configured `loop.permissions` rules and the code-graph MCP
- * deny) for a config. Single call
- * every ruleset construction site uses so the configured rules can never diverge.
- */
 export function resolveLoopPermissionOptions(config: PluginConfig | undefined): LoopPermissionRulesetOptions {
   return {
     extraRules: resolveLoopPermissionRules(config),
@@ -186,15 +162,10 @@ export function resolveLoopPermissionOptions(config: PluginConfig | undefined): 
   }
 }
 
-/** Collects warnings produced while parsing `loop.permissions` (dropped or ignored entries). */
 export function collectLoopPermissionConfigWarnings(config: PluginConfig | undefined): string[] {
   return parseLoopPermissionRules(config?.loop?.permissions).warnings
 }
 
-/**
- * Resolves the user-configured external directories bind-mounted read-only into loop sandboxes, so
- * host file tools and in-container tools see the same tree.
- */
 export function resolveLoopAllowedDirectories(config: PluginConfig | undefined): string[] {
   return config?.loop?.allowExternalDirectories ?? []
 }
@@ -205,26 +176,32 @@ export interface ParsedSessionReuseConfig {
   warnings: string[]
 }
 
-function parseSessionReusePercent(raw: unknown, key: string, fallback: number, warnings: string[]): number {
+function parseSessionReusePercent(
+  raw: number | undefined,
+  key: string,
+  fallback: number,
+  warnings: string[],
+): number {
   if (raw === undefined) return fallback
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 100) return raw
+  const parsed = z.number().min(0).max(100).safeParse(raw)
+  if (parsed.success) return parsed.data
   warnings.push(`${key} is ignored: expected a finite number between 0 and 100, using the default ${fallback}`)
   return fallback
 }
 
-/**
- * Parses and validates `loop.sessionReuse`, falling back to the per-role
- * defaults for any value that is not a finite number in [0, 100]. A percent of
- * 0 disables reuse for that role.
- */
-export function parseSessionReuseConfig(raw: unknown): ParsedSessionReuseConfig {
+const sessionReuseInputSchema = z.looseObject({
+  coderContextPercent: z.unknown().optional(),
+  auditorContextPercent: z.unknown().optional(),
+})
+
+export function parseSessionReuseConfig(raw: LoopSessionReuseConfig | null | undefined): ParsedSessionReuseConfig {
   const warnings: string[] = []
   const defaults = {
     coderContextPercent: DEFAULT_CODER_SESSION_REUSE_CONTEXT_PERCENT,
     auditorContextPercent: DEFAULT_AUDITOR_SESSION_REUSE_CONTEXT_PERCENT,
   }
   if (raw === undefined || raw === null) return { ...defaults, warnings }
-  if (!isRecord(raw)) {
+  if (!sessionReuseInputSchema.safeParse(raw).success) {
     warnings.push('loop.sessionReuse is ignored: expected an object with "coderContextPercent" and "auditorContextPercent"')
     return { ...defaults, warnings }
   }
@@ -245,11 +222,6 @@ export function parseSessionReuseConfig(raw: unknown): ParsedSessionReuseConfig 
   }
 }
 
-/**
- * Resolves the context-window percentage a loop session of `role` may reach
- * before it is compacted ahead of reuse across a same-section phase switch. 0
- * means reuse is disabled for that role.
- */
 export function resolveSessionReuseContextPercent(
   config: PluginConfig | undefined,
   role: LoopSessionReuseRole,
@@ -258,33 +230,18 @@ export function resolveSessionReuseContextPercent(
   return role === 'auditor' ? parsed.auditorContextPercent : parsed.coderContextPercent
 }
 
-/** Collects warnings produced while parsing `loop.sessionReuse`. */
 export function collectSessionReuseConfigWarnings(config: PluginConfig | undefined): string[] {
   return parseSessionReuseConfig(config?.loop?.sessionReuse).warnings
 }
 
-/**
- * Whether the code-graph integration is on: snapshots in sandboxed loops and the loop deny of the
- * `codegraph_*` MCP tools. Unset means on; only `codeGraph.enabled: false` turns it off.
- */
 export function isCodeGraphEnabled(config: PluginConfig | undefined): boolean {
   return config?.codeGraph?.enabled !== false
 }
 
-/**
- * Permission pattern matching every tool of the `codegraph` MCP server. OpenCode names MCP tools
- * `<server>_<tool>`, and a loop worktree's index lives on the sandbox cache disk the host-side MCP
- * server cannot read, so loop sessions use the in-sandbox `codegraph` CLI instead.
- */
 export const CODE_GRAPH_MCP_PERMISSION = 'codegraph_*'
 
 export interface LoopPermissionRulesetOptions {
-  /**
-   * User-configured rules (`loop.permissions`) inserted after the blanket allow and before
-   * Forge's structural denies, so they can never override a structural deny.
-   */
   extraRules?: PermissionRule[]
-  /** Deny the `codegraph_*` MCP tools alongside Forge's structural denies. */
   denyCodeGraphMcp?: boolean
 }
 
@@ -292,37 +249,22 @@ function codeGraphMcpDenyRules(options: LoopPermissionRulesetOptions): Permissio
   return options.denyCodeGraphMcp ? denyRulesFor([CODE_GRAPH_MCP_PERMISSION]) : []
 }
 
-/**
- * Builds the permission ruleset shared by loop sessions and post-action sessions. Both allow
- * everything, layer configured rules before Forge's structural denies, and deny the phase tool
- * the executing role must not call.
- */
 function buildWorktreePermissionRuleset(
   options: LoopPermissionRulesetOptions,
   deniedPhaseTool: LoopPhaseToolName,
 ): PermissionRule[] {
   const rules: PermissionRule[] = []
 
-  // Blanket allow-all for worktree loops (isolated environment).
   rules.push({ permission: '*', pattern: '*', action: 'allow' })
 
-  // User-configured rules layered before Forge's structural denies so they can never
-  // override a structural deny.
   rules.push(...(options.extraRules ?? []))
 
-  // Code agent forbidden tools. Placed after *:allow so findLast picks them up.
   rules.push(...denyRulesFor([...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...SHARED_STRUCTURAL_DENY_PERMISSIONS, deniedPhaseTool]))
   rules.push(...codeGraphMcpDenyRules(options))
 
   return rules
 }
 
-/**
- * Builds the permission ruleset for a session that runs `phase`. The phase tool a session must
- * not call is the only difference: a post-action session completes with `loop-complete` and may
- * not hand off, every other loop phase hands off and may not complete. This is the single owner
- * of that mapping; the named builders below delegate to it.
- */
 export function buildPermissionRulesetForPhase(
   phase: LoopHandoffPhase,
   options: LoopPermissionRulesetOptions = {},
@@ -333,42 +275,18 @@ export function buildPermissionRulesetForPhase(
   )
 }
 
-/**
- * Builds the permission ruleset for loop sessions.
- *
- * All loops use worktree isolation with a blanket allow-all, plus explicit deny rules for review
- * tools, plan tools, and loop-management tools. External directories are covered by the blanket
- * allow so an unattended loop never waits on an approval: in a sandboxed loop the sandbox mounts
- * are the boundary (the sandbox tool hook refuses host file tools outside them), and a loop with
- * the sandbox disabled has host access.
- */
 export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
   return buildPermissionRulesetForPhase('coding', options)
 }
 
-/**
- * Builds the permission ruleset for a post-action session: the loop ruleset, except the session
- * completes the phase with `loop-complete` and therefore may not call `loop-handoff`.
- */
 export function buildPostActionPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
   return buildPermissionRulesetForPhase('post_action', options)
 }
 
-/**
- * Builds the permission ruleset for audit sessions.
- *
- * Audit sessions run the auditor agent in an isolated session. The ruleset
- * allows read-only operations (read, grep, glob, codesearch, webfetch,
- * websearch, list, task) and review tools (review-write, review-delete), but
- * denies direct code mutation tools. External directories follow the same policy as loop sessions.
- */
 export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
   const rules: PermissionRule[] = [
     { permission: '*', pattern: '*', action: 'allow' },
-    // User-configured rules layered before Forge's structural denies.
     ...(options.extraRules ?? []),
-    // Audit sessions must not mutate code, must never launch loops or manage other loops.
-    // Placed after *:allow so findLast picks them up.
     ...denyRulesFor(AUDIT_SESSION_DENIED_TOOL_NAMES),
     ...codeGraphMcpDenyRules(options),
   ]

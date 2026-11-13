@@ -1,4 +1,3 @@
-/** @jsxImportSource @opentui/solid */
 import type { Plugin } from '@opencode/plugin/tui'
 import type { ColorInput, ScrollBoxRenderable } from '@opentui/core'
 import { SyntaxStyle } from '@opentui/core'
@@ -17,6 +16,8 @@ import type {
   ForgeSectionPlan,
 } from '../../host/forge-rpc'
 import { phaseLabel } from '../../utils/phase-label'
+import type { JsonObject } from '../../utils/json-schema'
+import { z } from 'zod'
 import { renderLoopMachineDiagram } from './machine-diagram'
 import type { DashboardSection, DashboardStore } from './store'
 import {
@@ -57,13 +58,13 @@ import {
 
 const SECTION_ORDER: readonly DashboardSection[] = ['loops', 'findings', 'plans']
 
-const SECTION_LABELS: Record<DashboardSection, string> = {
+const SECTION_LABELS = {
   loops: 'Loops',
   findings: 'Findings',
   plans: 'Plans',
-}
+} satisfies Record<DashboardSection, string>
 
-const TAB_LABELS: Record<LoopTab, string> = {
+const TAB_LABELS = {
   overview: 'Overview',
   timeline: 'Timeline',
   sections: 'Sections',
@@ -100,7 +101,6 @@ function dashboardColors(context: Plugin.Context): DashboardColors {
 
 const markdownStyles = new WeakMap<Plugin.Context['renderer'], SyntaxStyle>()
 
-/** One shared syntax style per renderer for every markdown body the dashboard renders. */
 function markdownStyle(context: Plugin.Context): SyntaxStyle {
   const cached = markdownStyles.get(context.renderer)
   if (cached) return cached
@@ -109,11 +109,6 @@ function markdownStyle(context: Plugin.Context): SyntaxStyle {
   return created
 }
 
-/**
- * Registers a page's keymap layer for as long as the component that created it
- * lives. The layer factory is owned by an effect so it is torn down with the
- * page on every route change.
- */
 function registerPageKeymap(
   props: { context: Plugin.Context },
   factory: Parameters<Plugin.Context['keymap']['layer']>[0],
@@ -244,11 +239,6 @@ function rowId(index: number): string {
   return `forge-dashboard-row-${index}`
 }
 
-/**
- * The dashboard list. Every value comes from the store; the page only decides
- * which section is visible. The cursor indexes this one row model, so keyboard
- * movement and rendering can never disagree about the selected item.
- */
 export function DashboardPage(props: { context: Plugin.Context; store: DashboardStore }) {
   const colors = () => dashboardColors(props.context)
   let scrollRef: ScrollBoxRenderable | undefined
@@ -258,8 +248,7 @@ export function DashboardPage(props: { context: Plugin.Context; store: Dashboard
 
   const rowCache = new Map<DashboardRow['kind'], WeakMap<object, DashboardRow>>()
 
-  /** One wrapper per source row, so an unchanged row keeps its rendered node across recomputes. */
-  function cachedRow(kind: DashboardRow['kind'], source: object, create: () => DashboardRow): DashboardRow {
+  function cachedRow<S extends object>(kind: DashboardRow['kind'], source: S, create: () => DashboardRow): DashboardRow {
     let cache = rowCache.get(kind)
     if (!cache) {
       cache = new WeakMap()
@@ -842,24 +831,22 @@ function PlanDetail(props: {
   )
 }
 
-function readLoopRouteData(data: Record<string, unknown> | undefined): { projectId: string; loopName: string } | null {
+const loopRouteDataSchema = z.looseObject({
+  projectId: z.string(),
+  loopName: z.string(),
+})
+
+function readLoopRouteData(data: JsonObject | undefined): { projectId: string; loopName: string } | null {
   if (!data) return null
-  const projectId = data.projectId
-  const loopName = data.loopName
-  if (typeof projectId !== 'string' || typeof loopName !== 'string') return null
-  return { projectId, loopName }
+  const route = loopRouteDataSchema.safeParse(data)
+  if (!route.success) return null
+  return { projectId: route.data.projectId, loopName: route.data.loopName }
 }
 
-/**
- * One loop's full detail. The loop route carries its identity, which is
- * mirrored into the store on mount so the page still renders when opened
- * directly. All scrolling and selection state lives in the store or this page;
- * the page never writes anything but its own scroll position.
- */
 export function DashboardLoopPage(props: {
   context: Plugin.Context
   store: DashboardStore
-  data?: Record<string, unknown>
+  data?: JsonObject
 }) {
   const colors = () => dashboardColors(props.context)
   let scrollRef: ScrollBoxRenderable | undefined

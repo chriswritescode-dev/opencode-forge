@@ -1,13 +1,5 @@
-/**
- * Generic bounded LRU cache keyed by string.
- * Relies on Map's insertion-order iteration: a get() re-inserts the key to mark it
- * as most-recently-used; on overflow the oldest key is evicted.
- *
- * Intentionally minimal: no TTL, no weak refs. Use for small hot-path caches
- * where unbounded growth is the concern.
- */
 export class LRUCache<V> {
-  private entries = new Map<string, V>()
+  private entries = new Map<string, { readonly value: V }>()
   private readonly maxSize: number
 
   constructor(maxSize = 500) {
@@ -16,12 +8,11 @@ export class LRUCache<V> {
   }
 
   get(key: string): V | undefined {
-    const value = this.entries.get(key)
-    if (value === undefined && !this.entries.has(key)) return undefined
-    // Re-insert to mark as most recently used
+    const entry = this.entries.get(key)
+    if (entry === undefined) return undefined
     this.entries.delete(key)
-    this.entries.set(key, value as V)
-    return value
+    this.entries.set(key, entry)
+    return entry.value
   }
 
   has(key: string): boolean {
@@ -37,7 +28,7 @@ export class LRUCache<V> {
         this.entries.delete(oldest.value)
       }
     }
-    this.entries.set(key, value)
+    this.entries.set(key, { value })
   }
 
   delete(key: string): boolean {
@@ -49,7 +40,7 @@ export class LRUCache<V> {
   }
 
   snapshot(): Array<[string, V]> {
-    return Array.from(this.entries)
+    return Array.from(this.entries, ([key, entry]) => [key, entry.value])
   }
 
   get size(): number {

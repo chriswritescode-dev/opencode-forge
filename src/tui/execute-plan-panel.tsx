@@ -1,6 +1,6 @@
-/** @jsxImportSource @opentui/solid */
 import type { SelectRenderable } from '@opentui/core'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
+import { z } from 'zod'
 import { claimFocusOnMount } from './focus'
 import type { ForgeTuiHost } from './host'
 import { PLAN_EXECUTION_LABELS, extractPlanExecutionMetadata, type PlanExecutionLabel } from '../utils/plan-execution'
@@ -8,13 +8,12 @@ import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type LoopInfo, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import type { ForgeExecutionMode, ForgeLoopDefaults, ForgeLoopRestartInput } from '../host/forge-rpc'
-import type { ForgeProjectClient } from './project-client'
+import type { ExecutePlanRequest, ForgeProjectClient } from './project-client'
 import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import { withBusyGuard } from '../utils/busy-guard'
 import type { PluginConfig } from '../types'
 import { editLoopSettings, formatLoopSettingsSummary, toLoopLaunchRequest, type LoopLaunchSettings } from './loop-settings-dialog'
 
-/** Dialog state carried across every picker round-trip, which closes and reopens the dialog. */
 export interface ExecutionSelection {
   executionModel: string
   auditorModel: string
@@ -27,19 +26,22 @@ export interface ExecutionSelection {
 
 type ModelRole = 'execution' | 'auditor'
 
-const MODE_API: Record<PlanExecutionLabel, ForgeExecutionMode> = {
+interface DashboardActionMap {
+  [action: string]: () => void
+}
+
+const MODE_API = {
   'New session': 'new-session',
   'Execute here': 'execute-here',
   Loop: 'loop',
-}
+} satisfies Record<PlanExecutionLabel, ForgeExecutionMode>
 
-const MODE_DESCRIPTIONS: Record<PlanExecutionLabel, string> = {
+const MODE_DESCRIPTIONS = {
   'New session': 'Create a new session and send the plan to the code agent',
   'Execute here': 'Execute the plan in the current session using the code agent',
   Loop: 'Run an iterative coding/auditing loop in an isolated git worktree, using the loop settings above',
-}
+} satisfies Record<PlanExecutionLabel, string>
 
-/** Success toast for a plan launch. */
 export function formatExecutePlanToast(result: { loopName?: string }): string {
   return result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started'
 }
@@ -54,7 +56,6 @@ export interface ExecutePlanPanelProps {
   initial?: Partial<Omit<ExecutionSelection, 'planContent'>>
   onExecuted?: () => void | Promise<void>
   onSelectionChanged: (selection: ExecutionSelection) => void
-  /** Execute mode only: switches to the restart dialog. */
   onOpenRestart?: () => void | Promise<void>
   restart?: {
     loops: LoopInfo[]
@@ -242,7 +243,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     const auditModel = auditorModel()
     props.host.clearDialog()
     props.host.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
-    const result = await props.client.plan.execute(props.sessionId, {
+    const request: ExecutePlanRequest = {
       mode,
       title: extractPlanExecutionMetadata(planContent).title,
       loopName,
@@ -252,8 +253,9 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       executionVariant: executionVariant(),
       auditorVariant: auditorVariant(),
       targetSessionId: props.sessionId,
-      ...(mode === 'loop' ? toLoopLaunchRequest(loopSettings, loopDefaults()) : {}),
-    })
+    }
+    if (mode === 'loop') Object.assign(request, toLoopLaunchRequest(loopSettings, loopDefaults()))
+    const result = await props.client.plan.execute(props.sessionId, request)
     if (!result) {
       props.host.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
       return
@@ -290,21 +292,21 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     }
   }
 
-  // eslint-disable-next-line solid/reactivity
-  const handleExecuteMode = withBusyGuard(runExecuteMode, {
-    isBusy: busy,
-    setBusy,
-    onBusy: () => props.host.toast({ message: 'Plan execution already starting...', variant: 'info', duration: 2000 }),
-  })
+  const handleExecuteMode = (label: PlanExecutionLabel) =>
+    withBusyGuard(runExecuteMode, {
+      isBusy: busy,
+      setBusy,
+      onBusy: () => props.host.toast({ message: 'Plan execution already starting...', variant: 'info', duration: 2000 }),
+    })(label)
 
-  // eslint-disable-next-line solid/reactivity
-  const handleRestart = withBusyGuard(runRestart, {
-    isBusy: busy,
-    setBusy,
-    onBusy: () => props.host.toast({ message: 'Loop restart already in progress...', variant: 'info', duration: 2000 }),
-  })
+  const handleRestart = () =>
+    withBusyGuard(runRestart, {
+      isBusy: busy,
+      setBusy,
+      onBusy: () => props.host.toast({ message: 'Loop restart already in progress...', variant: 'info', duration: 2000 }),
+    })()
 
-  const actions: Record<string, () => void> = {
+  const actions: DashboardActionMap = {
     'plan': () => { void openPastePlanDialog() },
     'model:execution': () => { void openModelDialog('execution') },
     'variant:execution': () => { void openVariantDialog('execution') },
@@ -314,7 +316,9 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     'loop-settings': () => { void openLoopSettingsDialog() },
     'action:restart': () => { handleRestart() },
     'action:open-restart': () => { void props.onOpenRestart?.() },
-    ...Object.fromEntries(PLAN_EXECUTION_LABELS.map(label => [`mode:${label}`, () => { handleExecuteMode(label) }])),
+    'mode:New session': () => { handleExecuteMode('New session') },
+    'mode:Execute here': () => { handleExecuteMode('Execute here') },
+    'mode:Loop': () => { handleExecuteMode('Loop') },
   }
 
   const modelRows = () => (['execution', 'auditor'] as const).flatMap(role => {
@@ -361,7 +365,8 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
         selectedIndex={0}
         options={isRestart() ? restartRows() : executeRows()}
         onSelect={(_, option) => {
-          if (typeof option?.value === 'string') actions[option.value]?.()
+          const actionKey = z.string().safeParse(option?.value)
+          if (actionKey.success) actions[actionKey.data]?.()
         }}
         showDescription={true}
         itemSpacing={1}
@@ -400,7 +405,6 @@ function ExecutionDialog(props: { options: ExecutionDialogOptions; onSelectionCh
   )
 }
 
-/** Opens the execution dialog; every picker round-trip reopens it with the carried selection. */
 export function openExecutionDialog(options: ExecutionDialogOptions): void {
   const reopen = (selection: ExecutionSelection) => {
     if (!options.restart) {

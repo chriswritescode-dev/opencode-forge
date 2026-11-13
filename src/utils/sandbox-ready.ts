@@ -1,20 +1,18 @@
-/**
- * Sandbox readiness helper for TUI loop launches.
- * 
- * This module provides a function to wait for a sandbox container to be ready
- * by polling the loops.sandbox_container field.
- */
-
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
+import { z } from 'zod'
 import { MSB_DEFAULT_TIMEOUT } from '../sandbox/msb'
+
+const sandboxLoopRowSchema = z.object({
+  sandbox: z.number(),
+  sandbox_container: z.string().nullable(),
+})
 
 export interface WaitForSandboxOptions {
   projectId: string
   loopName: string
   dbPath: string
-  pollMs?: number       // default 200
-  /** Defaults to the msb provisioning bound, so the wait never expires while `msb create` is still allowed to run. */
+  pollMs?: number
   timeoutMs?: number
 }
 
@@ -22,22 +20,12 @@ export type WaitForSandboxResult =
   | { ready: true; containerName: string }
   | { ready: false; reason: 'timeout' | 'state_missing' | 'not_sandbox_enabled' | 'db_missing' | 'error'; error?: string }
 
-/**
- * Waits for a sandbox container to be ready by polling the loops table.
- * 
- * This function polls the loops table for a loop's sandbox_container field,
- * which is written by the plugin server's sandbox reconciliation process.
- * 
- * @param opts - Wait options including project ID, loop name, and timing
- * @returns Promise resolving to a WaitForSandboxResult
- */
 export async function waitForSandboxReady(opts: WaitForSandboxOptions): Promise<WaitForSandboxResult> {
   const { projectId, loopName, dbPath } = opts
   const pollMs = opts.pollMs ?? 200
   const timeoutMs = opts.timeoutMs ?? MSB_DEFAULT_TIMEOUT
   const startTime = Date.now()
 
-  // Check if database exists
   if (!existsSync(dbPath)) {
     return { ready: false, reason: 'db_missing' }
   }
@@ -48,13 +36,11 @@ export async function waitForSandboxReady(opts: WaitForSandboxOptions): Promise<
     db.run('PRAGMA busy_timeout=5000')
 
     while (true) {
-      // Query for loop sandbox_container from loops table
-      const row = db.prepare(
+      const raw = db.prepare(
         'SELECT sandbox, sandbox_container FROM loops WHERE project_id = ? AND loop_name = ?'
-      ).get(projectId, loopName) as { sandbox: number; sandbox_container: string | null } | null
+      ).get(projectId, loopName)
 
-      if (!row) {
-        // State is missing - check if we should timeout
+      if (!raw) {
         if (Date.now() - startTime > timeoutMs) {
           return { ready: false, reason: 'timeout' }
         }
@@ -62,17 +48,16 @@ export async function waitForSandboxReady(opts: WaitForSandboxOptions): Promise<
         continue
       }
 
-      // Check if sandbox is enabled
+      const row = sandboxLoopRowSchema.parse(raw)
+
       if (row.sandbox !== 1) {
         return { ready: false, reason: 'not_sandbox_enabled' }
       }
 
-      // Check if container name is set
       if (row.sandbox_container && row.sandbox_container.length > 0) {
         return { ready: true, containerName: row.sandbox_container }
       }
 
-      // No container name yet - check timeout and continue polling
       if (Date.now() - startTime > timeoutMs) {
         return { ready: false, reason: 'timeout' }
       }

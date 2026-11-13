@@ -17,7 +17,7 @@ export function buildMinionAgent(
   promptsDir?: string,
   model?: { model?: string; variant?: string },
 ): AgentDefinition {
-  return {
+  const agent: AgentDefinition = {
     role: 'minion',
     id: 'opencode-minion',
     displayName: 'minion',
@@ -25,15 +25,14 @@ export function buildMinionAgent(
       'Proactively use for fast implementation of exactly one explicitly scoped edit, bug fix, refactor, cleanup, validation fix, or coding change when detailed instructions are available. Minions can be launched in batches of up to four.',
     mode: 'subagent',
     color: '#22c55e',
-    ...(model?.model
-      ? {
-          defaultModel: model.model,
-          ...(model.variant ? { variant: model.variant } : {}),
-        }
-      : {}),
     tools: {
       exclude: MINION_TOOL_EXCLUDES,
     },
     systemPrompt: loadPrompt(['agents', 'minion.md'], promptsDir),
   }
+  if (model?.model) {
+    agent.defaultModel = model.model
+    if (model.variant) agent.variant = model.variant
+  }
+  return agent
 }

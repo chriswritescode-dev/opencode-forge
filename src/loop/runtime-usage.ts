@@ -2,7 +2,7 @@ import type { ForgeClient } from '../client/port'
 import type { Logger, PluginConfig } from '../types'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { LoopState } from './state'
-import { summarizeAssistantUsage, type UsageAttribution, type AssistantMessageInfo } from './token-usage'
+import { summarizeAssistantUsage, type UsageAttribution } from './token-usage'
 import { resolveUsageFallbackModelLabel } from '../utils/loop-helpers'
 
 export interface UsageCaptureDeps {
@@ -27,18 +27,10 @@ export interface UsageCapture {
 export function createUsageCapture(deps: UsageCaptureDeps): UsageCapture {
   const { client, logger, getConfig, projectId, loopSessionUsageRepo } = deps
 
-  /**
-   * Determine the fallback model for a session based on phase and loop state.
-   * Delegates to the shared chain-aware label resolution.
-   */
   function getFallbackModelForSession(state: LoopState, phase: LoopState['phase']): string | undefined {
     return resolveUsageFallbackModelLabel(getConfig(), state, phase)
   }
 
-  /**
-   * Capture and persist token usage for a loop session.
-   * Non-fatal: logs errors but does not block deletion or termination.
-   */
   async function captureLoopSessionUsage(input: {
     loopName: string
     sessionId: string
@@ -54,7 +46,7 @@ export function createUsageCapture(deps: UsageCaptureDeps): UsageCapture {
       const messages = await client.session.messages({
         sessionID: input.sessionId,
         directory: input.directory,
-      }) as Array<{ info: AssistantMessageInfo }>
+      })
 
       const attribution: UsageAttribution = {
         role: input.role,

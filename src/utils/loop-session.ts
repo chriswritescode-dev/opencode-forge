@@ -43,12 +43,7 @@ export async function createLoopSessionWithWorkspace(
   input: CreateLoopSessionInput,
 ): Promise<CreateLoopSessionResult | null> {
   const { client } = input
-  const createParams: {
-    title: string
-    directory: string
-    permission?: ReturnType<typeof buildLoopPermissionRuleset>
-    workspaceID?: string
-  } = {
+  const createParams: Parameters<typeof client.session.create>[0] = {
     title: input.title,
     directory: input.directory,
   }

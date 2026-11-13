@@ -14,7 +14,6 @@ interface RunAuditSessionInput {
   workspaceId?: string
   auditorModel?: { providerID: string; modelID: string }
   prompt: string
-  /** Ruleset options (allowed directories plus configured rules) for the audit session. */
   permissionOptions?: LoopPermissionRulesetOptions
   logger: Logger | Console
 }
@@ -67,15 +66,16 @@ export async function promptAuditSession(
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   const parts = [{ type: 'text' as const, text: input.prompt }]
   try {
-    await client.session.promptAsync({
+    const params: Parameters<typeof client.session.promptAsync>[0] = {
       sessionID: input.sessionId,
       directory: input.worktreeDir,
-      ...(input.workspaceId ? { workspace: input.workspaceId } : {}),
       agent: 'auditor-loop',
       parts,
-      ...(input.auditorModel ? { model: input.auditorModel } : {}),
-      ...(input.auditorVariant ? { variant: input.auditorVariant } : {}),
-    })
+    }
+    if (input.workspaceId) params.workspace = input.workspaceId
+    if (input.auditorModel) params.model = input.auditorModel
+    if (input.auditorVariant) params.variant = input.auditorVariant
+    await client.session.promptAsync(params)
     return { ok: true }
   } catch (error) {
     return { ok: false, error }

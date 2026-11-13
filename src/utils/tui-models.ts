@@ -1,20 +1,47 @@
-/**
- * TUI model selection helpers for fetching and managing available models.
- *
- * Recents/preferences derivation is driven entirely by data fetched from
- * the OpenCode server (sessions, loops, and the default model). There is intentionally no TUI-local SQLite store: that
- * approach diverged silently when the TUI ran on a different host than
- * the server. See `deriveRecentModels` / `deriveRecentModelsFromWorkspaces`.
- */
-
 import type { ProviderList } from '../client/port'
+import { z } from 'zod'
+
+export interface ModelVariantConfig {
+  name?: string
+  description?: string
+  disabled?: boolean
+  reasoningEffort?: string | number | boolean
+  reasoning_effort?: string | number | boolean
+  thinking?: string | number | boolean
+  thinkingBudget?: string | number | boolean
+  thinking_budget?: string | number | boolean
+}
+
+const variantTextSchema = z.union([z.string(), z.number(), z.boolean()])
+
+const modelVariantConfigSchema = z.looseObject({
+  name: z.string().optional().catch(undefined),
+  description: z.string().optional().catch(undefined),
+  disabled: z.boolean().optional().catch(undefined),
+  reasoningEffort: variantTextSchema.optional().catch(undefined),
+  reasoning_effort: variantTextSchema.optional().catch(undefined),
+  thinking: variantTextSchema.optional().catch(undefined),
+  thinkingBudget: variantTextSchema.optional().catch(undefined),
+  thinking_budget: variantTextSchema.optional().catch(undefined),
+})
+
+const forgeLoopExtraSchema = z.looseObject({
+  executionModel: z.string().optional().catch(undefined),
+  auditorModel: z.string().optional().catch(undefined),
+  executionVariant: z.string().optional().catch(undefined),
+  auditorVariant: z.string().optional().catch(undefined),
+})
+
+const workspaceExtraSchema = z.looseObject({
+  forgeLoop: forgeLoopExtraSchema.optional(),
+})
 
 export interface ModelInfo {
   id: string
   name: string
   providerID: string
   providerName: string
-  fullName: string // e.g., "anthropic/claude-sonnet-4-20250514"
+  fullName: string
   releaseDate?: string
   capabilities?: {
     temperature?: boolean
@@ -26,13 +53,18 @@ export interface ModelInfo {
     input?: number
     output?: number
   }
-  variants?: Record<string, { disabled?: boolean; [key: string]: unknown }>
+  variants?: Record<string, ModelVariantConfig>
 }
 
 export interface ProviderInfo {
   id: string
   name: string
   models: ModelInfo[]
+}
+
+export interface ProviderSnapshot {
+  providers: ProviderInfo[]
+  connectedProviderIds: string[]
 }
 
 export interface ModelSortOptions {
@@ -59,14 +91,18 @@ export type LoopInfo = {
   branch?: string
 }
 
-/**
- * Maps a raw `provider.list` payload to connected providers and their models
- * for the TUI model picker.
- */
-export function providersFromProviderList(data: ProviderList): {
-  providers: ProviderInfo[]
-  connectedProviderIds: string[]
-} {
+function parseModelVariants(raw: ModelInfo['variants']): ModelInfo['variants'] {
+  if (!raw) return undefined
+  const variants: Record<string, ModelVariantConfig> = {}
+  for (const [key, config] of Object.entries(raw)) {
+    const parsed = modelVariantConfigSchema.safeParse(config)
+    if (!parsed.success) continue
+    variants[key] = parsed.data
+  }
+  return variants
+}
+
+export function providersFromProviderList(data: ProviderList): ProviderSnapshot {
   const providers: ProviderInfo[] = []
   const allModels = data.all || []
   const connected = data.connected || []
@@ -75,22 +111,21 @@ export function providersFromProviderList(data: ProviderList): {
     const models: ModelInfo[] = []
     if (provider.models) {
       for (const modelData of Object.values(provider.models)) {
-        const md = modelData as Record<string, unknown>
         models.push({
-          id: md.id as string,
-          name: md.name as string,
+          id: modelData.id,
+          name: modelData.name,
           providerID: provider.id,
           providerName: provider.name,
-          fullName: `${provider.id}/${md.id as string}`,
-          releaseDate: (md as { release_date?: string }).release_date,
+          fullName: `${provider.id}/${modelData.id}`,
+          releaseDate: modelData.release_date,
           capabilities: {
-            temperature: (md.capabilities as Record<string, unknown> | undefined)?.temperature as boolean | undefined,
-            toolcall: (md.capabilities as Record<string, unknown> | undefined)?.toolcall as boolean | undefined,
-            reasoning: (md.capabilities as Record<string, unknown> | undefined)?.reasoning as boolean | undefined,
-            attachment: (md.capabilities as Record<string, unknown> | undefined)?.attachment as boolean | undefined,
+            temperature: modelData.capabilities?.temperature,
+            toolcall: modelData.capabilities?.toolcall,
+            reasoning: modelData.capabilities?.reasoning,
+            attachment: modelData.capabilities?.attachment,
           },
-          cost: md.cost as { input?: number; output?: number } | undefined,
-          variants: md.variants as ModelInfo['variants'],
+          cost: modelData.cost,
+          variants: parseModelVariants(modelData.variants),
         })
       }
     }
@@ -103,23 +138,14 @@ export function providersFromProviderList(data: ProviderList): {
   return { providers, connectedProviderIds: connected }
 }
 
-/**
- * Flattens providers into a single sorted list of models.
- * Uses sortModelsByPriority for ordering.
- */
 export function flattenProviders(providers: ProviderInfo[]): ModelInfo[] {
   const allModels: ModelInfo[] = []
   for (const provider of providers) {
     allModels.push(...provider.models)
   }
-  // Sort alphabetically by name (recents not used here)
   return sortModelsByPriority(allModels, {})
 }
 
-/**
- * Builds DialogSelect-compatible options with a Recent section
- * at the top, followed by all models grouped by provider.
- */
 export function buildDialogSelectOptions(
   models: ModelInfo[],
   recents: string[] = [],
@@ -133,7 +159,6 @@ export function buildDialogSelectOptions(
   const modelMap = new Map(models.map(m => [m.fullName, m]))
   const usedInSections = new Set<string>()
 
-  // Build recent options next
   const recentOptions = recents
     .filter(fn => !usedInSections.has(fn))
     .map(fn => modelMap.get(fn))
@@ -148,7 +173,6 @@ export function buildDialogSelectOptions(
       }
     })
 
-  // Build provider options last (excluding usedInSections)
   const providerOptions = models
     .filter(m => !usedInSections.has(m.fullName))
     .map(m => ({
@@ -161,11 +185,6 @@ export function buildDialogSelectOptions(
   return [defaultOption, ...recentOptions, ...providerOptions]
 }
 
-/**
- * Returns a display label for a model value.
- * Shows the model name if found, "default" if empty (no fallback), or the raw value as fallback.
- * If `value` is empty and `fallbackFullName` is provided, attempts to resolve the fallback's display name.
- */
 export function getModelDisplayLabel(
   value: string,
   models: ModelInfo[],
@@ -184,12 +203,6 @@ export function getModelDisplayLabel(
 
 const RECENT_MODELS_MAX = 10
 
-/**
- * Loose shape used by {@link deriveRecentModelsFromWorkspaces}: a Forge loop
- * in workspace form, carrying the `extra.forgeLoop.{executionModel,auditorModel}`
- * envelope. Kept structural so loops from the local store and hand-crafted test
- * fixtures both fit.
- */
 export interface WorkspaceForRecents {
   type: string
   projectID?: string
@@ -197,27 +210,6 @@ export interface WorkspaceForRecents {
   extra?: unknown | null
 }
 
-/**
- * Pulls recent model fullnames (`provider/model`) out of the most recent Forge
- * workspaces for `projectId`. Replaces the SQLite-backed `getRecentModels`
- * read path for remote-server topologies: every loop creates a workspace whose
- * `extra.forgeLoop` already carries the user's chosen models, so the server's
- * `workspace.list` response is the canonical source.
- *
- * Behaviour:
- * - Only `type === 'forge'` workspaces are considered.
- * - If a workspace has `projectID` set, it must match `projectId` (other
- *   projects' selections never leak in). Workspaces without `projectID` are
- *   not filtered out (forward-compat with older entries).
- * - Workspaces are sorted by `timeUsed` descending; non-finite values
- *   (`"NaN"`, `"Infinity"`, missing) sort to the bottom (treated as 0).
- * - Both `extra.forgeLoop.executionModel` and `extra.forgeLoop.auditorModel`
- *   are collected, preserving the existing dual-record behaviour from
- *   `recordRecentModel` (see `execute-plan-panel.tsx:324-325`).
- * - Within a single workspace, executionModel is recorded before auditorModel.
- * - Duplicates are dropped (first occurrence wins).
- * - Result is capped at `options.max ?? RECENT_MODELS_MAX` entries.
- */
 export function deriveRecentModelsFromWorkspaces(
   projectId: string,
   workspaces: ReadonlyArray<WorkspaceForRecents>,
@@ -226,53 +218,40 @@ export function deriveRecentModelsFromWorkspaces(
   const max = options.max ?? RECENT_MODELS_MAX
   if (max <= 0) return []
 
-  const toFiniteNumber = (value: unknown): number => {
-    const n = typeof value === 'number' ? value : Number(value)
+  const toFiniteNumber = (value: number | string | undefined): number => {
+    const n = Number(value)
     return Number.isFinite(n) ? n : 0
   }
 
-  const eligible = workspaces.filter((w) => {
-    if (w.type !== 'forge') return false
-    if (w.projectID !== undefined && w.projectID !== projectId) return false
-    return true
+  const eligible = workspaces.flatMap((workspace) => {
+    if (workspace.type !== 'forge') return []
+    if (workspace.projectID !== undefined && workspace.projectID !== projectId) return []
+    const extra = workspaceExtraSchema.safeParse(workspace.extra)
+    if (!extra.success || extra.data.forgeLoop === undefined) return []
+    return [{ workspace, forgeLoop: extra.data.forgeLoop }]
   })
 
-  const sorted = [...eligible].sort((a, b) => toFiniteNumber(b.timeUsed) - toFiniteNumber(a.timeUsed))
+  const sorted = [...eligible].sort((a, b) => toFiniteNumber(b.workspace.timeUsed) - toFiniteNumber(a.workspace.timeUsed))
 
   const recents: string[] = []
   const seen = new Set<string>()
 
-  const pushModel = (raw: unknown): boolean => {
-    if (typeof raw !== 'string' || raw.length === 0) return false
+  const pushModel = (raw: string | undefined): boolean => {
+    if (raw === undefined || raw.length === 0) return false
     if (seen.has(raw)) return false
     seen.add(raw)
     recents.push(raw)
     return recents.length >= max
   }
 
-  for (const ws of sorted) {
-    const extra = ws.extra
-    if (typeof extra !== 'object' || extra === null) continue
-    const forgeLoop = (extra as { forgeLoop?: unknown }).forgeLoop
-    if (typeof forgeLoop !== 'object' || forgeLoop === null) continue
-
-    const exec = (forgeLoop as { executionModel?: unknown }).executionModel
-    if (pushModel(exec)) return recents
-
-    const audit = (forgeLoop as { auditorModel?: unknown }).auditorModel
-    if (pushModel(audit)) return recents
+  for (const { forgeLoop } of sorted) {
+    if (pushModel(forgeLoop.executionModel)) return recents
+    if (pushModel(forgeLoop.auditorModel)) return recents
   }
 
   return recents
 }
 
-/**
- * Loose shape matching the subset of an OpenCode session needed by
- * {@link deriveRecentModels}. Sessions
- * carry the model the user picked the last time they prompted in that
- * session, so the server-side session list is the canonical "recent models
- * for this user" source (it covers every mode, not just Forge loops).
- */
 export interface SessionForRecents {
   projectID: string
   model?: { providerID: string; id: string; variant?: string } | null
@@ -280,48 +259,12 @@ export interface SessionForRecents {
 }
 
 export interface DeriveRecentModelsInputs {
-  /**
-   * Sessions from `client.experimental.session.list(...)`. Already sorted
-   * server-side by `time.updated` desc, but this helper re-sorts defensively.
-   */
   sessions: ReadonlyArray<SessionForRecents>
-  /**
-   * Workspaces from `client.experimental.workspace.list()`. Only Forge
-   * workspaces contribute, and they carry the auditor model separately from
-   * the execution model — which is why this layer exists in addition to
-   * sessions (sessions only ever store the execution model in `Session.model`).
-   */
   workspaces: ReadonlyArray<WorkspaceForRecents>
-  /**
-   * Model fullnames the user has explicitly favorited in OpenCode, if the
-   * TUI surfaces them. May be empty.
-   */
   openCodeFavorites: ReadonlyArray<string>
-  /**
-   * The user's configured default model.
-   * Surfaced last so it's always selectable from the "Recent" group even if
-   * the user hasn't used it in any session yet.
-   */
   openCodeDefault: string | undefined
 }
 
-/**
- * Composes the "Recent" list shown at the top of the model picker from every
- * remote-safe signal we have, in priority order:
- *
- *   1. Sessions for this project, sorted by `time.updated` desc
- *      (`session.model.providerID/session.model.id`)
- *   2. Forge workspaces for this project — picks up the *auditor* model,
- *      which never lands on `Session.model`
- *   3. OpenCode favorites (if any), in the order provided
- *   4. OpenCode global default, if not already present
- *
- * Dedupes across layers; first occurrence wins. Caps at `max`
- * (default `RECENT_MODELS_MAX`). Returns `[]` for `max <= 0`.
- *
- * This is the read replacement for the SQLite-backed `getRecentModels`.
- * All four inputs come from the OpenCode server or the local Forge store.
- */
 export function deriveRecentModels(
   projectId: string,
   inputs: DeriveRecentModelsInputs,
@@ -333,51 +276,43 @@ export function deriveRecentModels(
   const recents: string[] = []
   const seen = new Set<string>()
 
-  const tryPush = (fullname: unknown): boolean => {
-    if (typeof fullname !== 'string' || fullname.length === 0) return false
+  const tryPush = (fullname: string | undefined): boolean => {
+    if (fullname === undefined || fullname.length === 0) return false
     if (seen.has(fullname)) return false
     seen.add(fullname)
     recents.push(fullname)
     return recents.length >= max
   }
 
-  const toFiniteNumber = (value: unknown): number => {
-    const n = typeof value === 'number' ? value : Number(value)
+  const toFiniteNumber = (value: number | string | undefined): number => {
+    const n = Number(value)
     return Number.isFinite(n) ? n : 0
   }
 
-  // 1. Sessions for this project, sorted by time.updated desc.
   const sessionsForProject = inputs.sessions
     .filter((s) => s.projectID === projectId && s.model)
     .sort((a, b) => toFiniteNumber(b.time?.updated) - toFiniteNumber(a.time?.updated))
 
   for (const session of sessionsForProject) {
     const model = session.model
-    if (!model || typeof model.providerID !== 'string' || typeof model.id !== 'string') continue
+    if (!model) continue
     if (model.providerID.length === 0 || model.id.length === 0) continue
     if (tryPush(`${model.providerID}/${model.id}`)) return recents
   }
 
-  // 2. Workspaces — primarily for the auditor model, which doesn't appear in sessions.
   for (const fullname of deriveRecentModelsFromWorkspaces(projectId, inputs.workspaces, { max })) {
     if (tryPush(fullname)) return recents
   }
 
-  // 3. OpenCode favorites, in the order provided.
   for (const fullname of inputs.openCodeFavorites) {
     if (tryPush(fullname)) return recents
   }
 
-  // 4. Global default, last.
   tryPush(inputs.openCodeDefault)
 
   return recents
 }
 
-/**
- * Sorts models by priority: recents first, then by provider priority.
- * Returns a sorted copy without mutating the input array.
- */
 export function sortModelsByPriority(
   models: ModelInfo[],
   options: ModelSortOptions = {}
@@ -398,19 +333,15 @@ export function sortModelsByPriority(
     const aIsRecent = recentSet.has(a.fullName)
     const bIsRecent = recentSet.has(b.fullName)
 
-    // Recents first
     if (aIsRecent && !bIsRecent) return -1
     if (!aIsRecent && bIsRecent) return 1
 
-    // Then connected providers, then configured providers
     const providerPriorityDiff = getProviderPriority(a) - getProviderPriority(b)
     if (providerPriorityDiff !== 0) return providerPriorityDiff
 
-    // Then group providers alphabetically
     const providerNameDiff = a.providerName.localeCompare(b.providerName)
     if (providerNameDiff !== 0) return providerNameDiff
     
-    // Then alphabetically by name
     return a.name.localeCompare(b.name)
   })
 }
@@ -421,31 +352,23 @@ export interface ModelVariantInfo {
   description?: string
 }
 
-/**
- * Converts a raw variant key into a human-readable label.
- * E.g., "thinking-max" → "Thinking Max", "reasoning_high" → "Reasoning High"
- */
 function variantKeyToLabel(key: string): string {
   return key
     .replace(/[-_]/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase())
 }
 
-/**
- * Generates a description from variant config when applicable.
- * Returns undefined when no relevant field is present.
- */
-function variantDescription(config: Record<string, unknown>): string | undefined {
-  if (typeof config.description === 'string') return config.description
+function variantDescription(config: ModelVariantConfig): string | undefined {
+  if (config.description !== undefined) return config.description
 
   const reasoning = config.reasoningEffort ?? config.reasoning_effort
-  if (reasoning != null) return `Reasoning: ${reasoning}`
+  if (reasoning !== undefined) return `Reasoning: ${reasoning}`
 
   const thinking = config.thinking
-  if (thinking != null) return `Thinking: ${thinking}`
+  if (thinking !== undefined) return `Thinking: ${thinking}`
 
   const budget = config.thinkingBudget ?? config.thinking_budget
-  if (budget != null) return `Thinking budget: ${budget}`
+  if (budget !== undefined) return `Thinking budget: ${budget}`
 
   return undefined
 }
@@ -454,11 +377,11 @@ export function getAvailableModelVariants(model?: ModelInfo | null): ModelVarian
   if (!model?.variants) return []
 
   return Object.entries(model.variants)
-    .filter(([, cfg]) => cfg && !cfg.disabled)
+    .filter(([, cfg]) => !cfg.disabled)
     .map(([key, cfg]) => ({
       id: key,
-      label: typeof cfg.name === 'string' ? cfg.name : variantKeyToLabel(key),
-      description: variantDescription(cfg as Record<string, unknown>),
+      label: cfg.name ?? variantKeyToLabel(key),
+      description: variantDescription(cfg),
     }))
 }
 

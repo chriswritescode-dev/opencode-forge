@@ -4,19 +4,10 @@ export function findingRecurrenceKey(f: { file: string; line: number; sectionInd
   return `${f.sectionIndex ?? 'x'}:${f.file}:${f.line}`
 }
 
-/**
- * Whether a finding's recurrence count has reached the escalation threshold
- * that forces escalated remediation (and fresh loop sessions).
- */
 export function isRecurrenceEscalated(count: number): boolean {
   return count >= RECURRENCE_ESCALATION_THRESHOLD
 }
 
-/**
- * Whether any of `findings` has recurred enough times to escalate. The single
- * threshold check shared by the prompt escalation blocks and the session-reuse
- * predicate.
- */
 export function hasEscalatedFindings(
   findings: { file: string; line: number; sectionIndex: number | null }[],
   recurrence: Map<string, number>,

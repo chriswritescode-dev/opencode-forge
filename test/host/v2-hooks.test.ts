@@ -238,6 +238,27 @@ describe('registerForgeHooksV2 tool hooks', () => {
     expect(before).toEqual([{ tool: 'grep', args: { pattern: 'needle', path: 'src', include: '*.ts' } }])
   })
 
+  test('execute.before leaves the tool input untouched and still hands valid paths to the hooks', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const input = { filePath: '/etc/passwd', pattern: 42, query: 'needle' }
+    const event = {
+      tool: 'read',
+      sessionID: 'ses_1',
+      agent: 'code',
+      messageID: 'msg_1',
+      id: 'call_1',
+      input,
+    }
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toBe(input)
+    expect(event.input).toEqual({ filePath: '/etc/passwd', pattern: 42, query: 'needle' })
+    expect(before).toEqual([{ tool: 'read', args: { filePath: '/etc/passwd', pattern: undefined, query: 'needle' } }])
+  })
+
   test('execute.after replaces the text content with the hook output', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, after } = createStubCore({

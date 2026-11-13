@@ -1,7 +1,7 @@
+import { z } from 'zod'
 import type { Logger, SandboxResources, SandboxSecretConfig } from '../types'
 import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
 import { MSB_SIZE_RE, SANDBOX_RESOURCE_DEFAULTS, type SandboxRuntimeSettings } from './loop-settings'
-import { isRecord } from '../utils/is-record'
 
 export function sanitizeMsbName(raw: string): string {
   const name = raw
@@ -18,13 +18,7 @@ export function sandboxContainerName(worktreeName: string): string {
 }
 
 export interface SandboxWorkspace {
-  /**
-   * Host path msb mounts from. Must already be canonicalized: msb cannot mount a host path that
-   * traverses a symlink and fails the whole sandbox with `ENOTDIR`, which on macOS hits every
-   * `os.tmpdir()` path because `/var` is a symlink to `private/var`.
-   */
   hostDir: string
-  /** Path the mount appears at inside the sandbox. Kept uncanonicalized so absolute host paths the agent was given still resolve. */
   containerDir: string
   readOnly?: boolean
 }
@@ -44,7 +38,6 @@ export function buildMsbExecArgs(name: string, command: string, opts?: BuildMsbE
 
 export const SANDBOX_CACHE_DIR = '/opt/forge/cache'
 
-/** msb's default `/tmp` tmpfs is 512 MiB, which test suites and builds exhaust; Forge raises it. */
 export const SANDBOX_TMPFS = '/tmp:2g'
 
 export function parseMsbCpus(raw: string | undefined, logger: Logger): number | undefined {
@@ -70,21 +63,18 @@ export function normalizeMsbSize(raw: string | undefined, logger: Logger): strin
   return raw.toLowerCase().replace(/b$/, '')
 }
 
-const MIB_PER_UNIT: Readonly<Record<string, number>> = { k: 1 / 1024, m: 1, g: 1024 }
+const MIB_PER_UNIT = new Map<string, number>([['k', 1 / 1024], ['m', 1], ['g', 1024]])
 
-/** Size in MiB of a value {@link normalizeMsbSize} accepts (msb reads `k`/`m`/`g` as binary units). */
 export function msbSizeToMib(size: string): number | undefined {
-  const match = /^(\d+(?:\.\d+)?)([kmg])b?$/i.exec(size.trim())
-  if (!match) return undefined
-  return Math.round(Number(match[1]) * MIB_PER_UNIT[match[2]!.toLowerCase()]!)
+  const match = /^(?<amount>\d+(?:\.\d+)?)(?<unit>[kmg])b?$/i.exec(size.trim())
+  const amount = match?.groups?.amount
+  const unit = match?.groups?.unit
+  if (amount === undefined || unit === undefined) return undefined
+  const factor = MIB_PER_UNIT.get(unit.toLowerCase())
+  if (factor === undefined) return undefined
+  return Math.round(Number(amount) * factor)
 }
 
-/**
- * Normalizes secrets into `{ env, hosts }` pairs. Entries with a blank or `=`-bearing env
- * name or an empty host list are misconfigurations that msb refuses anyway; skipping them
- * keeps credential values out of forge's argv. Single source for the create and modify
- * (secret-rotation) argument builders.
- */
 function normalizeSecrets(secrets: SandboxSecretConfig[] | undefined): Array<{ env: string; hosts: string[] }> {
   const out: Array<{ env: string; hosts: string[] }> = []
   for (const secret of secrets ?? []) {
@@ -96,7 +86,6 @@ function normalizeSecrets(secrets: SandboxSecretConfig[] | undefined): Array<{ e
   return out
 }
 
-/** Builds `--secret <env>@<hosts>` flag pairs, one pair per normalized secret. */
 function buildSecretFlags(secrets: SandboxSecretConfig[] | undefined): string[] {
   const flags: string[] = []
   for (const secret of normalizeSecrets(secrets)) {
@@ -107,16 +96,6 @@ function buildSecretFlags(secrets: SandboxSecretConfig[] | undefined): string[] 
 
 const EGRESS_ALLOW_ALL_TOKENS = new Set(['*', '**'])
 
-/**
- * Reports whether the configured allow-list explicitly opens sandbox egress to everything.
- * An explicit `*` or `**` must behave identically to an omitted allow-list (no net flags,
- * msb's own allow-by-default applies), because treating it as a host and flipping to
- * `--net-default deny` with zero rules silently inverts "allow everything" into a total
- * lockout. Scope is the allow list only: a secret's destination hosts declare where that
- * secret may be sent, not global egress policy, so a wildcard there remains invalid and is
- * still rejected by the host validator. Precedence: a wildcard entry anywhere in the list
- * beats narrower entries in the same list rather than intersecting with them.
- */
 export function egressAllowsAll(allow: string[] | undefined): boolean {
   return (allow ?? []).some((entry) => EGRESS_ALLOW_ALL_TOKENS.has(entry.trim()))
 }
@@ -153,15 +132,6 @@ function collectEgressHostTokens(allow: string[] | undefined, secrets: SandboxSe
   return tokens
 }
 
-/**
- * Unions the configured egress allow-list with the destination hosts of the configured secrets
- * and validates each token. Egress restriction is opt-in: an empty configuration emits no network
- * flags and msb's own allow-by-default applies, while any configured token flips the sandbox to
- * deny-by-default, so a secret whose hosts are not also allow-listed could never reach its
- * destination. An explicit allow-all wildcard (`*` or `**`) short-circuits to an empty rule set,
- * leaving egress unrestricted exactly as an omitted allow-list would. Entries are trimmed, blanks
- * dropped, and the result deduplicated.
- */
 export function buildNetworkAllow(
   allow: string[] | undefined,
   secrets: SandboxSecretConfig[] | undefined,
@@ -243,25 +213,25 @@ export function buildMsbCreateArgs(
     }
     if (opts.allowLan) args.push('--net-rule', 'allow@private')
   } else if (opts.allowLan) {
-    // msb's default egress is deny with an implicit allow@public, so LAN ranges need the
-    // `private` group added alongside `public` rather than an unrestricted policy.
     args.push('--net', 'public,private')
   }
-  // Bare `-e <NAME>` only: msb resolves the key from its own environment at start, so the value
-  // never appears in forge's argv (and never in `ps` output), unlike `-e NAME=VALUE`.
   for (const rawName of opts.env ?? []) {
     const name = rawName.trim()
     if (!name || name.includes('=')) continue
     args.push('-e', name)
   }
-  // Reference form only (`env@host[,host...]`): msb rejects the inline `ENV=VALUE@HOST` form
-  // outright, and a secret with no allowed destination is refused, so blank or `=`-bearing env
-  // names and empty host lists are skipped.
   args.push(...buildSecretFlags(opts.secrets))
   return args
 }
 
 export type SandboxState = 'running' | 'stopped' | 'transient' | 'missing' | 'unknown'
+
+export interface ImageReferenceParts {
+  repository: string
+  tag: string
+}
+
+const jsonValueSchema = z.json()
 
 export interface MsbSandboxEntry {
   name: string
@@ -280,35 +250,38 @@ export function mapMsbStatus(status: string): SandboxState {
     case 'starting':
     case 'draining':
     case 'paused':
-      // Known msb states that are not directly executable but prove the sandbox exists
-      // (`Created`/`Starting` are cloud-only upstream today; `Draining`/`Paused` occur on local
-      // runtimes). They must never collapse into `unknown`, which callers read as a query failure
-      // and refuse to act on.
       return 'transient'
     default:
-      // An unrecognized status string is not evidence of any particular state: keep it on the
-      // fail-closed `unknown` path rather than trusting it as usable or absent.
       return 'unknown'
+  }
+}
+
+const msbSandboxEntrySchema = z.looseObject({
+  name: z.string().min(1),
+  status: z.string().optional().catch(undefined),
+})
+
+function decodeMsbJson(stdout: string): z.infer<typeof jsonValueSchema> | undefined {
+  try {
+    const parsed = jsonValueSchema.safeParse(JSON.parse(stdout))
+    return parsed.success ? parsed.data : undefined
+  } catch {
+    return undefined
   }
 }
 
 export function parseMsbSandboxListOrNull(stdout: string): MsbSandboxEntry[] | null {
   if (stdout.trim() === '') return []
-  let data: unknown
-  try {
-    data = JSON.parse(stdout)
-  } catch {
-    return null
-  }
-  if (!Array.isArray(data)) return null
+  const data = decodeMsbJson(stdout)
+  if (data === undefined) return null
+  const entries = z.array(z.unknown()).safeParse(data)
+  if (!entries.success) return null
   const out: MsbSandboxEntry[] = []
-  for (const raw of data) {
-    if (!raw || typeof raw !== 'object') continue
-    const entry = raw as Record<string, unknown>
-    const name = typeof entry.name === 'string' ? entry.name : ''
-    if (!name) continue
-    const status = typeof entry.status === 'string' ? entry.status : ''
-    out.push({ name, status, state: mapMsbStatus(status) })
+  for (const raw of entries.data) {
+    const entry = msbSandboxEntrySchema.safeParse(raw)
+    if (!entry.success) continue
+    const status = entry.data.status ?? ''
+    out.push({ name: entry.data.name, status, state: mapMsbStatus(status) })
   }
   return out
 }
@@ -317,90 +290,105 @@ export function parseMsbSandboxList(stdout: string): MsbSandboxEntry[] {
   return parseMsbSandboxListOrNull(stdout) ?? []
 }
 
-/**
- * Extracts the env names of the secrets currently bound to a sandbox from
- * `msb inspect --format json` (`config.network.secrets.secrets[].env_var`). Returns `null`
- * when the payload cannot be trusted; an absent secrets section means no secrets are bound
- * and yields `[]`.
- */
+const msbInspectEnvelopeSchema = z.looseObject({
+  config: z.looseObject({
+    network: z.looseObject({
+      secrets: jsonValueSchema.optional(),
+    }),
+  }),
+})
+
+const msbSecretListSchema = z.looseObject({
+  secrets: z.array(z.unknown()),
+})
+
+const msbSecretEntrySchema = z.looseObject({
+  env_var: z.string().min(1).optional().catch(undefined),
+})
+
 export function parseMsbInspectSecretNames(stdout: string): string[] | null {
-  let data: unknown
-  try {
-    data = JSON.parse(stdout)
-  } catch {
-    return null
-  }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return null
-  const config = (data as Record<string, unknown>).config
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return null
-  const network = (config as Record<string, unknown>).network
-  if (!network || typeof network !== 'object' || Array.isArray(network)) return null
-  const secrets = (network as Record<string, unknown>).secrets
+  const data = decodeMsbJson(stdout)
+  if (data === undefined) return null
+  const envelope = msbInspectEnvelopeSchema.safeParse(data)
+  if (!envelope.success) return null
+  const secrets = envelope.data.config.network.secrets
   if (secrets === undefined || secrets === null) return []
-  if (typeof secrets !== 'object' || Array.isArray(secrets)) return null
-  const list = (secrets as Record<string, unknown>).secrets
-  if (!Array.isArray(list)) return null
+  const list = msbSecretListSchema.safeParse(secrets)
+  if (!list.success) return null
   const names: string[] = []
-  for (const raw of list) {
-    if (!raw || typeof raw !== 'object') continue
-    const envVar = (raw as Record<string, unknown>).env_var
-    if (typeof envVar === 'string' && envVar) names.push(envVar)
+  for (const raw of list.data.secrets) {
+    const entry = msbSecretEntrySchema.safeParse(raw)
+    if (!entry.success || entry.data.env_var === undefined) continue
+    names.push(entry.data.env_var)
   }
   return names
 }
 
-/**
- * Extracts the CPUs, memory, and LAN access of a sandbox from `msb inspect --format json`
- * (`config.resources.{cpus,memory_mib}`, and an allow egress rule for the `private` group in
- * `config.network.policy.rules`). A sandbox without a network policy uses msb's default, which
- * blocks LAN ranges. Returns `null` when the payload cannot be trusted.
- */
-export function parseMsbInspectRuntimeSettings(stdout: string): SandboxRuntimeSettings | null {
-  let data: unknown
-  try {
-    data = JSON.parse(stdout)
-  } catch {
-    return null
-  }
-  if (!isRecord(data) || !isRecord(data.config)) return null
-  const { resources, network } = data.config
-  if (!isRecord(resources)) return null
-  const { cpus, memory_mib: memoryMib } = resources
-  if (typeof cpus !== 'number' || typeof memoryMib !== 'number') return null
-  const rules = isRecord(network) && isRecord(network.policy) && Array.isArray(network.policy.rules) ? network.policy.rules : []
-  const allowLan = rules.some((rule) =>
-    isRecord(rule)
-    && rule.action === 'allow'
-    && rule.direction !== 'ingress'
-    && isRecord(rule.destination)
-    && rule.destination.group === 'private')
-  return { cpus, memoryMib, allowLan }
+const msbRuntimeSettingsEnvelopeSchema = z.looseObject({
+  config: z.looseObject({
+    resources: z.looseObject({
+      cpus: z.number(),
+      memory_mib: z.number(),
+    }),
+    network: jsonValueSchema.optional(),
+  }),
+})
+
+const msbNetworkPolicySchema = z.looseObject({
+  policy: z.looseObject({
+    rules: z.array(jsonValueSchema),
+  }),
+})
+
+const msbPolicyRuleSchema = z.looseObject({
+  action: z.string(),
+  direction: z.string().optional(),
+  destination: z.looseObject({
+    group: z.string().optional(),
+  }),
+})
+
+function isAllowLanRule(rule: z.infer<typeof jsonValueSchema>): boolean {
+  const parsed = msbPolicyRuleSchema.safeParse(rule)
+  return (
+    parsed.success
+    && parsed.data.action === 'allow'
+    && parsed.data.direction !== 'ingress'
+    && parsed.data.destination.group === 'private'
+  )
 }
 
+export function parseMsbInspectRuntimeSettings(stdout: string): SandboxRuntimeSettings | null {
+  const data = decodeMsbJson(stdout)
+  if (data === undefined) return null
+  const envelope = msbRuntimeSettingsEnvelopeSchema.safeParse(data)
+  if (!envelope.success) return null
+  const { resources, network } = envelope.data.config
+  const policy = msbNetworkPolicySchema.safeParse(network)
+  const rules = policy.success ? policy.data.policy.rules : []
+  const allowLan = rules.some((rule) => isAllowLanRule(rule))
+  return { cpus: resources.cpus, memoryMib: resources.memory_mib, allowLan }
+}
+
+const msbImageEntrySchema = z.looseObject({
+  reference: z.string().min(1).optional().catch(undefined),
+})
+
 export function parseMsbImageList(stdout: string): string[] {
-  let data: unknown
-  try {
-    data = JSON.parse(stdout)
-  } catch {
-    return []
-  }
-  if (!Array.isArray(data)) return []
+  const data = decodeMsbJson(stdout)
+  if (data === undefined) return []
+  const entries = z.array(z.unknown()).safeParse(data)
+  if (!entries.success) return []
   const references: string[] = []
-  for (const raw of data) {
-    if (!raw || typeof raw !== 'object') continue
-    const reference = (raw as Record<string, unknown>).reference
-    if (typeof reference === 'string' && reference) references.push(reference)
+  for (const raw of entries.data) {
+    const entry = msbImageEntrySchema.safeParse(raw)
+    if (!entry.success || entry.data.reference === undefined) continue
+    references.push(entry.data.reference)
   }
   return references
 }
 
-/**
- * Splits an image reference into repository and tag. A colon is only a tag separator when it
- * appears after the last `/`; a colon before that is part of a registry authority (e.g.
- * `localhost:5000/oc-forge-sandbox`), so such a tagless reference keeps the full string as the
- * repository and defaults the tag to `latest`.
- */
-function splitImageReference(ref: string): { repository: string; tag: string } {
+function splitImageReference(ref: string): ImageReferenceParts {
   const lastSlash = ref.lastIndexOf('/')
   const lastColon = ref.lastIndexOf(':')
   if (lastColon > lastSlash) {
@@ -426,7 +414,6 @@ export type CommandRunner = (
   opts?: { timeout?: number; stdin?: string; abort?: AbortSignal },
 ) => Promise<CommandResult>
 
-/** Vendor-documented installer for the msb CLI. Shared by the runtime hint and the setup CLI. */
 export const MSB_INSTALL_COMMAND = 'curl -fsSL https://install.microsandbox.dev | sh'
 
 const MSB_QUERY_TIMEOUT = 30000
@@ -471,32 +458,22 @@ export function describeMsbUnavailable(
 
 export const MSB_DEFAULT_TIMEOUT = 120000
 
-/** Options for creating a sandbox. Network egress is expressed here, at create time,
- *  because msb network rules are per sandbox rather than daemon-global. */
 export interface CreateSandboxOpts {
   image: string
   resources?: SandboxResources
   networkAllow?: string[]
   restrictEgress?: boolean
-  /** Host environment variable names injected into the guest via bare `-e <NAME>`. */
   env?: string[]
-  /** Host-held credentials bound via `--secret <env>@<hosts>`; values never enter the guest. */
   secrets?: SandboxSecretConfig[]
-  /** Allow egress to private (LAN) ranges. Create-time only: msb cannot change it later. */
   allowLan?: boolean
 }
 
-/** Options for a non-piped sandbox exec. `cwd` maps to the native `-w` flag, so no
- *  `cd '<cwd>' &&` prefix is needed in the command string. */
 export interface SandboxExecOpts {
   timeout?: number
   cwd?: string
   abort?: AbortSignal
 }
 
-/** Runtime facade over the `msb` CLI. Deliberately lean: no stdin-pipe exec (no production
- *  caller, and `msb exec` has no stdin-pipe flag) and no daemon-global policy calls (network
- *  rules live in `CreateSandboxOpts.networkAllow`). */
 export interface SandboxRuntime {
   checkAvailable(): Promise<MsbAvailability>
   templateExists(ref: string): Promise<boolean>
@@ -507,19 +484,8 @@ export interface SandboxRuntime {
   getSandboxState(name: string): Promise<SandboxState>
   sandboxContainerName(worktreeName: string): string
   listSandboxesByPrefix(prefix: string): Promise<string[]>
-  /** Converges the secrets bound to an existing sandbox to `secrets` via `msb modify`:
-   *  `--secret-rm` for names no longer desired, `--secret` for the desired set, and `--restart`
-   *  only when a new name is introduced (msb classifies placeholder additions as restart-required
-   *  while rotations and removals apply live). Returns `false` on a non-zero exit or a throw;
-   *  never rejects. A no-op (nothing bound and nothing desired) returns `true` without invoking
-   *  `msb modify`. */
   refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<boolean>
-  /** Reads the CPUs, memory, and LAN access of an existing sandbox via `msb inspect`. Returns
-   *  `null` when the query fails or is unparseable; never rejects. */
   readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null>
-  /** Changes the CPUs and/or memory of an existing sandbox via `msb modify --restart`. msb cannot
-   *  resize a running microVM live, so the sandbox restarts: its disks survive, its processes do
-   *  not. Rejects when msb refuses the change. */
   resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
 
@@ -527,19 +493,8 @@ const MSB_TEMPLATE_LOAD_TIMEOUT = 600000
 const MSB_REMOVE_MISSING_RE = /not found|no such sandbox|unknown sandbox|does not exist/i
 const MSB_VOLUME_REMOVE_MISSING_RE = /not found|no such volume|unknown volume|does not exist/i
 
-/**
- * Matches msb's "already exists" failure from `create`. A create that fails partway through leaves
- * an orphaned sandbox directory that msb still counts as existing, while `ls` omits it and `rm`
- * reports it as missing. `getSandboxState` therefore resolves `missing`, so every retry fails
- * identically and the sandbox is permanently unusable until the directory is deleted by hand.
- * Recreating with `--replace` is msb's own documented way out.
- */
 const MSB_CREATE_EXISTS_RE = /already exists/i
 
-/**
- * Assembles a `SandboxRuntime` from the pure `msb` helpers, routing every method through an
- * injectable `CommandRunner`. The default runner spawns the `msb` binary; tests inject a fake.
- */
 export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner }): SandboxRuntime {
   const run: CommandRunner =
     opts?.run ?? ((args, o) => runCommand('msb', args, { ...o, logger, logLabel: 'msb' }))
@@ -653,9 +608,6 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
   }
 
   async function refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<boolean> {
-    // `msb modify --secret` is per-flag additive, so the current bound set must be read back
-    // before applying changes; otherwise a secret removed from config stays bound forever.
-    // A failed or unparseable inspect carries no information, so refuse to touch anything.
     let current: string[]
     try {
       const inspect = await run(['inspect', name, '--format', 'json'], { timeout: MSB_QUERY_TIMEOUT })
@@ -673,10 +625,6 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     const stale = current.filter((n) => !desiredNames.has(n))
     if (stale.length === 0 && desired.length === 0) return true
 
-    // Introducing a new env name installs a new placeholder, which msb classifies as
-    // restart-required ("placeholder changes need a restart"); without `--restart` the whole
-    // modification is rejected and nothing applies. Rotations of an existing name and removals
-    // apply live, so they stay restart-free.
     const introduced = desired.some((s) => !currentNames.has(s.env))
     const args = ['modify', name]
     if (introduced) args.push('--restart')

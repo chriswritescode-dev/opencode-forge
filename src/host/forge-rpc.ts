@@ -1,13 +1,17 @@
 import type { Rpc } from '@opencode/plugin/rpc'
+import { z } from 'zod'
 import { FORGE_PLUGIN_ID } from '../constants/plugin'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
-import type {
-  SessionSandboxAppliedState,
-  SessionSandboxControllerState,
-  SessionSandboxDesiredState,
-} from '../storage/repos/session-sandbox-preferences-repo'
+import {
+  appliedStateSchema,
+  controllerStateSchema,
+  desiredStateSchema,
+  type SessionSandboxAppliedState,
+  type SessionSandboxControllerState,
+  type SessionSandboxDesiredState,
+} from '../storage/session-sandbox-state'
 import type { LoopSandboxSettings, SandboxOverrides, SandboxResources } from '../types'
-import { isRecord } from '../utils/is-record'
+import type { JsonValue } from '../utils/json-schema'
 import { TOAST_VARIANTS, type ToastVariant } from '../utils/toast'
 import type { LoopInfo } from '../utils/tui-models'
 import { DASHBOARD_AMENDMENT_DIFF_METHOD, DASHBOARD_LOOP_DETAIL_METHOD, DASHBOARD_PLAN_DELETE_METHOD, DASHBOARD_PROJECT_FINDINGS_METHOD, DASHBOARD_SUMMARY_METHOD } from './forge-rpc-dashboard'
@@ -53,13 +57,10 @@ export type ForgeToastInput = {
 
 export type ForgeToastEvent = ForgeToastInput & { projectId: string }
 
-/** Server push: a project-scoped collection changed and the TUI must re-read it. */
 export type ForgeProjectChangedEvent = { projectId: string }
 
-/** Server push: one session's per-session auto-approve flag changed. */
 export type ForgeAutoApproveChangedEvent = { projectId: string; sessionId: string }
 
-/** Host-neutral push event the server publishes to the TUI through the RPC registration. */
 export type ForgeTuiEvent =
   | { type: 'loopsChanged'; projectId: string }
   | { type: 'plansChanged'; projectId: string }
@@ -76,34 +77,31 @@ export interface ForgeExecutePlanInput {
   title: string
   plan: string
   loopName?: string
-  /** Local branch the loop worktree uses; omitted falls back to `forge/<loopName>`. */
   branch?: string
-  /** Commit the loop branch starts from; omitted branches from HEAD or continues an existing branch as-is. */
   baseRef?: string
   executionModel?: string
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
-  /** Maximum loop iterations for a loop launch; omitted falls back to the server's `loop.defaultMaxIterations`. */
   maxIterations?: number
-  /** Per-loop sandbox overrides; omitted fields fall back to the `sandbox` config. */
   sandbox?: LoopSandboxSettings
 }
 
-export type ForgeExecutePlanOutput =
-  | { sessionId: string; loopName?: string; branch?: string; worktreeDir?: string; workspaceId?: string }
-  | { error: string }
+export interface ForgeExecutePlanSuccess {
+  sessionId: string
+  loopName?: string
+  branch?: string
+  worktreeDir?: string
+  workspaceId?: string
+}
 
-/**
- * Server-side defaults the execution dialog shows for loop settings. `available` is false when the
- * server has no usable sandbox, so the per-loop sandbox rows are hidden.
- */
+export type ForgeExecutePlanOutput = ForgeExecutePlanSuccess | { error: string }
+
 export interface ForgeLoopDefaults {
   maxIterations: number
   sandbox: {
     available: boolean
     resources: Required<SandboxResources>
-    /** `sandbox.network.allowLan`, the LAN access a sandbox gets without an override. */
     allowLan: boolean
   }
 }
@@ -128,19 +126,12 @@ export interface ForgeLoopRestartInput {
   auditorVariant: string
   executionModel?: string
   executionVariant?: string
-  /** Force-restart an active loop. Omitted by old TUIs, which the server treats as `true`. */
   force?: boolean
-  /** Optimistic precondition: the loop's `startedAt` as seen when the dialog was opened. */
   expectedStartedAt?: string
 }
 
 export type ForgeLoopRestartOutput = { sessionId: string } | ForgeRpcError
 
-/**
- * Host sandbox preference as seen by the server. `configEnabled` is the server's
- * `sandbox.enabled`; when false the server never reconciles a request, so the TUI
- * hides the indicator and refuses the toggle.
- */
 export interface ForgeHostSandboxState {
   configEnabled: boolean
   desired: SessionSandboxDesiredState | null
@@ -153,11 +144,6 @@ export const FORGE_HOST_SANDBOX_DISABLED_ERROR = 'Host sandbox is disabled by co
 
 export type ForgeHostSandboxStateOutput = ForgeHostSandboxState | ForgeRpcError
 
-/**
- * A host sandbox change. `enabled` binds the sandbox to `sessionId` (on) or releases it (off);
- * omitted, the current on/off state and session are kept. `overrides` replaces the project's host
- * sandbox overrides (`{}` resets them to config); omitted, the current overrides are kept.
- */
 export interface ForgeHostSandboxSetInput {
   sessionId: string
   enabled?: boolean
@@ -516,155 +502,243 @@ export const FORGE_RPC = {
   },
 } as const satisfies Rpc.PortableDefinition
 
-export function readForgeExecutePlanOutput(value: unknown): ForgeExecutePlanOutput {
-  return readForgeRpcResult(value, 'plan execution result', (record) => {
-    if (typeof record.sessionId !== 'string') return { error: 'Forge returned no session for the plan execution' }
-    const optional = (key: 'loopName' | 'branch' | 'worktreeDir' | 'workspaceId') =>
-      typeof record[key] === 'string' ? { [key]: record[key] as string } : {}
-    return { sessionId: record.sessionId, ...optional('loopName'), ...optional('branch'), ...optional('worktreeDir'), ...optional('workspaceId') }
+const optionalStringFieldSchema = z.string().optional().catch(undefined)
+
+const executePlanOutputSchema = z.looseObject({
+  sessionId: z.string().optional().catch(undefined),
+  loopName: optionalStringFieldSchema,
+  branch: optionalStringFieldSchema,
+  worktreeDir: optionalStringFieldSchema,
+  workspaceId: optionalStringFieldSchema,
+})
+
+export function readForgeExecutePlanOutput<P>(payload: P): ForgeExecutePlanOutput {
+  return readForgeRpcResult(payload, 'plan execution result', (value) => {
+    const parsed = executePlanOutputSchema.safeParse(value)
+    if (!parsed.success) return null
+    const data = parsed.data
+    if (data.sessionId === undefined) return { error: 'Forge returned no session for the plan execution' }
+    const launched: ForgeExecutePlanSuccess = { sessionId: data.sessionId }
+    if (data.loopName !== undefined) launched.loopName = data.loopName
+    if (data.branch !== undefined) launched.branch = data.branch
+    if (data.worktreeDir !== undefined) launched.worktreeDir = data.worktreeDir
+    if (data.workspaceId !== undefined) launched.workspaceId = data.workspaceId
+    return launched
   })
 }
 
-function readLoopRows<T>(value: unknown, label: string, isRow: (row: Record<string, unknown>) => boolean): { loops: T[] } | ForgeRpcError {
-  return readForgeRpcResult(value, label, (record) =>
-    !Array.isArray(record.loops) || !record.loops.every((row) => isRecord(row) && isRow(row))
-      ? null
-      : { loops: record.loops as T[] })
+const LOOP_STATUS_SCHEMA = z.enum(['running', 'completed', 'cancelled', 'errored', 'stalled'])
+const LOOP_PHASE_SCHEMA = z.enum(['coding', 'auditing', 'post_action'])
+
+const loopInfoSchema = z.looseObject({
+  name: z.string(),
+  status: LOOP_STATUS_SCHEMA,
+  phase: z.string(),
+  iteration: z.number(),
+  maxIterations: z.number(),
+  sessionId: z.string(),
+  restartable: z.boolean(),
+  restartRequiresForce: z.boolean(),
+  restartBlockedMessage: optionalStringFieldSchema,
+  startedAt: z.string().optional().catch(undefined),
+  executionModel: optionalStringFieldSchema,
+  executionVariant: optionalStringFieldSchema,
+  auditorModel: optionalStringFieldSchema,
+  auditorVariant: optionalStringFieldSchema,
+  branch: optionalStringFieldSchema,
+})
+
+const loopSidebarRowSchema = z.looseObject({
+  loopName: z.string(),
+  status: LOOP_STATUS_SCHEMA,
+  iteration: z.number(),
+  maxIterations: z.number(),
+  startedAt: z.number(),
+  phase: LOOP_PHASE_SCHEMA,
+  phaseStartedAt: z.number(),
+  currentSectionIndex: z.number(),
+  totalSections: z.number(),
+})
+
+function readLoopRows<P, T>(
+  payload: P,
+  label: string,
+  rowSchema: z.ZodType<T>,
+): { loops: T[] } | ForgeRpcError {
+  const listSchema = z.object({ loops: z.array(rowSchema) })
+  return readForgeRpcResult(payload, label, (value) => {
+    const parsed = listSchema.safeParse(value)
+    return parsed.success ? parsed.data : null
+  })
 }
 
-export function readForgeLoops(value: unknown): ForgeLoopsOutput {
-  return readLoopRows<LoopInfo>(value, 'loop list', (row) =>
-    typeof row.name === 'string'
-    && typeof row.status === 'string'
-    && typeof row.phase === 'string'
-    && typeof row.iteration === 'number'
-    && typeof row.maxIterations === 'number'
-    && typeof row.sessionId === 'string'
-    && typeof row.restartable === 'boolean'
-    && typeof row.restartRequiresForce === 'boolean'
-    && typeof row.startedAt === 'string')
+export function readForgeLoops<P>(payload: P): ForgeLoopsOutput {
+  return readLoopRows(payload, 'loop list', loopInfoSchema)
 }
 
-export function readForgeLoopSidebar(value: unknown): ForgeLoopSidebarOutput {
-  return readLoopRows<LoopSidebarRow>(value, 'loop sidebar', (row) =>
-    typeof row.loopName === 'string'
-    && typeof row.status === 'string'
-    && typeof row.iteration === 'number'
-    && typeof row.maxIterations === 'number'
-    && typeof row.startedAt === 'number'
-    && typeof row.phase === 'string'
-    && typeof row.phaseStartedAt === 'number'
-    && typeof row.currentSectionIndex === 'number'
-    && typeof row.totalSections === 'number')
+export function readForgeLoopSidebar<P>(payload: P): ForgeLoopSidebarOutput {
+  return readLoopRows(payload, 'loop sidebar', loopSidebarRowSchema)
 }
 
-export function readForgeLoopDefaults(value: unknown): ForgeLoopDefaultsOutput {
-  return readForgeRpcResult(value, 'loop defaults', (record) => {
-    if (typeof record.maxIterations !== 'number' || !Number.isInteger(record.maxIterations)) return null
-    const sandbox = record.sandbox
-    if (!isRecord(sandbox) || typeof sandbox.available !== 'boolean') return null
-    const resources = sandbox.resources
-    if (!isRecord(resources)) return null
-    const fields = ['memory', 'cpus', 'dockerDisk', 'cacheDisk'] as const
-    if (!fields.every((field) => typeof resources[field] === 'string')) return null
-    return {
-      maxIterations: record.maxIterations,
+const sandboxResourcesSchema = z.object({
+  memory: z.string(),
+  cpus: z.string(),
+  dockerDisk: z.string(),
+  cacheDisk: z.string(),
+})
+
+const loopDefaultsSchema = z.object({
+  maxIterations: z.number().int(),
+  sandbox: z.object({
+    available: z.boolean(),
+    resources: sandboxResourcesSchema,
+    allowLan: z.boolean().optional().catch(undefined),
+  }),
+})
+
+export function readForgeLoopDefaults<P>(payload: P): ForgeLoopDefaultsOutput {
+  return readForgeRpcResult(payload, 'loop defaults', (value) => {
+    const parsed = loopDefaultsSchema.safeParse(value)
+    if (!parsed.success) return null
+    const data = parsed.data
+    const defaults: ForgeLoopDefaults = {
+      maxIterations: data.maxIterations,
       sandbox: {
-        available: sandbox.available,
+        available: data.sandbox.available,
         resources: {
-          memory: resources.memory as string,
-          cpus: resources.cpus as string,
-          dockerDisk: resources.dockerDisk as string,
-          cacheDisk: resources.cacheDisk as string,
+          memory: data.sandbox.resources.memory,
+          cpus: data.sandbox.resources.cpus,
+          dockerDisk: data.sandbox.resources.dockerDisk,
+          cacheDisk: data.sandbox.resources.cacheDisk,
         },
-        allowLan: sandbox.allowLan === true,
+        allowLan: data.sandbox.allowLan === true,
       },
     }
+    return defaults
   })
 }
 
-/**
- * JSON form of an RPC result. OpenCode validates handler output before
- * serializing it and rejects `undefined` ("Expected JSON value"), which optional
- * fields such as `LoopInfo.auditorVariant` carry; a JSON round trip drops them.
- * Top-level `null` properties are dropped too, because the RPC schema has no null,
- * so a result that omits a null row reads the same as an explicit writer's.
- */
-export function toForgeRpcJson<T>(value: T): T {
-  const source = isRecord(value)
-    ? Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== null))
+const topLevelObjectSchema = z.record(z.string(), z.unknown())
+
+export function toForgeRpcJson<T>(value: T): JsonValue {
+  const object = topLevelObjectSchema.safeParse(value)
+  const source = object.success
+    ? Object.fromEntries(Object.entries(object.data).filter(([, entry]) => entry !== null))
     : value
-  return JSON.parse(JSON.stringify(source)) as T
+  return JSON.parse(JSON.stringify(source))
 }
 
-export function readForgeSessionPlan(value: unknown): ForgeSessionPlanOutput {
-  return readForgeRpcResult(value, 'session plan', (record) => ({
-    plan: typeof record.plan === 'string' ? record.plan : null,
-  }))
-}
+const sessionPlanOutputSchema = z.object({
+  plan: z.string().optional().catch(undefined),
+})
 
-export function readForgeLoopRestartOutput(value: unknown): ForgeLoopRestartOutput {
-  return readForgeRpcResult(value, 'loop restart result', (record) =>
-    typeof record.sessionId === 'string'
-      ? { sessionId: record.sessionId }
-      : { error: 'Loop restart completed without a session' })
-}
-
-export function readForgeHostSandboxState(value: unknown): ForgeHostSandboxStateOutput {
-  return readForgeRpcResult(value, 'host sandbox state', (record) => {
-    if (typeof record.configEnabled !== 'boolean') return null
-    const row = <T>(key: 'desired' | 'applied' | 'controller', field: 'revision' | 'phase'): T | null => {
-      const entry = record[key]
-      return isRecord(entry) && typeof entry[field] === 'string' ? entry as T : null
-    }
-    const loops = record.activeLoopSandboxes
-    return {
-      configEnabled: record.configEnabled,
-      desired: row<SessionSandboxDesiredState>('desired', 'revision'),
-      applied: row<SessionSandboxAppliedState>('applied', 'revision'),
-      controller: row<SessionSandboxControllerState>('controller', 'phase'),
-      ...(isRecord(loops) && Object.values(loops).every((entry) => typeof entry === 'boolean')
-        ? { activeLoopSandboxes: loops as Record<string, boolean> }
-        : {}),
-    }
+export function readForgeSessionPlan<P>(payload: P): ForgeSessionPlanOutput {
+  return readForgeRpcResult(payload, 'session plan', (value) => {
+    const parsed = sessionPlanOutputSchema.safeParse(value)
+    return parsed.success ? { plan: parsed.data.plan ?? null } : null
   })
 }
 
-export function readForgeHostSandboxSetOutput(value: unknown): ForgeHostSandboxSetOutput {
-  return readForgeRpcResult(value, 'host sandbox result', (record) =>
-    typeof record.revision === 'string' ? { revision: record.revision } : null)
+const loopRestartOutputSchema = z.object({
+  sessionId: z.string().optional().catch(undefined),
+})
+
+export function readForgeLoopRestartOutput<P>(payload: P): ForgeLoopRestartOutput {
+  return readForgeRpcResult(payload, 'loop restart result', (value) => {
+    const parsed = loopRestartOutputSchema.safeParse(value)
+    if (!parsed.success) return null
+    return parsed.data.sessionId === undefined
+      ? { error: 'Loop restart completed without a session' }
+      : { sessionId: parsed.data.sessionId }
+  })
 }
 
-export function readForgeAutoApproveState(value: unknown): ForgeAutoApproveState {
-  return readForgeRpcResult(value, 'auto-approve state', (record) => {
-    if (typeof record.enabled !== 'boolean') return null
-    return {
-      enabled: record.enabled,
-      inherited: record.inherited === true,
-      ...(typeof record.ownerSessionId === 'string' ? { ownerSessionId: record.ownerSessionId } : {}),
+const hostSandboxStateSchema = z.object({
+  configEnabled: z.boolean(),
+  desired: desiredStateSchema.nullable().catch(null),
+  applied: appliedStateSchema.nullable().catch(null),
+  controller: controllerStateSchema.nullable().catch(null),
+  activeLoopSandboxes: z.record(z.string(), z.boolean()).optional().catch(undefined),
+})
+
+export function readForgeHostSandboxState<P>(payload: P): ForgeHostSandboxStateOutput {
+  return readForgeRpcResult(payload, 'host sandbox state', (value) => {
+    const parsed = hostSandboxStateSchema.safeParse(value)
+    if (!parsed.success) return null
+    const data = parsed.data
+    const state: ForgeHostSandboxState = {
+      configEnabled: data.configEnabled,
+      desired: data.desired,
+      applied: data.applied,
+      controller: data.controller,
     }
+    if (data.activeLoopSandboxes !== undefined) state.activeLoopSandboxes = data.activeLoopSandboxes
+    return state
   })
 }
 
-export function readForgeWorktrees(value: unknown): ForgeWorktreesOutput {
-  return readForgeRpcResult(value, 'worktree list', (record) => {
-    if (typeof record.root !== 'string') return null
-    if (!Array.isArray(record.dirs) || !record.dirs.every((dir) => typeof dir === 'string')) return null
-    return { root: record.root, dirs: record.dirs as string[] }
+const hostSandboxSetOutputSchema = z.object({ revision: z.string() })
+
+export function readForgeHostSandboxSetOutput<P>(payload: P): ForgeHostSandboxSetOutput {
+  return readForgeRpcResult(payload, 'host sandbox result', (value) => {
+    const parsed = hostSandboxSetOutputSchema.safeParse(value)
+    return parsed.success ? { revision: parsed.data.revision } : null
   })
 }
 
-export function readForgeVersion(value: unknown): { version: string } | ForgeRpcError {
-  return readForgeRpcResult(value, 'version', (record) =>
-    typeof record.version === 'string' ? { version: record.version } : null)
+const autoApproveStateSchema = z.object({
+  enabled: z.boolean(),
+  inherited: z.boolean().optional(),
+  ownerSessionId: optionalStringFieldSchema,
+})
+
+type ForgeAutoApproveActiveState = { enabled: boolean; ownerSessionId?: string; inherited: boolean }
+
+export function readForgeAutoApproveState<P>(payload: P): ForgeAutoApproveState {
+  return readForgeRpcResult(payload, 'auto-approve state', (value) => {
+    const parsed = autoApproveStateSchema.safeParse(value)
+    if (!parsed.success) return null
+    const data = parsed.data
+    const state: ForgeAutoApproveActiveState = { enabled: data.enabled, inherited: data.inherited === true }
+    if (data.ownerSessionId !== undefined) state.ownerSessionId = data.ownerSessionId
+    return state
+  })
 }
 
-export function readForgeProjectChangedEvent(data: Readonly<Record<string, unknown>>): ForgeProjectChangedEvent | null {
-  return typeof data.projectId === 'string' ? { projectId: data.projectId } : null
+const worktreesOutputSchema = z.object({
+  root: z.string(),
+  dirs: z.array(z.string()),
+})
+
+export function readForgeWorktrees<P>(payload: P): ForgeWorktreesOutput {
+  return readForgeRpcResult(payload, 'worktree list', (value) => {
+    const parsed = worktreesOutputSchema.safeParse(value)
+    return parsed.success ? { root: parsed.data.root, dirs: parsed.data.dirs } : null
+  })
 }
 
-export function readForgeAutoApproveChangedEvent(data: Readonly<Record<string, unknown>>): ForgeAutoApproveChangedEvent | null {
-  return typeof data.projectId === 'string' && typeof data.sessionId === 'string'
-    ? { projectId: data.projectId, sessionId: data.sessionId }
-    : null
+const versionOutputSchema = z.object({ version: z.string() })
+
+export function readForgeVersion<P>(payload: P): { version: string } | ForgeRpcError {
+  return readForgeRpcResult(payload, 'version', (value) => {
+    const parsed = versionOutputSchema.safeParse(value)
+    return parsed.success ? { version: parsed.data.version } : null
+  })
+}
+
+const projectChangedEventSchema = z.object({ projectId: z.string() })
+
+export function readForgeProjectChangedEvent<P>(data: P): ForgeProjectChangedEvent | null {
+  const parsed = projectChangedEventSchema.safeParse(data)
+  return parsed.success ? { projectId: parsed.data.projectId } : null
+}
+
+const autoApproveChangedEventSchema = z.object({
+  projectId: z.string(),
+  sessionId: z.string(),
+})
+
+export function readForgeAutoApproveChangedEvent<P>(data: P): ForgeAutoApproveChangedEvent | null {
+  const parsed = autoApproveChangedEventSchema.safeParse(data)
+  return parsed.success ? { projectId: parsed.data.projectId, sessionId: parsed.data.sessionId } : null
 }

@@ -5,66 +5,32 @@ import type { PluginConfig, Logger } from '../types'
 import type { LoopUsageSummary } from '../loop/token-usage'
 import { formatUsageSummary } from '../utils/loop-format'
 
-/**
- * Context for resolving worktree log target paths.
- */
 export interface WorktreeLogContext {
-  /** The project directory (loop worktree dir or project root). */
   projectDir: string
-  /** Optional data directory for default path resolution. */
   dataDir?: string
 }
 
-/**
- * Serializable payload containing all data needed for worktree completion logging.
- * This allows the host session to write logs without needing access to the worktree session.
- */
 export interface WorktreeCompletionLogPayload {
-  /** The configured log directory (host path). */
   logDirectory: string
-  /** The project directory (host path). */
   projectDir: string
-  /** The name of the completed loop. */
   loopName: string
-  /** ISO timestamp of completion. */
   completionTimestamp: string
-  /** The iteration count when the loop completed. */
   iteration: number
-  /** The worktree branch name, if applicable. */
   worktreeBranch?: string
-  /** The plan text to include in the log entry, if available. */
   planText?: string | null
-  /** Cumulative usage summary for the loop, if available. */
   usage?: LoopUsageSummary | null
 }
 
-/**
- * Result of building a worktree completion log payload.
- */
 export interface BuildWorktreeCompletionPayloadResult {
-  /** The serializable payload for logging. */
   payload: WorktreeCompletionLogPayload
-  /** The resolved host path for the log directory. */
   hostPath: string
 }
 
-/**
- * Result of resolving a worktree log target.
- */
 export interface WorktreeLogTarget {
-  /** The absolute path on the host filesystem. */
   hostPath: string
 }
 
-/**
- * Normalizes a configured log directory string by expanding home-directory shorthand.
- * - `~` becomes the current user's home directory
- * - `~/sub/path` becomes `<homedir>/sub/path`
- * - Already-absolute paths are returned unchanged
- * - Ordinary relative paths are returned unchanged (caller resolves against projectDir)
- */
 function normalizeConfiguredLogDirectory(directory: string): string {
-  // Handle exact `~` or `~/...` forms
   if (directory === '~') {
     return homedir()
   }
@@ -74,15 +40,9 @@ function normalizeConfiguredLogDirectory(directory: string): string {
     return join(homedir(), relativePath)
   }
   
-  // Return unchanged for absolute paths or ordinary relative paths
   return directory
 }
 
-/**
- * Pure resolver: derives the configured log directory from config + runtime context.
- * Does NOT create directories or verify writability.
- * Returns null if logging is disabled or directory cannot be resolved.
- */
 export function resolveWorktreeLogTarget(
   config: PluginConfig,
   context: WorktreeLogContext,
@@ -95,7 +55,6 @@ export function resolveWorktreeLogTarget(
 
   let directory = worktreeLogging.directory
   
-  // Use default data-dir-based location when directory is omitted but logging is enabled
   if (!directory || directory.trim() === '') {
     if (context.dataDir) {
       directory = join(context.dataDir, 'worktree-logs')
@@ -106,10 +65,8 @@ export function resolveWorktreeLogTarget(
   }
 
   try {
-    // Normalize tilde expansion before checking absolute/relative
     const normalizedDirectory = normalizeConfiguredLogDirectory(directory)
     
-    // Resolve relative paths against projectDir, not process.cwd()
     const resolvedPath = isAbsolute(normalizedDirectory)
       ? normalizedDirectory
       : join(context.projectDir, normalizedDirectory)
@@ -122,19 +79,12 @@ export function resolveWorktreeLogTarget(
   }
 }
 
-/**
- * Validator/initializer: creates the directory and verifies write access.
- * Should only be called when host-side logging is about to occur.
- * Returns true if the directory is writable, false otherwise.
- */
 export function ensureWorktreeLogDirectory(hostPath: string, logger?: Logger): boolean {
   try {
-    // Create directory recursively if it doesn't exist
     if (!existsSync(hostPath)) {
       mkdirSync(hostPath, { recursive: true })
     }
 
-    // Verify we can write to the directory
     const testFile = join(hostPath, '.write-test')
     appendFileSync(testFile, '')
     return true
@@ -145,9 +95,6 @@ export function ensureWorktreeLogDirectory(hostPath: string, logger?: Logger): b
   }
 }
 
-/**
- * Formats a date as YYYY-MM-DD in local timezone.
- */
 function formatDateKey(date: Date): string {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -155,10 +102,6 @@ function formatDateKey(date: Date): string {
   return `${year}-${month}-${day}`
 }
 
-/**
- * Formats a worktree completion entry with plan-based deterministic formatting.
- * This is a pure helper for tests and host logging prompts.
- */
 export function formatWorktreeCompletionEntry(
   options: {
     projectDir: string
@@ -193,11 +136,6 @@ ${planSection}
 `
 }
 
-/**
- * Appends a markdown entry to the dated log file.
- * Creates the file if it doesn't exist.
- * Returns true on success, false on failure.
- */
 export function appendWorktreeLogEntry(
   directory: string,
   options: {
@@ -226,12 +164,6 @@ export function appendWorktreeLogEntry(
   }
 }
 
-/**
- * Builds a serializable payload for worktree completion logging.
- * This payload contains all data needed to write a log entry from the host session.
- * 
- * @returns The payload result with hostPath, or null if logging is disabled/misconfigured
- */
 export function buildWorktreeCompletionPayload(
   config: PluginConfig,
   options: {
@@ -251,7 +183,6 @@ export function buildWorktreeCompletionPayload(
     return null
   }
 
-  // Resolve the log target using the host project directory
   const logTarget = resolveWorktreeLogTarget(config, {
     projectDir: options.projectDir,
     dataDir: options.dataDir,
@@ -277,17 +208,10 @@ export function buildWorktreeCompletionPayload(
   }
 }
 
-/**
- * Writes a worktree completion log entry from a prepared payload.
- * This is the host-side writer that should be called from a host session context.
- * 
- * @returns true on success, false on failure (fails closed)
- */
 export function writeWorktreeCompletionLog(
   payload: WorktreeCompletionLogPayload,
   logger?: Logger,
 ): boolean {
-  // Validate and initialize the host path before writing
   if (!ensureWorktreeLogDirectory(payload.logDirectory, logger)) {
     return false
   }

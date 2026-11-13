@@ -1,10 +1,12 @@
 import type { Plugin } from '@opencode/plugin'
 import { existsSync } from 'fs'
+import { z } from 'zod'
 import { requestError } from './errors'
 import type {
   ForgeClient,
   WorkspaceCreateParams,
   WorkspaceCreateResult,
+  WorkspaceExtra,
   WorkspaceList,
   WorkspaceRemoveParams,
   WorkspaceWarpParams,
@@ -16,7 +18,6 @@ import {
   writeForgeWorkspaceMetadata,
   type ForgeWorkspaceMetadata,
 } from '../workspace/forge-workspace-metadata'
-import { isRecord } from '../utils/is-record'
 import type { ForgeWorkspaceAdapter, ForgeWorkspaceInfo } from '../workspace/forge-adapter'
 
 const FORGE_WORKSPACE_TYPE = 'forge'
@@ -29,8 +30,13 @@ export interface V2ForgeWorkspacesDeps {
   sessionMove: Plugin.Context['session']['move']
 }
 
-function toExtra(value: unknown): Record<string, unknown> | null {
-  return isRecord(value) ? value : null
+const workspaceExtraSchema = z.record(z.string(), z.json())
+
+function toExtra<V>(value: V): WorkspaceExtra | null {
+  const text = JSON.stringify(value)
+  if (text === undefined) return null
+  const parsed = workspaceExtraSchema.safeParse(JSON.parse(text))
+  return parsed.success ? parsed.data : null
 }
 
 function toWorkspaceInfo(record: ForgeWorkspaceMetadata): ForgeWorkspaceInfo {

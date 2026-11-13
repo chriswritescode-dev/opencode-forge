@@ -3,6 +3,7 @@ import {
   bindSessionToWorkspace,
   createBuiltinWorktreeWorkspace,
   getForgeWorkspaceBranch,
+  getForgeWorkspaceForgeLoop,
   getForgeWorkspacePermissionRules,
 } from '../../src/workspace/forge-worktree'
 import { createFakeForgeClient } from '../helpers/fake-client'
@@ -198,6 +199,19 @@ describe('createBuiltinWorktreeWorkspace', () => {
   })
 })
 
+describe('getForgeWorkspaceForgeLoop', () => {
+  it('keeps the valid fields when another field has the wrong type', () => {
+    const forgeLoop = getForgeWorkspaceForgeLoop({
+      extra: { forgeLoop: { executionModel: null, pendingAttachStartedAt: 123, initialPromptOwner: 'tui' } },
+    })
+
+    expect(forgeLoop).toBeDefined()
+    expect(forgeLoop?.pendingAttachStartedAt).toBe(123)
+    expect(forgeLoop?.initialPromptOwner).toBe('tui')
+    expect(forgeLoop?.executionModel).toBeUndefined()
+  })
+})
+
 describe('getForgeWorkspaceBranch', () => {
   it('returns the explicit branch from extra', () => {
     expect(getForgeWorkspaceBranch({ extra: { branch: 'pm-61-export' } })).toBe('pm-61-export')
@@ -233,6 +247,21 @@ describe('portable workspace permissions', () => {
           { permission: 'external_directory', pattern: '*', action: 'allow' },
           { permission: 'question', pattern: '*', action: 'deny' },
           { permission: 'bash', pattern: '*', action: 'deny' },
+        ],
+      },
+    }
+
+    expect(getForgeWorkspacePermissionRules(entry)).toEqual([safeRule])
+  })
+
+  it('keeps the valid deny rules when another rule is malformed', () => {
+    const safeRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+    const entry = {
+      extra: {
+        permissionRules: [
+          { permission: 'edit', pattern: '*', action: 'ask' },
+          { permission: 'read' },
+          safeRule,
         ],
       },
     }

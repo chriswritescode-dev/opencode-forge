@@ -4,18 +4,9 @@ import type { Logger, PluginConfig } from '../types'
 
 export interface LoopPermissionWarningSink {
   logger: Logger | Console
-  /** Called once with the collected warnings when they should be surfaced to the user. */
   onWarnings: (warnings: string[]) => void
 }
 
-/**
- * Single emitter for loop config warnings. Every launch surface routes through
- * this so the once-per-root-instance semantics live in one place: warnings are
- * always logged (cheap and useful for diagnosis), and the user-facing surface
- * fires only for non-worktree directories. A forge worktree is a fresh plugin
- * instance of the same project, so re-surfacing there would spam the toast once
- * per loop launch.
- */
 function emitLoopConfigWarnings(
   warnings: string[],
   dataDir: string,
@@ -30,7 +21,6 @@ function emitLoopConfigWarnings(
   }
 }
 
-/** Emits warnings produced while parsing `loop.permissions`. */
 export function emitLoopPermissionConfigWarnings(
   config: PluginConfig | undefined,
   dataDir: string,
@@ -40,7 +30,6 @@ export function emitLoopPermissionConfigWarnings(
   emitLoopConfigWarnings(collectLoopPermissionConfigWarnings(config), dataDir, directory, sink)
 }
 
-/** Emits warnings produced while parsing `loop.sessionReuse`. */
 export function emitLoopSessionReuseConfigWarnings(
   config: PluginConfig | undefined,
   dataDir: string,

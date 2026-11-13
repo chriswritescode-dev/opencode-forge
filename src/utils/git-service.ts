@@ -9,9 +9,7 @@ export interface GitResult {
 
 export interface GitService {
   addAll(cwd: string): GitResult
-  /** Drops `path` from the index without touching the working tree (`git rm --cached --ignore-unmatch`). */
   removeFromIndex(cwd: string, path: string): GitResult
-  /** True when `path` (file or directory) is tracked by git in `cwd`. */
   isPathTracked(cwd: string, path: string): boolean
   statusPorcelain(cwd: string): GitResult
   commit(cwd: string, message: string): GitResult
@@ -22,30 +20,17 @@ export interface GitService {
   revParseGitCommonDir(cwd: string): GitResult
   revParseGitPath(cwd: string, path: string): GitResult
   revParseHead(cwd: string): GitResult
-  /** Resolves `ref` to its commit sha (`git rev-parse --verify <ref>^{commit}`); stdout is the sha. */
   revParse(cwd: string, ref: string): GitResult
   worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult
   worktreeList(cwd: string): GitResult
   worktreeRemove(cwd: string, directory: string): GitResult
   worktreePrune(cwd: string): GitResult
   branchDelete(cwd: string, branch: string): GitResult
-  /** Runs `git check-ref-format --branch <name>`; stdout is the resolved branch name. */
   checkRefFormatBranch(cwd: string, name: string): GitResult
-  /** True when `ancestor` is an ancestor of (or equal to) `descendant`. */
   isAncestor(cwd: string, ancestor: string, descendant: string): boolean
-  /** Points `branch` at `startPoint`, moving it even when the move is not a fast-forward. */
   branchForceUpdate(cwd: string, branch: string, startPoint: string): GitResult
 }
 
-/**
- * Forge's git always runs on the host, while a sandboxed loop has read-write access to the
- * repository's git metadata (its worktree's git dir, and the common dir when it is mounted). A
- * repo-controlled hook — planted in `.git/hooks` or pointed at by `core.hooksPath` in the
- * repo-local config, neither of which the sandbox boundary can make read-only — would therefore
- * execute on the host with the user's privileges. Disabling hooksPath on every forge invocation
- * closes that path: forge's git calls are mechanical (status, scratch-branch snapshot commits,
- * worktree bookkeeping) and never depended on repository hooks.
- */
 const HOOKS_DISABLED_ARGS = ['-c', 'core.hooksPath=/dev/null']
 
 function runGit(args: string[], cwd: string): GitResult {

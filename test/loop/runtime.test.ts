@@ -1150,6 +1150,33 @@ describe('post-action phase', () => {
     expect(finalState!.terminationReason).toBe('completed')
   })
 
+  test('post_action session error with a malformed status code is still handled', async () => {
+    const { client } = createFakeForgeClient()
+    const { loop } = buildRuntime({ client })
+
+    const state = makeLoopState({
+      phase: 'post_action',
+    })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    await loop.tick({
+      type: 'session.error',
+      properties: {
+        sessionID: state.sessionId,
+        error: {
+          name: 'ProviderError',
+          data: { message: 'provider failed', statusCode: '500' },
+        },
+      },
+    })
+
+    const finalState = loopService.getAnyState(state.loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('completed')
+  })
+
   test('post_action session error with a pending loop-complete completes with the report', async () => {
     const { client } = createFakeForgeClient({
       session: {

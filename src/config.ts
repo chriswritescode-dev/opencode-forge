@@ -1,19 +1,83 @@
+import { z } from 'zod'
 import type { AgentRole, AgentDefinition, AgentConfig } from './agents'
+import type { AgentPermissionMap } from './agents/types'
 import { loadPrompt } from './prompts/loader'
 
 export interface PluginCommand { template: string; description: string; agent: string; subtask: boolean }
 
+export interface PluginCommandIndex {
+  [name: string]: PluginCommand
+}
+
+export interface UserCommand {
+  template?: string
+  description?: string
+  agent?: string
+  subtask?: boolean
+}
+
+export interface CommandEntryIndex {
+  [name: string]: PluginCommand | UserCommand
+}
+
+export interface AgentConfigIndex {
+  [name: string]: AgentConfig
+}
+
+export interface ToolEnablementMap {
+  [tool: string]: boolean
+}
+
+export interface HostConfig {
+  agent?: unknown
+  command?: unknown
+  default_agent?: unknown
+}
+
 export const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
 
-/** Forge agents whose prompt, model, and description a user-defined agent of the same name overrides; Forge's tool restrictions still apply. */
 export const USER_REPLACEABLE_AGENTS = ['minion']
 
-/** Forge subagents that run on OpenCode's default model instead of the caller's when the resolved agent has no model. */
 export const DEFAULT_MODEL_SUBAGENTS = ['minion']
 
 export const DEFAULT_AGENT = 'code'
 
-function buildPluginCommands(promptsDir?: string): Record<string, PluginCommand> {
+const agentPermissionSchema = z.record(z.string(), z.union([z.string(), z.record(z.string(), z.string())]))
+
+const agentConfigOverridesSchema = z.looseObject({
+  description: z.string().optional().catch(undefined),
+  model: z.string().optional().catch(undefined),
+  prompt: z.string().optional().catch(undefined),
+  mode: z.enum(['primary', 'subagent', 'all']).optional().catch(undefined),
+  tools: z.record(z.string(), z.boolean()).optional().catch(undefined),
+  variant: z.string().optional().catch(undefined),
+  temperature: z.number().optional().catch(undefined),
+  steps: z.number().optional().catch(undefined),
+  hidden: z.boolean().optional().catch(undefined),
+  color: z.string().optional().catch(undefined),
+  permission: agentPermissionSchema.optional().catch(undefined),
+})
+
+const userCommandSchema = z.looseObject({
+  template: z.string().optional().catch(undefined),
+  description: z.string().optional().catch(undefined),
+  agent: z.string().optional().catch(undefined),
+  subtask: z.boolean().optional().catch(undefined),
+})
+
+const userCommandIndexSchema = z.record(z.string(), z.unknown())
+
+const userAgentIndexSchema = z.record(z.string(), z.unknown())
+
+export type AgentConfigOverrides = z.infer<typeof agentConfigOverridesSchema>
+
+export type MergedAgentConfig = AgentConfig | AgentConfigOverrides
+
+export interface MergedAgentConfigIndex {
+  [name: string]: MergedAgentConfig
+}
+
+function buildPluginCommands(promptsDir?: string): PluginCommandIndex {
   return {
     review: { description: 'Run a code review.', agent: 'auditor', subtask: true,
       template: loadPrompt(['commands','review.md'], promptsDir) },
@@ -35,52 +99,45 @@ export function createConfigHandler(
 ) {
   const pluginCommands = buildPluginCommands(promptsDir)
 
-  return async (config: Record<string, unknown>) => {
-    const effectiveAgents = { ...agents }
+  return async (config: HostConfig) => {
+    const effectiveAgents: AgentConfigIndex = createAgentConfigs(agents)
     if (agentOverrides) {
       for (const [name, overrides] of Object.entries(agentOverrides)) {
-        const role = Object.keys(effectiveAgents).find(
-          (r) => effectiveAgents[r as AgentRole].displayName === name
-        ) as AgentRole | undefined
-        if (role) {
-          effectiveAgents[role] = { ...effectiveAgents[role], ...overrides }
-        }
+        const existing = effectiveAgents[name]
+        if (existing === undefined) continue
+        effectiveAgents[name] = { ...existing, ...overrides }
       }
     }
 
-    const agentConfigs = createAgentConfigs(effectiveAgents)
+    const mergedAgents: MergedAgentConfigIndex = { ...effectiveAgents }
 
-    const userAgentConfigs = config.agent as Record<string, AgentConfig> | undefined
-    const mergedAgents = { ...agentConfigs }
-
-    if (userAgentConfigs) {
-      for (const [name, userConfig] of Object.entries(userAgentConfigs)) {
-        if (mergedAgents[name]) {
-          const existing = mergedAgents[name]
-          const mergedTools = { ...(existing?.tools ?? {}), ...(userConfig.tools ?? {}) }
-          const existingPermission = (existing?.permission as Record<string, unknown> | undefined) ?? {}
-          const mergedPermission = {
-            ...existingPermission,
-            ...((userConfig.permission as Record<string, unknown> | undefined) ?? {}),
-          }
+    const userAgentIndex = userAgentIndexSchema.safeParse(config.agent)
+    if (userAgentIndex.success) {
+      for (const [name, rawUserConfig] of Object.entries(userAgentIndex.data)) {
+        const parsed = agentConfigOverridesSchema.safeParse(rawUserConfig)
+        if (!parsed.success) continue
+        const userConfig = parsed.data
+        const existing = mergedAgents[name]
+        if (existing) {
+          const mergedTools: ToolEnablementMap = { ...existing.tools, ...userConfig.tools }
+          const existingPermission: AgentPermissionMap = existing.permission ?? {}
+          const mergedPermission: AgentPermissionMap = { ...existingPermission, ...userConfig.permission }
           if (userConfig.tools) {
             for (const [tool, enabled] of Object.entries(userConfig.tools)) {
               mergedPermission[tool] = enabled ? 'allow' : 'deny'
             }
           }
-          for (const [tool, enabled] of Object.entries(existing?.tools ?? {})) {
+          for (const [tool, enabled] of Object.entries(existing.tools ?? {})) {
             if (enabled === false && existingPermission[tool] === 'deny') {
               mergedTools[tool] = false
               delete mergedPermission[tool]
               mergedPermission[tool] = 'deny'
             }
           }
-          mergedAgents[name] = {
-            ...existing,
-            ...userConfig,
-            ...(Object.keys(mergedTools).length ? { tools: mergedTools } : {}),
-            ...(Object.keys(mergedPermission).length ? { permission: mergedPermission } : {}),
-          }
+          const merged: MergedAgentConfig = { ...existing, ...userConfig }
+          if (Object.keys(mergedTools).length) merged.tools = mergedTools
+          if (Object.keys(mergedPermission).length) merged.permission = mergedPermission
+          mergedAgents[name] = merged
         } else {
           mergedAgents[name] = userConfig
         }
@@ -94,12 +151,14 @@ export function createConfigHandler(
     config.agent = mergedAgents
     config.default_agent = DEFAULT_AGENT
 
-    const userCommands = config.command as Record<string, unknown> | undefined
-    const mergedCommands: Record<string, unknown> = { ...pluginCommands }
+    const mergedCommands: CommandEntryIndex = { ...pluginCommands }
 
-    if (userCommands) {
-      for (const [name, userCommand] of Object.entries(userCommands)) {
-        mergedCommands[name] = userCommand
+    const userCommands = userCommandIndexSchema.safeParse(config.command)
+    if (userCommands.success) {
+      for (const [name, rawUserCommand] of Object.entries(userCommands.data)) {
+        const parsed = userCommandSchema.safeParse(rawUserCommand)
+        if (!parsed.success) continue
+        mergedCommands[name] = parsed.data
       }
     }
 
@@ -107,20 +166,12 @@ export function createConfigHandler(
   }
 }
 
-function createAgentConfigs(agents: Record<AgentRole, AgentDefinition>): Record<string, AgentConfig> {
-  const result: Record<string, AgentConfig> = {}
+function createAgentConfigs(agents: Record<AgentRole, AgentDefinition>): AgentConfigIndex {
+  const result: AgentConfigIndex = {}
 
   for (const agent of Object.values(agents)) {
     const tools: Record<string, boolean> = {}
-    // Mirror tools.exclude into a permission map. Opencode's agent loader only
-    // reads `value.permission` when merging plugin-provided `cfg.agent` entries
-    // (see opencode packages/opencode/src/agent/agent.ts). The legacy `tools`
-    // map is only normalized via the zod Info transform at parse time, which
-    // does not run on config mutated by the plugin config hook. Without this
-    // permission mirror, excluded tools remain callable.
-    const permission: Record<string, unknown> = {
-      ...((agent.permission as Record<string, unknown> | undefined) ?? {}),
-    }
+    const permission: AgentPermissionMap = { ...agent.permission }
     if (agent.tools?.exclude) {
       for (const tool of agent.tools.exclude) {
         tools[tool] = false
@@ -128,19 +179,20 @@ function createAgentConfigs(agents: Record<AgentRole, AgentDefinition>): Record<
       }
     }
 
-    result[agent.displayName] = {
+    const config: AgentConfig = {
       description: agent.description,
       model: agent.defaultModel ?? '',
-      ...(agent.systemPrompt !== undefined ? { prompt: agent.systemPrompt } : {}),
-      mode: agent.mode ?? 'subagent',
-      ...(Object.keys(tools).length > 0 ? { tools } : {}),
-      ...(agent.variant ? { variant: agent.variant } : {}),
-      ...(agent.temperature !== undefined ? { temperature: agent.temperature } : {}),
-      ...(agent.steps !== undefined ? { steps: agent.steps } : {}),
-      ...(agent.hidden ? { hidden: agent.hidden } : {}),
-      ...(agent.color ? { color: agent.color } : {}),
-      ...(Object.keys(permission).length > 0 ? { permission } : {}),
     }
+    if (agent.systemPrompt !== undefined) config.prompt = agent.systemPrompt
+    config.mode = agent.mode ?? 'subagent'
+    if (Object.keys(tools).length > 0) config.tools = tools
+    if (agent.variant) config.variant = agent.variant
+    if (agent.temperature !== undefined) config.temperature = agent.temperature
+    if (agent.steps !== undefined) config.steps = agent.steps
+    if (agent.hidden) config.hidden = agent.hidden
+    if (agent.color) config.color = agent.color
+    if (Object.keys(permission).length > 0) config.permission = permission
+    result[agent.displayName] = config
   }
 
   return result

@@ -1,4 +1,5 @@
 import { lstatSync, readlinkSync, statSync, symlinkSync } from 'fs'
+import { z } from 'zod'
 import { dirname, isAbsolute, join, relative, resolve } from 'path'
 import { CODE_GRAPH_LINK_NAME, isCodeGraphEnabled } from '../constants/loop'
 import { SANDBOX_CACHE_DIR } from '../sandbox/msb'
@@ -17,39 +18,32 @@ import {
   type CodeGraphRunnerResult,
 } from './code-graph-runner'
 
+const errnoCodeSchema = z.looseObject({ code: z.string().optional() })
+
+function isMissingPathError(cause: unknown): boolean {
+  const parsed = errnoCodeSchema.safeParse(cause)
+  return parsed.success && parsed.data.code === 'ENOENT'
+}
+
 const CODE_GRAPH_HOME = '/opt/codegraph'
 const CODE_GRAPH_NODE = `${CODE_GRAPH_HOME}/node`
 const CODE_GRAPH_LIB_DIR = `${CODE_GRAPH_HOME}/lib`
 const CODE_GRAPH_CACHE_DIR = `${SANDBOX_CACHE_DIR}/codegraph`
 const CODE_GRAPH_ENV = 'CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1'
-/** Succeeds only when the bundled Node and the library the runner loads both exist. */
 export const CODE_GRAPH_PROBE_COMMAND = `test -x ${CODE_GRAPH_NODE} && test -f ${CODE_GRAPH_LIB_DIR}/dist/index.js && echo present`
 const BINARY_PROBE_TIMEOUT_MS = 30000
-/** One budget for all of a report's write execs, so a large report never multiplies the wait. */
 const REPORT_WRITE_TIMEOUT_MS = 30000
-/** Base64 characters per report-write exec, a multiple of 4 that keeps each `sh -c` argument far below Linux's 128 KiB per-argument limit. */
 const REPORT_WRITE_CHUNK_LENGTH = 64 * 1024
-/** The runner's own deadline: one exec may build a full index for a loop's first snapshot. */
 const RUNNER_DEADLINE_MS = 540000
-/** Host-side exec timeout, a margin past the runner's deadline so the runner normally reports it itself. */
 const SNAPSHOT_TIMEOUT_MS = 600000
-/** Only tests that import a changed file directly: each extra level pulls in most of the suite once a widely imported module changes. */
 const AFFECTED_MAX_DEPTH = 1
-/** Callers listed per changed symbol at an audit checkpoint; the rest are only counted. */
 const CALLER_LIMIT = 20
-/**
- * Symbols listed per file; a generated file would otherwise fill the whole report. The rest are
- * reached by reading the source from the first omitted symbol, because codegraph's own symbol map
- * is capped too. Dependents are never capped: no codegraph command lists them all, and they are a
- * small share of a large report.
- */
 const SYMBOL_LIMIT = 100
 const PROBED_CONTAINER_LIMIT = 100
 
 export interface CodeGraphTarget {
   key: string
   worktreeDir: string
-  /** The config asks for codegraph explicitly, so a missing binary is an error rather than a skip. */
   required: boolean
   exec(command: string, timeoutMs: number): Promise<CommandResult>
 }
@@ -57,18 +51,11 @@ export interface CodeGraphTarget {
 export interface CodeGraphSnapshotInput {
   title: string
   files: string[]
-  /** Audit checkpoint only: new-side changed line ranges per file, which adds the impact sections. */
   changedRanges?: Record<string, CodeGraphLineRange[]>
 }
 
 export interface CodeGraphSnapshotter {
   snapshotFiles(target: CodeGraphTarget, input: CodeGraphSnapshotInput): Promise<string | null>
-  /**
-   * Writes a report to `relPath` in the worktree from inside the sandbox. The host never writes
-   * into the agent-writable worktree: a path check there cannot pin a parent directory the agent
-   * may swap for a symlink, while a write inside the sandbox can only reach what the agent can
-   * already write.
-   */
   writeReport(target: CodeGraphTarget, relPath: string, text: string): Promise<boolean>
 }
 
@@ -105,12 +92,10 @@ export function codeGraphReportPath(name: string): string {
   return `.forge/codegraph/${sanitized || 'snapshot'}.md`
 }
 
-/** Where snapshot A of section `index` (0-based) is written. */
 export function sectionCodeGraphReportPath(index: number): string {
   return codeGraphReportPath(`section-${index + 1}`)
 }
 
-/** Where snapshot B of an audit attempt is written. */
 export function attemptCodeGraphReportPath(attempt: { scope: string; attemptNumber: number }): string {
   return codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
 }
@@ -138,10 +123,6 @@ export function buildCodeGraphPromptBlock(relPath: string, point: 'section start
   ].join('\n')
 }
 
-/**
- * Whether `worktreeDir/.codegraph` is the link Forge creates to the sandbox cache disk, as
- * opposed to a `.codegraph` the repository itself provides.
- */
 export function isForgeCodeGraphLink(worktreeDir: string): boolean {
   const linkPath = join(worktreeDir, CODE_GRAPH_LINK_NAME)
   try {
@@ -165,9 +146,9 @@ function ensureCacheLink(worktreeDir: string, logger: Logger): boolean {
       return false
     }
     return true
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      logger.error(`[code-graph] cannot inspect ${linkPath}`, err)
+  } catch (cause) {
+    if (!isMissingPathError(cause)) {
+      logger.error(`[code-graph] cannot inspect ${linkPath}`, cause)
       return false
     }
   }
@@ -367,8 +348,8 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
       files,
       maxDepth: AFFECTED_MAX_DEPTH,
       deadlineMs: RUNNER_DEADLINE_MS,
-      ...(changedRanges ? { impact: { ranges: changedRanges, callerLimit: CALLER_LIMIT } } : {}),
     }
+    if (changedRanges) input.impact = { ranges: changedRanges, callerLimit: CALLER_LIMIT }
     const command = [
       CODE_GRAPH_ENV,
       CODE_GRAPH_NODE,

@@ -7,16 +7,6 @@ import type { LoopUsageAggregate, LoopSessionUsageRepo } from '../storage/repos/
 export { formatTokens } from './format'
 export type { LoopUsageSummary } from '../loop/token-usage'
 
-/**
- * Build cumulative usage for a loop by merging persisted aggregate with live session output.
- * Prevents double-counting by checking if the current session is already persisted.
- *
- * @param loopSessionUsageRepo - Repository to check persistence status and fetch aggregate
- * @param projectId - Project identifier
- * @param loopName - Loop name
- * @param currentSessionId - Current session ID to check for persistence
- * @param sessionOutput - Live session output (may be null if worktree unavailable)
- */
 function buildCumulativeUsage(
   loopSessionUsageRepo: LoopSessionUsageRepo | undefined,
   projectId: string,
@@ -25,7 +15,6 @@ function buildCumulativeUsage(
   sessionOutput: LoopSessionOutput | null,
 ): LoopUsageSummary | null {
   if (!loopSessionUsageRepo) {
-    // No repo available, return live usage only if present
     return sessionOutput?.usageSummary ?? null
   }
 
@@ -36,23 +25,16 @@ function buildCumulativeUsage(
   const liveSummary = sessionOutput?.usageSummary ?? null
 
   if (sessionIsPersisted) {
-    // Current session already persisted - use persisted only to avoid double-counting
     return persistedSummary
   }
 
-  // Merge persisted + live (live session not yet persisted)
   if (persistedSummary && liveSummary) {
     return mergeUsageSummaries(persistedSummary, liveSummary)
   }
 
-  // Return whichever one exists
   return persistedSummary ?? liveSummary
 }
 
-/**
- * The single render path for a loop's cumulative usage block. Returns [] when
- * there is nothing to report so callers can spread unconditionally.
- */
 export function formatCumulativeUsage(
   loopSessionUsageRepo: LoopSessionUsageRepo | undefined,
   projectId: string,
@@ -65,7 +47,6 @@ export function formatCumulativeUsage(
   return ['', 'Cumulative Usage:', ...formatUsageSummary(summary).map(l => `  ${l}`)]
 }
 
-/** Project a persisted per-model or per-role usage bucket onto a TokenBreakdown. */
 function tokensFromAggregate(data: LoopUsageAggregate['byModel'][string]): TokenBreakdown {
   return {
     input: data.inputTokens,
@@ -76,7 +57,6 @@ function tokensFromAggregate(data: LoopUsageAggregate['byModel'][string]): Token
   }
 }
 
-/** Convert LoopUsageAggregate from database to LoopUsageSummary */
 export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsageSummary {
   const totalTokens: TokenBreakdown = {
     input: aggregate.totalInputTokens,
@@ -113,17 +93,14 @@ export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsag
   }
 }
 
-/** The single token-line rendering: `<in> in / <out> out / ... cache write`. */
 function formatTokenBreakdown(tokens: TokenBreakdown): string {
   return `${formatTokens(tokens.input)} in / ${formatTokens(tokens.output)} out / ${formatTokens(tokens.reasoning)} reasoning / ${formatTokens(tokens.cacheRead)} cache read / ${formatTokens(tokens.cacheWrite)} cache write`
 }
 
-/** The single cost rendering: fixed 4-decimal dollars. */
 function formatCost(cost: number): string {
   return `$${cost.toFixed(4)}`
 }
 
-/** Format a LoopUsageSummary into deterministic total and per-model output */
 export function formatUsageSummary(summary: LoopUsageSummary): string[] {
   const lines: string[] = []
 
@@ -161,14 +138,12 @@ export function formatSessionOutput(
     lines.push('')
   }
 
-  // Use formatUsageSummary if usageSummary is available, otherwise format inline
   if (sessionOutput.usageSummary) {
     const usageLines = formatUsageSummary(sessionOutput.usageSummary)
     for (const line of usageLines) {
       lines.push(`  ${line}`)
     }
   } else {
-    // Fallback to inline formatting for backward compatibility
     lines.push(`  Cost: ${formatCost(sessionOutput.totalCost)} | Tokens: ${formatTokenBreakdown(sessionOutput.totalTokens)}`)
   }
 
@@ -190,7 +165,6 @@ export function formatCompletionSummary(summary: string): string[] {
   return ['', 'Completion Summary (post-action):', `  ${preview}`]
 }
 
-/** Full, untruncated rendered report of the applied `loop-complete` payload: outcome, steps, follow-ups, and notes. */
 export function formatPostActionReportLines(report: string): string[] {
   return ['', 'Post-Action Report:', report]
 }

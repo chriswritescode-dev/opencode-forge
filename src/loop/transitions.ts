@@ -25,12 +25,6 @@ export type TransitionEvent =
   | { type: 'handoff-missing' }
   | { type: 'post-action-complete' }
 
-/**
- * Pure transition table that mirrors the existing phase-handler behavior.
- * Switches first on `state.phase`, then on `event.type`.
- * Contains no side effects — no repo calls, no client calls,
- * no timers, no logging, no prompt sending, no filesystem access.
- */
 export function nextTransition(state: LoopState, event: TransitionEvent): Transition {
   switch (state.phase) {
     case 'coding':

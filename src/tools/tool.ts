@@ -1,6 +1,5 @@
 import { z } from 'zod'
 
-/** Per-call context handed to every Forge tool. */
 export interface ToolCallContext {
   sessionID: string
   messageID: string
@@ -8,13 +7,13 @@ export interface ToolCallContext {
   signal: AbortSignal
 }
 
-export interface ToolDefinition<Args extends z.ZodRawShape = z.ZodRawShape> {
+export interface ToolDefinition<Args extends Record<string, z.ZodType> = Record<string, z.ZodType>> {
   description: string
   args: Args
   execute(args: z.infer<z.ZodObject<Args>>, context: ToolCallContext): Promise<string>
 }
 
-export function tool<Args extends z.ZodRawShape>(input: ToolDefinition<Args>): ToolDefinition<Args> {
+export function tool<Args extends Record<string, z.ZodType>>(input: ToolDefinition<Args>): ToolDefinition<Args> {
   return input
 }
 

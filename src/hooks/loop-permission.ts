@@ -1,13 +1,9 @@
-import type { ForgeClient, SessionPermissionRule } from '../client/port'
+import { z } from 'zod'
+import type { ForgeClient, ForgeEvent, SessionPermissionRule } from '../client/port'
 import type { Logger } from '../types'
 import type { createSessionLoopResolver } from '../services/session-loop-resolver'
 import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 
-/**
- * Sessions already verified to carry a loop ruleset (or verified to not need
- * one, e.g. loop root sessions created with rules upfront). Prevents repeated
- * session fetches/updates from the high-frequency fallback paths.
- */
 const PATCHED_SESSIONS = new Set<string>()
 const PATCHED_SESSIONS_MAX = 5000
 
@@ -15,25 +11,31 @@ export function __resetLoopPermissionCache() {
   PATCHED_SESSIONS.clear()
 }
 
-interface SessionCreatedProperties {
-  info?: {
-    id?: string
-    parentID?: string
-    directory?: string
-    title?: string
-  }
-}
+const sessionCreatedPropertiesSchema = z.looseObject({
+  info: z.looseObject({
+    id: z.string().optional(),
+    parentID: z.string().optional(),
+    directory: z.string().optional(),
+    title: z.string().optional(),
+  }).optional(),
+})
+
+const permissionRuleSchema = z.looseObject({
+  permission: z.string(),
+  pattern: z.string(),
+  action: z.enum(['allow', 'deny', 'ask']),
+})
+
+const permissionRulesSchema = z.array(permissionRuleSchema)
 
 
 type ResolvedLoop = Awaited<
   ReturnType<ReturnType<typeof createSessionLoopResolver>['resolveActiveLoopForSession']>
 >
 
-function hasBlanketAllow(rules: unknown): rules is SessionPermissionRule[] {
-  return (
-    Array.isArray(rules) &&
-    rules.some((r: SessionPermissionRule) => r.permission === '*' && r.pattern === '*' && r.action === 'allow')
-  )
+function hasBlanketAllow(rules: SessionPermissionRule[] | null | undefined): boolean {
+  if (!rules) return false
+  return rules.some((rule) => rule.permission === '*' && rule.pattern === '*' && rule.action === 'allow')
 }
 
 function markPatched(sessionID: string) {
@@ -49,21 +51,11 @@ export interface CreateLoopPermissionPatcherDeps {
   sessionLoopResolver: ReturnType<typeof createSessionLoopResolver>
   directory: string
   logger: Logger
-  /** Resolves the configured loop permission ruleset options for a loop session. Workspace-aware so remote/portable rules are applied. */
   getPermissionOptions?: (workspaceId?: string) => LoopPermissionRulesetOptions | Promise<LoopPermissionRulesetOptions> | undefined
 }
 
 export interface LoopPermissionPatcher {
-  /** `session.created` fast path: patches task-spawned subagent sessions inside active loops. */
-  onSessionCreated(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
-  /**
-   * Fallback path for hooks that fire reliably for loop sessions
-   * (`chat.message`, `tool.execute.before`). Needed because plugin `event`
-   * delivery is filtered by instance directory in opencode, so
-   * `session.created` for subagent sessions in loop worktrees may never reach
-   * this plugin instance. Verifies the session's actual rules before writing,
-   * so it is idempotent across plugin restarts.
-   */
+  onSessionCreated(input: { event: { type: string; properties?: ForgeEvent['properties'] } }): Promise<void>
   ensurePatched(input: { sessionID: string; resolved?: ResolvedLoop }): Promise<void>
 }
 
@@ -83,7 +75,8 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
     let rulesetSource = 'loop-default'
     try {
       const parent = await client.session.get({ sessionID: parentID, directory: targetDirectory })
-      const parentRules = (parent as { permission?: SessionPermissionRule[] })?.permission
+      const parsedParentRules = permissionRulesSchema.safeParse(parent.permission)
+      const parentRules = parsedParentRules.success ? parsedParentRules.data : null
       if (hasBlanketAllow(parentRules)) {
         ruleset = parentRules
         rulesetSource = `inherited-from-parent=${parentID}`
@@ -123,8 +116,8 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
     async onSessionCreated(eventInput) {
       if (eventInput.event?.type !== 'session.created') return
 
-      const props = eventInput.event.properties as SessionCreatedProperties | undefined
-      const info = props?.info
+      const props = sessionCreatedPropertiesSchema.safeParse(eventInput.event.properties)
+      const info = props.success ? props.data.info : undefined
       const sessionID = info?.id
       const parentID = info?.parentID
       if (!sessionID || !parentID) return
@@ -176,14 +169,12 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
       let parentID: string | undefined
       try {
         const self = await client.session.get({ sessionID, directory: targetDirectory })
-        const selfInfo = self as { parentID?: string; permission?: SessionPermissionRule[] }
-        // Loop root and audit sessions are created with their ruleset upfront;
-        // only task-spawned subagent sessions (which have a parent) need patching.
-        if (!selfInfo?.parentID || hasBlanketAllow(selfInfo?.permission)) {
+        const parsedSelfRules = permissionRulesSchema.safeParse(self.permission)
+        if (!self.parentID || hasBlanketAllow(parsedSelfRules.success ? parsedSelfRules.data : undefined)) {
           markPatched(sessionID)
           return
         }
-        parentID = selfInfo.parentID
+        parentID = self.parentID
       } catch (err) {
         logger.error(`[loop-permission] failed to fetch session ${sessionID} for fallback patch`, err)
         return

@@ -7,22 +7,16 @@ export interface PlanSectionOutline {
   index: number
   id: string
   title: string
-  /** Ids of the sections this one must wait for. */
   after: string[]
-  /** 0-based line of the section's first content line (marker line + 1). */
   startLine?: number
-  /** Exclusive 0-based boundary: the stop heading, next marker, or end of plan. */
   endLine?: number
 }
 
 export interface PlanStructureSummary {
   lines: number
   characters: number
-  /** Count of unfenced <!-- forge-section --> marker lines, before any cap. */
   sectionMarkers: number
-  /** Sections the decomposer would actually produce, after cap and empty-body skipping. */
   sections: PlanSectionOutline[]
-  /** True when at least one marker declares an `id` or `after` attribute. */
   hasSectionAttributes: boolean
   loopName: string | null
   warnings: string[]
@@ -102,14 +96,6 @@ function isRepoRelativeNonGlobPath(file: string): boolean {
   return !/[*?]/.test(file)
 }
 
-/**
- * The repo-relative files a section's `### Files` list plans to touch. Backtick
- * tokens win over the bullet text, so ``- `src/a.ts` — add helper`` still
- * resolves, and a trailing `(new)` annotation is dropped. Absolute paths, `*`/`?`
- * globs, and fenced examples are ignored: the code-graph snapshotter only queries
- * repo-relative files that exist in the worktree, so bracketed dynamic-route
- * segments such as `[videoId]` stay valid file paths.
- */
 export function extractSectionFiles(sectionContent: string): string[] {
   const body = collectHeadingBodies(sectionContent, 3, 0, { skipFencedContent: true }).get('Files') ?? []
   const seen = new Set<string>()
@@ -132,16 +118,7 @@ export function extractSectionFiles(sectionContent: string): string[] {
   return files
 }
 
-/**
- * Produces a structural summary of a plan: line/char counts, section marker
- * count, the sections the decomposer would actually emit (after cap and
- * empty-body skipping), the explicit loop name (if any), and a list of
- * authoring warnings in a stable order.
- */
 export function summarizePlanStructure(planText: string): PlanStructureSummary {
-  // The capped decomposition supplies the reported outline and graph errors; the
-  // uncapped one supplies the emitted count before cap truncation, so empty-body
-  // loss and the cap warning never suppress each other.
   const capped = decomposePlanSections(planText)
   const uncapped = decomposePlanSections(planText, { maxSections: Number.MAX_SAFE_INTEGER })
   const sectionMarkers = capped.markerCount
@@ -167,12 +144,6 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
     warnings.push(`Section graph: ${error}`)
   }
 
-  // Compute empty-body loss independently from cap truncation. `allSections`
-  // holds every marker with a non-empty body, so the difference from
-  // `sectionMarkers` is exactly the markers the decomposer skips for being
-  // empty. Measuring it against the uncapped list keeps the two warnings from
-  // suppressing each other when a plan both overflows the cap and has empty
-  // phases.
   const emptyBodyLoss = Math.max(0, sectionMarkers - allSections.length)
   if (emptyBodyLoss > 0) {
     warnings.push(`${emptyBodyLoss} section marker(s) have empty bodies and will be skipped.`)
@@ -267,13 +238,6 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
   }
 }
 
-/**
- * Returns the produced sections whose line range overlaps `[startLine, endLine)`
- * (both 0-based, `endLine` exclusive). Uses the same uncapped-then-capped
- * decomposition as `summarizePlanStructure`, so indexes and titles match the
- * reported outline. Empty when the range falls in the preamble (before the first
- * marker) or trailing content (after the last section's end).
- */
 export function findSectionsForLineRange(
   planText: string,
   startLine: number,
@@ -301,11 +265,6 @@ export function findSectionsForLineRange(
     }))
 }
 
-/**
- * Formats a `PlanStructureSummary` as a compact multi-line string suitable for
- * showing the architect immediate structural feedback. Omits the `Loop Name:`
- * line when null and the `Warnings:` block entirely when empty.
- */
 export function formatPlanStructureSummary(
   summary: PlanStructureSummary,
   options: { sectionIndexes?: number[] } = {},

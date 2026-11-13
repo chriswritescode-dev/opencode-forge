@@ -4,21 +4,32 @@ export interface ToolBeforeInput {
   callID: string
 }
 
+export type ToolArgs = {
+  readonly path?: string
+  readonly filePath?: string
+  readonly include?: string
+  readonly pattern?: string
+  readonly patchText?: string
+}
+
+export type ToolMetadata = {
+  readonly answers?: string[][]
+  readonly forgePlanApprovalHandled?: boolean
+  readonly forgePlanApprovalDuplicate?: boolean
+}
+
 export interface ToolBeforeOutput {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
-  args: any
+  readonly args: ToolArgs
 }
 
 export interface ToolAfterInput extends ToolBeforeInput {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
-  args: any
+  args: ToolArgs
 }
 
 export interface ToolAfterOutput {
   title: string
   output: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool metadata is tool-specific
-  metadata: any
+  metadata: ToolMetadata
 }
 
 export type ToolBeforeHook = (input: ToolBeforeInput, output: ToolBeforeOutput) => Promise<void>

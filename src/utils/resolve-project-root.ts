@@ -1,20 +1,6 @@
 import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 
-/**
- * Resolves the real project directory for a loop from its host session.
- *
- * Loops are launched from a session rooted at the real project directory, but
- * the plugin instance that handles the `loop()` tool call may be bound to a
- * worktree directory (forge worktrees live under `<dataDir>/worktrees/...`).
- * Persisting that worktree path as `projectDir` makes the TUI dashboard group
- * and label loops by the worktree instead of the originating project. The host
- * session's own `directory` is the authoritative project root, so we resolve it
- * directly via the session API.
- *
- * Returns `null` when no host session id is available or the lookup fails, so
- * callers can fall back to a sensible default.
- */
 export async function resolveHostSessionDirectory(
   client: ForgeClient,
   hostSessionId: string | undefined,
@@ -26,8 +12,8 @@ export async function resolveHostSessionDirectory(
   type SessionGetInput = Parameters<typeof client.session.get>[0]
 
   const attempts: SessionGetInput[] = [
-    { sessionID: hostSessionId } as SessionGetInput,
-    { sessionID: hostSessionId, directory: fallbackDirectory } as SessionGetInput,
+    { sessionID: hostSessionId },
+    { sessionID: hostSessionId, directory: fallbackDirectory },
   ]
 
   for (const input of attempts) {
@@ -36,7 +22,6 @@ export async function resolveHostSessionDirectory(
       const dir = session?.directory
       if (dir) return dir
     } catch {
-      // fall through to next attempt
     }
   }
 

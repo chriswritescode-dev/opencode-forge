@@ -27,26 +27,14 @@ export interface PromptContext {
   getAttemptHistory?(state: LoopState, limit?: number): LoopAttemptRow[]
   getBlockingBugFindings(state: LoopState): ReviewFindingRow[]
   getSectionScope(state: LoopState): SectionScope
-  /** Rendered `## Code graph` pointer for the current section, or `''` when no snapshot was stored. */
   getSectionCodeGraphBlock?(state: LoopState): string
-  /** Rendered `## Code graph` pointer for the latest audit attempt, or `''` when no report was stored. */
   getAttemptCodeGraphBlock?(state: LoopState): string
 }
 
-/**
- * The only coder handoff instruction. Every coder prompt ends with it so the
- * attempt hands its decisions and verification evidence to the auditor through
- * `loop-handoff` instead of free-text prose.
- */
 const CODER_HANDOFF_INSTRUCTION: string = `\n\n---
 ## Required: coder handoff
 When this attempt is done, call \`${LOOP_HANDOFF_TOOL_NAME}\` with \`changes\` (each change and why), \`deviations\` (plan item, what you did instead, why), \`verification\` (each check: exact command, worktree-relative \`cwd\`, pass/fail/not-run, whether code changed afterwards), and optional \`notes\`, then end your turn.`
 
-/**
- * The only auditor handoff instruction. Section audits require the summary
- * payload when the section is clean; the non-sectioned plan audit never passes
- * one because summaries apply only to sectioned loops.
- */
 function auditorHandoffInstruction(includeSummary: boolean): string {
   const summaryRule = includeSummary
     ? ' When no blocking bug findings remain for this section, pass `summary` { done: [...], deviations: [...], followUps: [...] }; never pass `summary` while blocking bugs remain.'
@@ -58,7 +46,6 @@ When the audit is done, call \`${LOOP_HANDOFF_TOOL_NAME}\`.${summaryRule} Use \`
 
 export const AUDITOR_HANDOFF_INSTRUCTION: string = auditorHandoffInstruction(true)
 
-/** Short follow-up sent when a phase session ended its turn without its handoff tool. */
 export function buildHandoffNudgePrompt(role: LoopHandoffRole): string {
   const tool = role === 'post_action' ? LOOP_COMPLETE_TOOL_NAME : LOOP_HANDOFF_TOOL_NAME
   return `You ended your turn without calling \`${tool}\`. Finish the work, then call it.`
@@ -103,21 +90,11 @@ function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState
   return `##  Recurring findings — re-evaluate\nThese findings have recurred across audits. Re-evaluate each one under the Recurring Findings policy in your loop addendum:\n\n${lines.join('\n')}`
 }
 
-/**
- * The coding agent's only channel for finding remediation detail. The auditor
- * persists the detailed solution, acceptance criterion, and narrow verification
- * inside each finding's `description`, so the full finding text is inlined here
- * instead of being restated in auditor prose and injected verbatim.
- */
 function buildOutstandingFindingsCoderBlock(findings: ReviewFindingRow[]): string {
   if (findings.length === 0) return ''
   return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\nRemediation policy (applies to every finding below):\n- Read every finding before changing anything. Identify shared root causes across findings and fix in dependency order, addressing related findings through one owner instead of independent per-file patches. Coupled fixes are serialized under one implementation owner; independent fixes may be delegated to code subagents under the existing concurrency policy. Ordering or grouping findings is not permission to truncate, suppress, or silently defer any of them.\n- For a behavioral bug, first produce a focused failing test or reproducer through the affected public interface, then apply the smallest complete fix and show the regression check passing against the reported failure. For races, replays, or ordering bugs, exercise the ordering, competing operations, or repeated delivery explicitly instead of relying on a large suite to expose them.\n- When a failing test is inappropriate for the finding, verify with concrete source or contract evidence plus the finding's own narrow verification instead of a speculative rewrite.\n- Run targeted verification after each root-cause fix. Run all applicable repository/plan full checks once after the fix batch reaches its final state, rerunning any check a later change invalidated; never run the full suite separately for every finding unless a required check demands it.\n- Record each fix's outcome and regression check in the ${LOOP_HANDOFF_TOOL_NAME} report at the end of this attempt. Never delete findings — they stay open until the auditor clears them.\n\n${formatFindingDetails(findings)}`
 }
 
-/**
- * Short runtime status note (e.g. the auditor session could not run), not
- * auditor output. Findings carry auditor output.
- */
 function buildLoopNoticeBlock(notice?: string): string {
   if (!notice) return ''
   return `\n\n---\n## Loop notice\n${notice}`
@@ -219,11 +196,6 @@ export function buildAttemptHistoryBlock(ctx: PromptContext, state: LoopState, r
   return lines.join('\n')
 }
 
-/**
- * The first coder prompt of a non-sectioned loop: the raw plan followed by the
- * coder handoff instruction. Idempotent, so a stored prompt that already ends
- * with the instruction is never sent with it twice.
- */
 export function buildPlanInitialPrompt(planText: string): string {
   if (planText.endsWith(CODER_HANDOFF_INSTRUCTION)) return planText
   return planText + CODER_HANDOFF_INSTRUCTION
@@ -245,11 +217,6 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, no
   return prompt + CODER_HANDOFF_INSTRUCTION
 }
 
-/**
- * The audit review scope shared by every audit prompt: the loop's own commits
- * since the exact base commit its worktree branched from, or the legacy
- * merge-base wording for rows persisted before base commits were recorded.
- */
 function auditChangeScope(state: Pick<LoopState, 'baseCommit'>): string {
   if (state.baseCommit) {
     return `every commit since base commit \`${state.baseCommit}\` (\`git diff ${state.baseCommit}\` covers committed, staged and unstaged tracked changes) plus untracked files`
@@ -257,15 +224,6 @@ function auditChangeScope(state: Pick<LoopState, 'baseCommit'>): string {
   return "every commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes"
 }
 
-/**
- * The section audit's review scope: everything since the nearest earlier
- * section's recorded checkpoint commit, or the base-commit / legacy
- * merge-base scope on the first section. A later section with no recorded
- * checkpoint either belongs to a loop started before checkpoints were stored,
- * whose checkpoint commits are titled `section <N>:`, or failed to record one;
- * the prompt names both scopes so the auditor never searches for a commit
- * that does not exist.
- */
 function sectionAuditScope(ctx: Pick<PromptContext, 'getSectionPlan'>, state: LoopState): string {
   for (let index = state.currentSectionIndex - 1; index >= 0; index--) {
     const checkpoint = ctx.getSectionPlan(state, index)?.checkpointCommit
@@ -449,18 +407,11 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   return header + CODER_HANDOFF_INSTRUCTION
 }
 
-/** The `[Loop iteration i/max]` system line shared by non-sectioned coder prompts. */
 function iterationSystemLine(state: Pick<LoopState, 'iteration' | 'maxIterations'>): string {
   if (state.maxIterations > 0) return `Loop iteration ${String(state.iteration)} / ${String(state.maxIterations)}`
   return `Loop iteration ${String(state.iteration)} | No max iterations set - loop runs until auditor all-clear or cancelled`
 }
 
-/**
- * Follow-up sent to a reused coder session on a same-section retry. The session
- * already holds the section plan, the plan text and the earlier attempt history,
- * so this carries only the loop notice, the findings that are still open and the
- * decisions instruction, keeping the retry cheap.
- */
 export function buildCoderFollowUpPrompt(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[], notice?: string): string {
   const header = state.totalSections > 0
     ? `[Loop section ${String(state.currentSectionIndex + 1)}/${String(state.totalSections)} -- iteration ${String(state.iteration)}/${String(state.maxIterations)} (follow-up)]`
@@ -482,12 +433,6 @@ export function buildCoderFollowUpPrompt(ctx: PromptContext, state: LoopState, o
   return prompt + CODER_HANDOFF_INSTRUCTION
 }
 
-/**
- * Follow-up sent to a reused audit session for the next same-section attempt.
- * The session keeps its earlier reads and command results; this restates the
- * coder's decisions, the latest attempt's delta guidance and the verification
- * steps for the findings that are still open.
- */
 export function buildAuditFollowUpPrompt(ctx: PromptContext, state: LoopState): string {
   const header = state.totalSections > 0
     ? `[Loop section audit ${String(state.currentSectionIndex + 1)}/${String(state.totalSections)} (follow-up)]`

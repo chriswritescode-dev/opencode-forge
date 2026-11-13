@@ -1,9 +1,3 @@
-/**
- * Returns a per-line mask where `true` means the line sits inside a fenced code
- * block. Opening lines and content are masked; a matching closing line and
- * following content are not. Backtick and tilde fences close only with the
- * same delimiter and at least the opening length.
- */
 export function computeFenceMask(lines: string[]): boolean[] {
   const mask = new Array<boolean>(lines.length)
   let delimiter: '`' | '~' | null = null
@@ -15,7 +9,12 @@ export function computeFenceMask(lines: string[]): boolean[] {
         mask[i] = false
         continue
       }
-      delimiter = fence[1][0] as '`' | '~'
+      const marker = fence[1][0]
+      if (marker !== '`' && marker !== '~') {
+        mask[i] = false
+        continue
+      }
+      delimiter = marker
       delimiterLength = fence[1].length
       mask[i] = true
       continue

@@ -1,20 +1,4 @@
-/**
- * Execution preferences resolution for the TUI plan dialog defaults.
- *
- * Last-used preferences come from the most recent Forge workspace on the
- * OpenCode server: every loop execution stamps its model + variant choices
- * into `extra.forgeLoop`, so `workspace.list().extra.forgeLoop` is the
- * canonical source. This avoids a separate TUI-local SQLite store and works
- * correctly when the TUI is on a different host than the server.
- *
- * The mode (`New session` / `Execute here` / `Loop`) is **not** persisted
- * across hosts — only the Loop mode creates a workspace, so the derivation
- * can never observe a user choosing one of the other two modes. Mode falls
- * back to the config default in `resolveExecutionDialogDefaults`. If the
- * user wants per-host mode persistence, that's a TUI-local concern that
- * could move into `api.kv` later.
- */
-
+import { z } from 'zod'
 import type { PluginConfig } from '../types'
 import type { WorkspaceForRecents } from './tui-models'
 
@@ -28,103 +12,75 @@ export interface ExecutionPreferences {
 
 export type ExecutionSelectionOverride = Partial<Omit<ExecutionPreferences, 'mode'>>
 
-function normalizeMode(mode: string): ExecutionPreferences['mode'] {
+export interface ExecutionDialogDefaults {
+  mode: string
+  executionModel: string
+  auditorModel: string
+  executionVariant: string
+  auditorVariant: string
+}
+
+const executionForgeLoopSchema = z.looseObject({
+  executionModel: z.string().optional().catch(undefined),
+  auditorModel: z.string().optional().catch(undefined),
+  executionVariant: z.string().optional().catch(undefined),
+  auditorVariant: z.string().optional().catch(undefined),
+})
+
+const workspaceExtraSchema = z.looseObject({
+  forgeLoop: executionForgeLoopSchema.optional(),
+})
+
+function normalizeMode(mode: ExecutionPreferences['mode']): ExecutionPreferences['mode'] {
   const lower = mode.toLowerCase()
   if (lower === 'loop' || lower.startsWith('loop ') || lower.startsWith('loop-')) {
     return 'Loop'
   }
-  return mode as ExecutionPreferences['mode']
+  return mode === 'New session' || mode === 'Execute here' ? mode : 'Loop'
 }
 
-/**
- * Picks the most recent Forge workspace for `projectId` from `workspaces`
- * and projects its `extra.forgeLoop.{executionModel,auditorModel,executionVariant,auditorVariant}`
- * onto an {@link ExecutionPreferences} record. Returns `null` if no eligible
- * workspace exists or its `extra.forgeLoop` envelope is missing.
- *
- * `mode` is always `'Loop'` — only loop executions create a workspace, so
- * the derivation can never witness `'New session'` or `'Execute here'`.
- * Callers compose with {@link resolveExecutionDialogDefaults} which falls
- * back to config when this returns `null`.
- *
- * Workspaces with no `projectID` are not filtered out (forward-compat),
- * matching the policy in `deriveRecentModelsFromWorkspaces`.
- *
- * Workspaces with non-finite `timeUsed` (`"NaN"`, `"Infinity"`, missing)
- * are treated as `0` for sorting, so a legitimate workspace with a real
- * `timeUsed` always wins over them.
- */
+function nonEmpty(value: string | undefined): string | undefined {
+  return value !== undefined && value.length > 0 ? value : undefined
+}
+
 export function deriveExecutionPreferencesFromWorkspaces(
   projectId: string,
   workspaces: ReadonlyArray<WorkspaceForRecents>,
 ): ExecutionPreferences | null {
-  const toFiniteNumber = (value: unknown): number => {
-    const n = typeof value === 'number' ? value : Number(value)
+  const toFiniteNumber = (value: number | string | undefined): number => {
+    const n = Number(value)
     return Number.isFinite(n) ? n : 0
   }
 
-  const eligible = workspaces.filter((w) => {
-    if (w.type !== 'forge') return false
-    if (w.projectID !== undefined && w.projectID !== projectId) return false
-    if (typeof w.extra !== 'object' || w.extra === null) return false
-    const forgeLoop = (w.extra as { forgeLoop?: unknown }).forgeLoop
-    return typeof forgeLoop === 'object' && forgeLoop !== null
+  const eligible = workspaces.flatMap((workspace) => {
+    if (workspace.type !== 'forge') return []
+    if (workspace.projectID !== undefined && workspace.projectID !== projectId) return []
+    const extra = workspaceExtraSchema.safeParse(workspace.extra)
+    if (!extra.success || extra.data.forgeLoop === undefined) return []
+    return [{ workspace, forgeLoop: extra.data.forgeLoop }]
   })
 
   if (eligible.length === 0) return null
 
   const mostRecent = eligible.reduce((best, current) =>
-    toFiniteNumber(current.timeUsed) > toFiniteNumber(best.timeUsed) ? current : best,
+    toFiniteNumber(current.workspace.timeUsed) > toFiniteNumber(best.workspace.timeUsed) ? current : best,
   )
-
-  const forgeLoop = (mostRecent.extra as { forgeLoop: Record<string, unknown> }).forgeLoop
-
-  const readString = (key: string): string | undefined => {
-    const raw = forgeLoop[key]
-    return typeof raw === 'string' && raw.length > 0 ? raw : undefined
-  }
+  const forgeLoop = mostRecent.forgeLoop
 
   return {
     mode: 'Loop',
-    executionModel: readString('executionModel'),
-    auditorModel: readString('auditorModel'),
-    executionVariant: readString('executionVariant'),
-    auditorVariant: readString('auditorVariant'),
+    executionModel: nonEmpty(forgeLoop.executionModel),
+    auditorModel: nonEmpty(forgeLoop.auditorModel),
+    executionVariant: nonEmpty(forgeLoop.executionVariant),
+    auditorVariant: nonEmpty(forgeLoop.auditorVariant),
   }
 }
 
-/**
- * Resolves dialog defaults with priority: override > config > storedPrefs.
- *
- * A defined override value (including explicit empty string `''`) beats
- * every fallback. Use `''` to force "use default" (model auto-selection).
- *
- * Priority for executionModel:
- *   1. overrides.executionModel (if defined)
- *   2. config.executionModel
- *   3. storedPrefs.executionModel
- *
- * Priority for auditorModel:
- *   1. overrides.auditorModel (if defined)
- *   2. config.auditorModel
- *   3. config.executionModel (inherit)
- *   4. storedPrefs.auditorModel
- *   5. storedPrefs.executionModel (inherit)
- *   6. Platform default (empty string)
- *
- * Variant fields follow the same pattern but auditor variant has **no**
- * inheritance from execution variant — they are independent.
- *
- * @param config - Plugin config
- * @param storedPrefs - Last-used preferences from KV (workspace-derived)
- * @param overrides - In-memory overrides (e.g. URL params, dialog temp state)
- * @returns Resolved defaults for dialog pre-fill
- */
 export function resolveExecutionDialogDefaults(
   config: PluginConfig,
   storedPrefs: ExecutionPreferences | null,
   overrides?: ExecutionSelectionOverride,
-): { mode: string; executionModel: string; auditorModel: string; executionVariant: string; auditorVariant: string } {
+): ExecutionDialogDefaults {
   const mode = normalizeMode(storedPrefs?.mode ?? 'Loop')
 
   const pick = (override: string | undefined, ...fallbacks: Array<string | undefined>): string => {

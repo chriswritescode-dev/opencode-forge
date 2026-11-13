@@ -8,12 +8,6 @@ import { isForgeCodeGraphLink } from '../loop/code-graph'
 
 export type WorktreeCommitOutcome = 'committed' | 'no-changes' | 'failed'
 
-/**
- * Remove the forge-written `opencode.jsonc` before committing so the inline
- * per-loop config never enters loop history. Only an untracked file is
- * removed: when the repository already tracks an `opencode.jsonc`, forge never
- * wrote it (skip-if-exists), so it is left untouched and its edits still commit.
- */
 function removeForgeWrittenOpencodeConfig(git: GitService, logger: Logger, directory: string): void {
   const configPath = join(directory, WORKTREE_OPENCODE_CONFIG_FILENAME)
   if (!existsSync(configPath)) return
@@ -26,14 +20,6 @@ function removeForgeWrittenOpencodeConfig(git: GitService, logger: Logger, direc
   }
 }
 
-/**
- * Single point of truth for committing a forge worktree's pending changes:
- * strips the forge-written opencode config, stages everything except Forge's
- * `.codegraph` cache link, and commits.
- * Used by both the teardown commit (forge-adapter) and the per-section
- * checkpoint commits (loop runtime). Failures are logged, never thrown — a
- * missed commit degrades bookkeeping, it must not break the caller.
- */
 export function commitWorktreeChanges(git: GitService, logger: Logger, directory: string, message: string): WorktreeCommitOutcome {
   removeForgeWrittenOpencodeConfig(git, logger, directory)
 

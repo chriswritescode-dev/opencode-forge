@@ -1,7 +1,7 @@
 import { SANDBOX_CACHE_DIR, type SandboxRuntime } from './msb'
 import type { PluginConfig, SandboxMountConfig } from '../types'
 import type { SandboxMount } from './path'
-import type { ActiveSandbox } from './manager'
+import type { ActiveSandbox, SandboxManager } from './manager'
 import type { SandboxRuntimeSettings } from './loop-settings'
 import { resolveLoopAllowedDirectories } from '../constants/loop'
 
@@ -10,31 +10,22 @@ export interface SandboxContext {
   containerName: string
   hostDir: string
   mounts: SandboxMount[]
-  /** Identifies this creation of the sandbox; changes when it is recreated under the same name. */
   instanceId?: string
-  /** Known CPUs, memory, and LAN access of the sandbox. */
   settings?: SandboxRuntimeSettings
 }
 
-/** The single mapping from a manager's active sandbox to the context tool routing and notes use. */
 export function sandboxContextFromActive(runtime: SandboxRuntime, active: ActiveSandbox): SandboxContext {
-  return {
+  const context: SandboxContext = {
     runtime,
     containerName: active.containerName,
     hostDir: active.projectDir,
     mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
     instanceId: active.instanceId,
-    ...(active.settings ? { settings: active.settings } : {}),
   }
+  if (active.settings) context.settings = active.settings
+  return context
 }
 
-/**
- * Sandbox context note injected into the system prompt of every session whose tool calls are
- * routed into a container — sandbox loops, their Task-tool subagents, and sessions with the host
- * sandbox toggled on. Lives here, next to `SandboxContext`, because it describes the container
- * routing itself rather than anything loop-specific, and because subagents never see a loop
- * prompt body. Single source of truth.
- */
 const SHARED_WORKSPACE_ARTIFACTS_NOTE = 'The project directory is shared between the host and the container, so dependency directories and native build output created in the other environment (for example node_modules, .venv, virtualenvs, compiled extensions, and build/target directories) may be built for the wrong OS or architecture: delete them and reinstall or rebuild here rather than only rerunning an install that may report them as up to date.'
 
 export const SANDBOX_CONTEXT_NOTE = [
@@ -54,10 +45,6 @@ export const SANDBOX_OFF_NOTE = [
   SHARED_WORKSPACE_ARTIFACTS_NOTE,
 ].join('\n')
 
-/**
- * Observed environment descriptors either side of a sandbox toggle, produced by probing both
- * environments with the same command (see `env-probe.ts`). Either side may be unknown.
- */
 export interface SandboxEnvironmentTransition {
   from?: string | null
   to?: string | null
@@ -74,29 +61,23 @@ function formatTransitionLine(
   return `[Sandbox] Environment changed: ${from ? `${fromLabel} (${from})` : `${fromLabel} (unknown)`} -> ${to ? `${toLabel} (${to})` : `${toLabel} (unknown)`}.`
 }
 
-/** How the sandbox a session was already using changed since its previous request. */
 export type SandboxChange = 'restarted' | 'recreated'
 
-const SANDBOX_CHANGE_NOTES: Readonly<Record<SandboxChange, string>> = {
+const SANDBOX_CHANGE_NOTES = {
   restarted: '[Sandbox] The sandbox was restarted to apply new resource settings. Its files and disks are unchanged, but processes started earlier (including the Docker daemon and any containers) are no longer running; restart the ones you still need.',
   recreated: '[Sandbox] The sandbox was recreated. Anything outside the mounted directories from before is gone, including installed packages, Docker data, and caches, and processes started earlier are no longer running; reinstall and restart what you still need.',
-}
+} satisfies Record<SandboxChange, string>
 
 function formatMemory(mib: number): string {
   return mib >= 1024 && mib % 1024 === 0 ? `${mib / 1024} GiB` : `${mib} MiB`
 }
 
-/** One-line description of a sandbox's CPUs, memory, and LAN access. */
 export function formatSandboxSettingsLine(settings: SandboxRuntimeSettings): string {
   const cpus = `${settings.cpus} CPU${settings.cpus === 1 ? '' : 's'}`
   const lan = settings.allowLan ? 'allowed' : 'blocked'
   return `[Sandbox] Resources: ${cpus}, ${formatMemory(settings.memoryMib)} memory. LAN (private network) access: ${lan}.`
 }
 
-/**
- * Compares the sandbox a session saw on its previous request with the current one. Only the same
- * sandbox name counts: a different name is a different sandbox, not a change to this one.
- */
 export function detectSandboxChange(previous: SandboxContext | undefined, next: SandboxContext): SandboxChange | undefined {
   if (!previous || previous.containerName !== next.containerName) return undefined
   if (previous.instanceId && next.instanceId && previous.instanceId !== next.instanceId) return 'recreated'
@@ -106,12 +87,6 @@ export function detectSandboxChange(previous: SandboxContext | undefined, next: 
   return undefined
 }
 
-/**
- * The container note, led by the concrete host -> container environment change when both sides
- * could be probed, then the sandbox's known settings and, once, how it changed. Falls back to
- * `SANDBOX_CONTEXT_NOTE` verbatim when none of these are known, so an unprobeable environment
- * never degrades the guidance itself.
- */
 export function buildSandboxContextNote(
   transition?: SandboxEnvironmentTransition,
   sandbox?: { settings?: SandboxRuntimeSettings; change?: SandboxChange },
@@ -125,7 +100,6 @@ export function buildSandboxContextNote(
   return lines.filter((line): line is string => line !== null).join('\n')
 }
 
-/** The host note, led by the concrete container -> host environment change. */
 export function buildSandboxOffNote(transition?: SandboxEnvironmentTransition): string {
   const line = formatTransitionLine(transition, 'container', 'host')
   return line ? `${line}\n${SANDBOX_OFF_NOTE}` : SANDBOX_OFF_NOTE
@@ -168,26 +142,10 @@ export async function resolveSandboxContextForLoop(
   return sandboxContextFromActive(sandboxManager.runtime, active)
 }
 
-/**
- * Whether the sandbox is enabled by configuration alone (the user has not opted out via
- * `sandbox.enabled: false`). This is the gate that decides whether the server constructs a
- * sandbox manager, and is also the only signal the TUI can evaluate (it has no manager), so
- * both sides share it to bake the correct bash/sh permission routing for new loop sessions.
- */
 export function isSandboxConfigEnabled(config: PluginConfig | undefined): boolean {
   return config?.sandbox?.enabled !== false
 }
 
-/**
- * Every host directory bind-mounted into the sandbox beyond the worktree, git, project,
- * tool-output and temp mounts the manager derives itself.
- *
- * `loop.allowExternalDirectories` entries become read-only mounts. The mounts are the boundary for
- * both in-container tools and host file tools (the sandbox tool hook refuses `read`/`edit`/`write`/
- * `patch` outside them), so a directory is readable exactly when it is mounted. An explicit
- * `sandbox.mounts` entry for the same path is listed first and therefore wins, which is how
- * read-write access is granted.
- */
 export function resolveSandboxMountConfigs(config: PluginConfig | undefined): SandboxMountConfig[] {
   return [
     ...(config?.sandbox?.mounts ?? []),
@@ -195,19 +153,7 @@ export function resolveSandboxMountConfigs(config: PluginConfig | undefined): Sa
   ]
 }
 
-/**
- * Determines whether sandboxed execution is in effect.
- *
- * A sandbox is only usable when BOTH conditions hold:
- * - the user has not opted out via `sandbox.enabled: false`, and
- * - a sandbox manager was constructed (msb mode active).
- *
- * Honoring the config here (not just the manager's existence) keeps this the single
- * source of truth for the bash/sh permission routing: when the sandbox is off, loops
- * run worktree-only and host `bash` stays allowed rather than being denied in favor of
- * an `sh` tool that has no container to run in.
- */
-export function isSandboxEnabled(config: PluginConfig | undefined, sandboxManager: unknown): boolean {
+export function isSandboxEnabled(config: PluginConfig | undefined, sandboxManager: SandboxManager | null | undefined): boolean {
   if (!isSandboxConfigEnabled(config)) return false
   return !!sandboxManager
 }

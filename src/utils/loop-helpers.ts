@@ -1,6 +1,12 @@
+import { z } from 'zod'
 import type { PluginConfig, Logger } from '../types'
 import type { LoopService, LoopState } from '../loop'
 import { parseModelString } from './model-fallback'
+
+const fallbackModelRefSchema = z.looseObject({
+  model: z.string(),
+  variant: z.string().optional(),
+})
 
 type ModelRef = { providerID: string; modelID: string }
 type LoopModelRole = 'code' | 'auditor'
@@ -35,8 +41,10 @@ export function buildAuditorModelChain(
   const fallbacks = config.auditorFallbackModels ?? []
   for (let i = 0; i < fallbacks.length; i++) {
     const entry = fallbacks[i]
-    const raw = typeof entry === 'string' ? entry : entry?.model
-    const variant = typeof entry === 'string' ? undefined : entry?.variant || undefined
+    const asString = z.string().safeParse(entry)
+    const asModel = fallbackModelRefSchema.safeParse(entry)
+    const raw = asString.success ? asString.data : asModel.success ? asModel.data.model : undefined
+    const variant = asModel.success ? asModel.data.variant || undefined : undefined
     const model = parseModelString(raw)
     if (!model) continue
     const key = `${model.providerID}/${model.modelID}`
@@ -132,19 +140,10 @@ export function usageRoleForPhase(phase: LoopState['phase'] | undefined): 'code'
   return isAuditorPhase(phase) ? 'auditor' : 'code'
 }
 
-/**
- * The phase whose role owns a loop's standby session: the opposite of the
- * current phase (the coder session stands by while auditing, the audit session
- * while coding). Single source for standby usage attribution.
- */
 export function standbyPhaseFor(phase: LoopState['phase']): LoopState['phase'] {
   return phase === 'auditing' ? 'coding' : 'auditing'
 }
 
-// Resolves the label used to attribute assistant usage when a message's own
-// metadata lacks a model (see src/loop/token-usage.ts modelLabelFromMessage).
-// Auditor phases use the chain-aware choice so cost attribution names the model
-// that was actually used; other phases fall back to the execution model.
 export function resolveUsageFallbackModelLabel(
   config: PluginConfig,
   state: LoopState,
@@ -160,6 +159,4 @@ export function resolveUsageFallbackModelLabel(
   return state.executionModel ?? config.executionModel
 }
 
-// Re-exported from the dependency-free duration module so existing importers
-// keep their import path while the browser bundle can import the pure source.
 export { formatDuration, computeElapsedSeconds } from './duration'

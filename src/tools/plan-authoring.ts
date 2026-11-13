@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from './tool'
+import { tool } from './tool'
 import type { ToolContext } from './types'
 import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { writeSessionPlanContent } from '../services/plan-capture'
@@ -17,10 +17,6 @@ function assertWritableSession(ctx: ToolContext, sessionID: string): string | nu
   return null
 }
 
-/**
- * Wraps `normalizePastedPlanText` and maps its reasons to user-facing messages
- * for the `plan-write` tool. Returns the normalized body on success.
- */
 function normalizePlanContent(content: string): { ok: true; text: string } | { ok: false; message: string } {
   const result = normalizePastedPlanText(content)
   if (result.ok) {
@@ -36,12 +32,6 @@ function normalizePlanContent(content: string): { ok: true; text: string } | { o
   }
 }
 
-/**
- * Writes the plan text through the shared session-scoped write path and
- * returns a structural report (counts + warnings) for the architect. When
- * `focusedSectionIndexes` is given, only those sections are detailed; the full
- * outline is reported otherwise.
- */
 function writeAndReport(
   ctx: ToolContext,
   sessionID: string,
@@ -60,7 +50,7 @@ function writeAndReport(
   )}`
 }
 
-export function createPlanAuthoringTools(ctx: ToolContext): Record<string, ToolDefinition> {
+export function createPlanAuthoringTools(ctx: ToolContext) {
   return {
     'plan-write': tool({
       description:

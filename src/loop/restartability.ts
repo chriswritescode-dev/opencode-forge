@@ -1,8 +1,3 @@
-/**
- * Shared restartability logic for determining if a loop can be restarted.
- * Used by both execution service and tooling/display layers.
- */
-
 import { existsSync } from 'fs'
 import { parseTerminationReasonString } from '../loop'
 
@@ -27,28 +22,12 @@ export interface RestartabilityResult {
   restartBlockedMessage?: string
 }
 
-/**
- * Determine if a loop can be restarted based on its state.
- * 
- * Rules:
- * - Completed loops cannot restart (checked by status field and terminationReason)
- * - Missing worktree blocks restart ONLY when the scratch branch is also gone;
- *   if the branch survives, restart recreates the worktree from it
- * - Active/running loops require force
- * - All other terminal states (cancelled, errored, stalled) are restartable without force
- *
- * @param opts.branchExists Lazy predicate that reports whether the loop's scratch
- *   branch still exists. It is only consulted when the worktree directory is
- *   missing, so callers may safely back it with a git probe. When omitted, a
- *   missing worktree directory blocks restart (legacy behavior).
- */
 export function getRestartability(
   state: RestartableLoopState,
   opts?: { force?: boolean; worktreeExists?: (path: string) => boolean; branchExists?: () => boolean }
 ): RestartabilityResult {
   const worktreeExists = opts?.worktreeExists ?? existsSync
   
-  // Completed loops cannot restart - check persisted status first
   if (state.status === 'completed') {
     return {
       restartable: false,
@@ -58,7 +37,6 @@ export function getRestartability(
     }
   }
   
-  // Also check terminationReason for legacy/secondary validation
   if (state.terminationReason) {
     const parsed = parseTerminationReasonString(state.terminationReason)
     if (parsed.kind === 'completed') {
@@ -71,9 +49,6 @@ export function getRestartability(
     }
   }
   
-  // Missing worktree directory: the forge scratch branch is never deleted, so if
-  // it survives, restart recreates the worktree from it (git worktree add <branch>).
-  // Only block when the branch is also gone — then the work is truly unrecoverable.
   if (state.worktree && state.worktreeDir && !worktreeExists(state.worktreeDir)) {
     if (!opts?.branchExists?.()) {
       return {
@@ -85,7 +60,6 @@ export function getRestartability(
     }
   }
   
-  // Active/running loops require force
   if (state.active) {
     return {
       restartable: true,
@@ -95,7 +69,6 @@ export function getRestartability(
     }
   }
   
-  // All other terminal states (cancelled, errored, stalled) are restartable without force
   return {
     restartable: true,
     restartRequiresForce: false,

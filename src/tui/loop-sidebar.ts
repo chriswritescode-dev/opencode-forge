@@ -8,17 +8,11 @@ export interface LoopSidebarStoreDeps {
 }
 
 export interface LoopSidebarStore {
-  /** Most recent loops for the sidebar. */
   loops: Accessor<LoopSidebarRow[]>
-  /** Re-read the loop rows; coalesced with any in-flight read. */
   refresh(): void
   dispose(): void
 }
 
-/**
- * The sidebar's loop rows, read once at startup and on every `loopsChanged` push.
- * The row signature suppresses a re-render when a refetch returns identical rows.
- */
 export function createLoopSidebarStore(deps: LoopSidebarStoreDeps): LoopSidebarStore {
   const [loops, setLoops] = createSignal<LoopSidebarRow[]>([])
   let signature = ''

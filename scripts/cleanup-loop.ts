@@ -1,21 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Wipe all forge state for a single loop name across:
- *   - forge.db `loops` row
- *   - opencode.db `workspace` rows (and their `session` rows)
- *   - on-disk worktree directory
- *   - git worktree registration
- *   - git branch (the persisted worktree branch; branches outside forge/ belong to the caller and are kept)
- *   - running msb sandbox
- *
- * Usage:
- *   bun scripts/cleanup-loop.ts <loopName> [--project-dir=/path/to/project] [--dry-run]
- *
- * Example:
- *   bun scripts/cleanup-loop.ts category-nav-filter --project-dir=/Users/chris/development/supplying-demand/sd-mono
- *
- * Without --project-dir, the git worktree/branch cleanup is skipped (DB and disk cleanup still run).
- */
 
 import Database from 'bun:sqlite'
 import { existsSync, rmSync } from 'fs'
@@ -27,8 +10,31 @@ import { loadPluginConfig } from '../src/setup'
 import { resolveForgeDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from '../src/utils/opencode-paths'
 import { createMsbRuntime, type SandboxRuntime } from '../src/sandbox/msb'
 import { hasTable } from '../src/storage'
+import { errorMessage } from '../src/utils/error-message'
+import { z } from 'zod'
 
 const DEPENDENT_TABLES = ['loop_large_fields', 'section_plans', 'section_dependencies', 'review_findings', 'plans']
+
+const tableInfoRowsSchema = z.array(z.object({ name: z.string() }))
+
+const loopRowsSchema = z.array(z.looseObject({
+  project_id: z.string(),
+  loop_name: z.string(),
+  status: z.string(),
+  worktree_branch: z.string().nullable().optional(),
+}))
+
+const workspaceRowsSchema = z.array(z.looseObject({
+  id: z.string(),
+  project_id: z.string(),
+}))
+
+const sessionRowsSchema = z.array(z.looseObject({
+  id: z.string(),
+  title: z.string(),
+}))
+
+const nonEmptyStringSchema = z.string().min(1)
 
 interface Args {
   loopName: string
@@ -44,8 +50,6 @@ function parseArgs(): Args {
 
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]
-    // Skip a bare value flag together with the token it consumes, so a path
-    // passed as `--project-dir /path` is never mistaken for the loop name.
     if (arg === '--project-dir') i++
     else if (!arg.startsWith('--') && !loopName) loopName = arg
   }
@@ -67,7 +71,7 @@ async function logAction(dryRun: boolean, label: string, action: () => Promise<v
     await action()
     console.log(`  ✓ ${label}`)
   } catch (err) {
-    console.error(`  ✗ ${label}: ${(err as Error).message}`)
+    console.error(`  ✗ ${label}: ${errorMessage(err)}`)
   }
 }
 
@@ -80,19 +84,14 @@ export async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir:
   console.log(`\nforge.db (${path}):`)
   const db = new Database(path)
   try {
-    const hasBranchColumn = (db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>).some(
+    const hasBranchColumn = tableInfoRowsSchema.parse(db.prepare('PRAGMA table_info(loops)').all()).some(
       column => column.name === 'worktree_branch',
     )
-    const rows = db
+    const rows = loopRowsSchema.parse(db
       .prepare(
         `SELECT project_id, loop_name, status${hasBranchColumn ? ', worktree_branch' : ''} FROM loops WHERE loop_name = ?`,
       )
-      .all(loopName) as Array<{
-      project_id: string
-      loop_name: string
-      status: string
-      worktree_branch?: string | null
-    }>
+      .all(loopName))
     if (rows.length === 0) {
       console.log(`  no loops rows for ${loopName}`)
       return []
@@ -101,7 +100,7 @@ export async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir:
       ...new Set(
         rows
           .map(row => row.worktree_branch)
-          .filter((branch): branch is string => typeof branch === 'string' && branch.length > 0),
+          .filter((branch): branch is string => nonEmptyStringSchema.safeParse(branch).success),
       ),
     ]
     const dependentTables = DEPENDENT_TABLES.filter(table => hasTable(db, table))
@@ -144,20 +143,14 @@ async function cleanupOpencodeDb(loopName: string, dryRun: boolean): Promise<voi
   console.log(`\nopencode.db (${path}):`)
   const db = new Database(path)
   try {
-    const workspaces = db.query('SELECT id, project_id FROM workspace WHERE name = ? AND type = ?').all(loopName, 'forge') as Array<{
-      id: string
-      project_id: string
-    }>
+    const workspaces = workspaceRowsSchema.parse(db.query('SELECT id, project_id FROM workspace WHERE name = ? AND type = ?').all(loopName, 'forge'))
     if (workspaces.length === 0) {
       console.log(`  no forge workspaces named ${loopName}`)
       return
     }
     const labels: string[] = []
     for (const ws of workspaces) {
-      const sessions = db.query('SELECT id, title FROM session WHERE workspace_id = ?').all(ws.id) as Array<{
-        id: string
-        title: string
-      }>
+      const sessions = sessionRowsSchema.parse(db.query('SELECT id, title FROM session WHERE workspace_id = ?').all(ws.id))
       for (const sess of sessions) {
         labels.push(`delete session ${sess.id} (title="${sess.title}") in workspace ${ws.id}`)
       }
@@ -248,13 +241,8 @@ async function cleanupGitWorktree(
 }
 
 async function cleanupSandbox(loopName: string, dryRun: boolean, runtime: SandboxRuntime): Promise<boolean> {
-  // Derive the name through the same sanitization the runtime uses when provisioning,
-  // so cleanup can never drift from the actual container name (e.g. `foo_bar` → `forge-foo-bar`).
   const sandboxName = runtime.sandboxContainerName(loopName)
   console.log(`\nmsb sandbox ${sandboxName}:`)
-  // getSandboxState shares the runtime's own `msb ls` parsing, so this cannot drift from the
-  // status interpretation the rest of forge uses. `unknown` means the query failed: absence
-  // may only be proven by a parsed inventory, otherwise the sandbox may still be running.
   const state = await runtime.getSandboxState(sandboxName)
   if (state === 'unknown') {
     console.error(`  ✗ msb inventory query failed; sandbox ${sandboxName} may still be running`)

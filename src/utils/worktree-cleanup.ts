@@ -34,7 +34,6 @@ export async function cleanupLoopWorktree(
           git.worktreePrune(gitRoot)
         }
       } catch {
-        // best-effort prune from parent dir if possible
       }
       return result
     }

@@ -1,4 +1,4 @@
-import type { ForgeClient } from '../client/port'
+import type { ForgeClient, ForgeEvent, SessionPromptAsyncParams, SessionStatus } from '../client/port'
 import type { LoopChangeNotifier, LoopService } from './service'
 import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
@@ -18,11 +18,9 @@ import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nex
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 import { canonicalizePath } from '../sandbox/path'
-// worktree-completion imports moved to hooks/loop.ts (termination side-effects)
 import { buildPermissionRulesetForPhase, isCodeGraphEnabled, LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopPhaseToolName, type LoopSessionReuseRole } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
-// worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatLoopSessionTitle, formatPostActionSessionTitle } from '../utils/session-titles'
 import { clearPromptPending, isAwaitingBusy, isAwaitingBusyExpired, isPromptQueued, recordSuppressedIdle } from './idle-gate'
@@ -57,18 +55,14 @@ import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
 import { truncateAtWordBoundary } from '../utils/format'
 import { buildHandoffNudgePrompt } from './prompts'
-import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, parseHandoffWriteInput, type LoopHandoffRecordFor, type LoopHandoffRole } from './handoff'
-import type { ZodError } from 'zod'
+import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, parseHandoffWriteInput, type HandoffArgs, type LoopHandoffRecordFor, type LoopHandoffRole } from './handoff'
+import { z, type ZodError } from 'zod'
 
 export interface LoopEvent {
   type: string
-  properties?: Record<string, unknown>
+  properties?: ForgeEvent['properties']
 }
 
-/**
- * Callback invoked after the core state-machine portion of termination completes.
- * Host-specific side-effects (teardown, toast, completion-log, sandbox-stop) live here.
- */
 export type OnTerminatedCallback = (state: LoopState, reason: TerminationReason) => Promise<void>
 
 export interface LoopRuntimeDeps {
@@ -89,24 +83,9 @@ export interface LoopRuntimeDeps {
   loopTransitionsRepo?: LoopTransitionsRepo
   planAmendmentsRepo?: PlanAmendmentsRepo
   loopAttemptsRepo?: LoopAttemptsRepo
-  /** Optional injected LoopService (test seam). Defaults to a real one built from the repos. */
   loopService?: LoopService
-  /**
-   * Git service used for per-section checkpoint commits. Optional: when absent
-   * (tests), sections are not checkpointed. Production wiring passes the real
-   * service from hooks/loop.ts.
-   */
   gitService?: GitService
-  /** Optional parent-session lookup for ancestor-aware session→loop resolution (child/subagent support). */
   getParentSessionId?: (sessionId: string) => Promise<string | null>
-  /**
-   * This plugin instance's own directory. Several plugin instances can share one
-   * process, each bound to a different directory, and opencode delivers a session's
-   * events only to the instance bound to that session's directory. A loop may
-   * therefore be supervised only by the instance whose directory is the loop's
-   * worktree; any other instance is blind to its progress. Omitted in tests, which
-   * disables the ownership gate.
-   */
   directory?: string
 }
 
@@ -119,8 +98,7 @@ export type HandoffRecordingResult = { ok: true; replaced: boolean } | { ok: fal
 export interface HandoffRecordingInput {
   sessionId: string
   tool: LoopPhaseToolName
-  args: unknown
-  /** The tool call's abort signal; an aborted call never records a handoff. */
+  args: HandoffArgs
   signal?: AbortSignal
 }
 
@@ -140,88 +118,63 @@ export interface Loop {
   clearLoopTimers(name: string): Promise<void>
   clearAllRetryTimeouts(): void
   recordActivity(name: string, source?: string): void
-  /**
-   * Take this loop's code-graph snapshot A for the current section and store it
-   * on the section row. Best-effort: any failure leaves the prompt unchanged.
-   */
   snapshotSectionCodeGraph(state: LoopState): Promise<void>
-  /**
-   * Keep idle events from prompting a just-attached loop at exactly `state` until its first
-   * prompt is sent. Returns the release; call it once the first prompt is marked sent or abandoned.
-   */
   holdUntilFirstPrompt(state: LoopState): () => void
   startWatchdog(name: string): void
-  /**
-   * Starts the watchdog for every active loop whose worktree this instance owns and
-   * returns their names. An owning instance can come up after its loop is already
-   * running (lazy location boot, server restart, plugin reload) and miss the idle
-   * event that would otherwise start supervision, leaving the loop idle forever.
-   * No-op when the instance has no directory.
-   */
   superviseOwnedLoops(): string[]
   getStallInfo(name: string): LoopWatchdogStallInfo | null
   restart(name: string, params: { newState: LoopState; newSessionId: string }): void
   generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string
-  /** Transition a running loop's phase. */
   setPhase(name: string, phase: LoopState['phase']): void
-  /**
-   * Populate the in-memory reverse index for a session that was registered
-   * through a path that does not call {@link start} (e.g. production execution
-   * service via {@link attachLoopToSession}). This ensures stale-session error
-   * events can still resolve their loop after session rotation.
-   */
   registerSessionReverseIndex(sessionId: string, loopName: string): void
-  /**
-   * Remove a session from the in-memory reverse index. Called during rollback
-   * when attach or restart fails so that delayed errors from the orphaned session
-   * cannot terminate a later loop that reuses the same name.
-   */
   unregisterSessionReverseIndex(sessionId: string): void
-  /**
-   * Wire the parent-session lookup for ancestor-aware session→loop resolution.
-   * Called after construction because the lookup depends on the Loop instance itself.
-   */
   setParentSessionLookup(lookup: (sessionId: string) => Promise<string | null>): void
-  /** Access the underlying LoopService for state/prompt/section operations. */
   service: LoopService
-  /**
-   * Record the current session's phase handoff. Only the loop's current coder, auditor, or
-   * post-action session may call it, and only with the role schema for its phase.
-   */
   recordHandoff(input: HandoffRecordingInput): Promise<HandoffRecordingResult>
-  /**
-   * Resolve an auditor provider limit by advancing the fallback chain and
-   * re-dispatching the audit prompt, or declining so the caller terminates.
-   * Exposed for the restart path, which must invoke it after releasing the
-   * per-loop state lock. Returns true when the limit was absorbed.
-   */
   handleAuditorProviderLimit(loopName: string, limitReason: string, opts?: { eventSessionId?: string; eventType?: 'status' | 'error' }): Promise<boolean>
 }
 
 export { isWorkspaceNotFoundError } from './runtime-workspace'
 
+const messagePartUpdatedPropertiesSchema = z.object({
+  sessionID: z.string().optional(),
+  part: z.object({ sessionID: z.string().optional() }).optional(),
+})
+
+const sessionErrorPropertiesSchema = z.looseObject({
+  sessionID: z.string().min(1),
+  error: z.looseObject({
+    name: z.string().optional().catch(undefined),
+    data: z.looseObject({
+      message: z.string().optional().catch(undefined),
+      statusCode: z.number().optional().catch(undefined),
+    }).optional().catch(undefined),
+  }).optional().catch(undefined),
+})
+
+const sessionStatusPropertiesSchema = z.looseObject({
+  sessionID: z.string().min(1),
+  status: z.looseObject({
+    type: z.string().optional().catch(undefined),
+    attempt: z.number().optional().catch(undefined),
+    message: z.string().optional().catch(undefined),
+  }).optional().catch(undefined),
+})
+
 const STATE_LOCKS_SHARED_KEY = 'loop-state-locks.v1'
 const INTERNAL_FALLBACK_ABORTS_SHARED_KEY = 'loop-internal-fallback-aborts.v1'
 const PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY = 'loop-pending-code-graph-snapshots.v1'
-/** Keeps the loop marked live while a code-graph snapshot outlasts the watchdog stall timeout. */
 const CODE_GRAPH_HEARTBEAT_MS = 20_000
 
-/**
- * Test-only: clear the process-shared runtime maps between tests. Production code must never
- * call this — clearing a shared map from one disposing instance would break every other live
- * instance that relies on it.
- */
 export function __resetLoopRuntimeSharedState(): void {
-  processShared<Map<string, Promise<unknown>>>(STATE_LOCKS_SHARED_KEY, () => new Map()).clear()
-  processShared<Map<string, number>>(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map()).clear()
-  processShared<Map<string, string>>(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map()).clear()
+  processShared(STATE_LOCKS_SHARED_KEY, () => new Map()).clear()
+  processShared(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map()).clear()
+  processShared(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map()).clear()
 }
 
 export function createLoop(deps: LoopRuntimeDeps): Loop {
   const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, gitService } = deps
 
-  // `runExclusive` (the in-loop lock using withStateLock) is declared later
-  // in this function but is hoisted, so it's always available here.
   const loopService = deps.loopService ?? createLoopService(
     loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo, loopTransitionsRepo, planAmendmentsRepo, runExclusive, deps.loopAttemptsRepo,
     isCodeGraphEnabled(getConfig()),
@@ -234,31 +187,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const handoffDeferTimers = new Map<string, NodeJS.Timeout>()
-  /** Handoff nudges sent in the current phase turn (loopName → owner and count). */
   const handoffNudges = new Map<string, HandoffNudgeState>()
 
-  /**
-   * Process-wide per-loop state locks. OpenCode loads a separate copy of the plugin module
-   * graph for each location, so a loop's state lock must be shared across instances: the host
-   * instance can restart a loop under its lock while the worktree instance that owns the loop
-   * handles the resulting abort under a different lock, reading pre-restart state and
-   * terminating the loop mid-restart. Entries are keyed by project AND loop name because loop
-   * names are only unique within a project.
-   */
-  const stateLocks = processShared<Map<string, Promise<unknown>>>(STATE_LOCKS_SHARED_KEY, () => new Map())
+  const stateLocks = processShared(STATE_LOCKS_SHARED_KEY, () => new Map())
 
   function stateLockKey(loopName: string): string {
     return projectLoopKey(projectId, loopName)
   }
 
-  /**
-   * Commit the just-completed section's work under its short human title, then
-   * store the resulting `HEAD` sha on the section row so the next section's
-   * audit can scope its review from that exact commit. `HEAD` is recorded even
-   * when the commit fails: it is then the previous checkpoint, so the next
-   * audit sees the accumulated diff rather than a sha left by an earlier run.
-   * Best-effort: failures are logged and never block section advancement.
-   */
   function commitSectionCheckpoint(state: LoopState, idx: number): void {
     if (!gitService) return
     if (!state.worktree || !state.worktreeDir) return
@@ -285,55 +221,19 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const instanceDirectory = deps.directory ? canonicalizePath(deps.directory) : null
 
-  /**
-   * Whether this plugin instance may supervise the loop living in `worktreeDir`.
-   * Only the instance bound to that directory receives the loop's session events,
-   * so any other instance would be judging progress it cannot observe. Returns
-   * true when no directory was supplied, which keeps tests ungated.
-   */
   function ownsLoopWorktree(worktreeDir: string): boolean {
     if (instanceDirectory === null) return true
     return canonicalizePath(worktreeDir) === instanceDirectory
   }
 
-  /**
-   * Resolves loop permission-ruleset options for the given state's workspace,
-   * merging the configured `loop.permissions` rules with any portable rules
-   * persisted in the workspace metadata. Delegates to the shared workspace-aware
-   * resolver so every loop construction site derives rules through one path.
-   */
   function resolveLoopPermissionOptionsForLoop(
     state: Pick<LoopState, 'workspaceId'>,
   ): Promise<LoopPermissionRulesetOptions> {
     return resolveLoopPermissionOptionsForWorkspace(client, getConfig(), state.workspaceId)
   }
 
-  /**
-   * Sessions we abort ourselves in `resendAuditPromptWithAuditorModel` to
-   * re-dispatch the audit prompt on a fallback model. The value counts how many
-   * internal aborts we issued for that session and have not yet consumed. The
-   * resulting AbortError events must be consumed (not treated as an audit
-   * failure that rotates the loop back to coding). One fallback-chain walk can
-   * abort the same reused session more than once, so this is a counter, not a
-   * set: every outstanding internal abort gets exactly one matching AbortError
-   * consumed, and a genuine abort is only suppressed while a real internal
-   * abort is still outstanding. The counter is drained as AbortError events are
-   * observed and cleared as a backstop once the replacement prompt completes its
-   * lifecycle, so it can never suppress a later genuine abort.
-   *
-   * Process-wide: the instance that aborts for an internal resend can differ from
-   * the instance receiving the resulting AbortError event, so the marker must be
-   * visible to both. Session ids are globally unique, so no project key is needed.
-   */
-  const internalFallbackAborts = processShared<Map<string, number>>(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map())
+  const internalFallbackAborts = processShared(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map())
 
-  /**
-   * Consume one outstanding internal-abort marker for `sessionId`, mirroring how
-   * an AbortError event is consumed in the `session.error` handler. An internal
-   * abort terminates either with an AbortError OR with a `session.status: idle`;
-   * both are single-consumption terminal events, so both decrement the same
-   * counter. Returns true when a marker was consumed.
-   */
   function consumeInternalFallbackAbort(sessionId: string): boolean {
     const outstanding = internalFallbackAborts.get(sessionId)
     if (outstanding === undefined || outstanding <= 0) return false
@@ -342,20 +242,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  /**
-   * Per-loop record of a provider-limit failure we have already absorbed for the
-   * current auditor fallback re-dispatch. A single failed prompt can emit more
-   * than one limit signal (multiple `session.status: retry` events and/or a
-   * terminal `session.error`) before the replacement prompt begins its own
-   * lifecycle, and all of them belong to the same failure. While this record is
-   * present we absorb every further limit signal for the same session so the
-   * chain advances exactly once per failed prompt. The coalescing window closes
-   * when the replacement prompt emits `session.status: busy` (which clears this
-   * record), so a provider-limit signal from the active replacement prompt is
-   * never mistaken for the previous prompt's companion. The record is reset on
-   * each committed advance and on the replacement's busy, so it always scopes to
-   * the failed prompt's teardown window rather than the session as a whole.
-   */
   const coalescedLimitSessions = new Map<string, string>()
 
   const AUDITOR_FALLBACK_SETTLE_MS = 250
@@ -377,7 +263,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const loopRetainedSessions = new Map<string, RetainedSessionMeta[]>()
   const SESSION_RETENTION = 0
   const sessionToLoop = new Map<string, string>()
-  /** Per-loop admission guard: prevents concurrent terminateLoop calls from executing side effects twice. */
   const terminatingLoops = new Set<string>()
   function withStateLock<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
     const key = stateLockKey(loopName)
@@ -392,14 +277,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   return nextPromise
 }
 
-  /**
-   * Optional metadata passed into shared commit helpers (rotateAndSendContinuation)
-   * so the non-terminal transition row is recorded
-   * AFTER the persisted phase commit but BEFORE the prompt send. Logging between
-   * those two points guarantees (a) no phantom row when phase persistence fails
-   * and (b) the row's id precedes any terminate row produced by a downstream
-   * prompt-send failure (chronological id order).
-   */
   type TransitionLogEntry = {
     eventType: string
     transitionKind: string
@@ -424,20 +301,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  /**
-   * Persist a non-terminal phase transition derived from a `nextTransition` result.
-   * Terminal transitions are logged inside `terminateLoop` (whose `terminatingLoops`
-   * admission guard is the single source of truth for terminal rows), so callers
-   * MUST only invoke this helper for `continue`/`rotate`/`advance-section`/
-   * `rewind-section` outcomes.
-   * `noop` outcomes produce no row.
-   *
-   * NOTE: callers must invoke this AFTER the corresponding phase persistence
-   * (replaceSession / setPhase) succeeds. For paths routed through
-   * `rotateAndSendContinuation`, pass the
-   * transition descriptor into those helpers instead so the row lands between
-   * the phase commit and the prompt send.
-   */
   function logTransition(
     loopName: string,
     state: LoopState,
@@ -454,12 +317,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  /**
-   * Resolve a session ID to its owning loop name, checking the DB index,
-   * the in-memory reverse index, and (optionally) the ancestor chain.
-   * The ancestor walk handles child/subagent sessions whose parent is the
-   * registered loop session.
-   */
   async function resolveSessionLoopName(sessionId: string, strict = false): Promise<string | null> {
     const direct = loopService.resolveLoopName(sessionId)
     if (direct) return direct
@@ -480,19 +337,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return strict ? resolution : tolerateUndeterminedParent(resolution)
   }
 
-  /** Reads the directory's session statuses, or null when the shape is unexpected. */
-  async function fetchSessionStatuses(directory: string): Promise<Record<string, { type?: string }> | null> {
+  async function fetchSessionStatuses(directory: string): Promise<SessionStatus | null> {
     const statuses = await client.session.status({ directory })
-    if (!statuses || typeof statuses !== 'object' || Array.isArray(statuses)) return null
-    return statuses
+    return statuses ?? null
   }
 
-  /**
-   * Session ids of every loop session that is busy or retrying, excluding the standby
-   * sibling, which is idle by construction until the next rotation reuses it. Throws when
-   * the status query fails or ancestry cannot be resolved: callers must never treat an
-   * unverifiable status as quiescent.
-   */
   async function findBusyLoopSessions(state: LoopState): Promise<string[]> {
     const statuses = await fetchSessionStatuses(state.worktreeDir)
     if (!statuses) throw new Error('Session status is unavailable')
@@ -502,16 +351,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       .filter((sessionId) => sessionId !== state.standbySessionId)
   }
 
-  /**
-   * Busy loop sessions other than the session recording a handoff. That session is the
-   * caller and is necessarily busy while the tool runs, so it never counts itself.
-   */
   async function findBusyChildSessions(state: LoopState): Promise<string[]> {
     const busy = await findBusyLoopSessions(state)
     return busy.filter((sessionId) => sessionId !== state.sessionId)
   }
 
-  /** Cancels any scheduled handoff deferral re-check for a loop. */
   function clearHandoffDeferTimer(loopName: string): void {
     const pending = handoffDeferTimers.get(loopName)
     if (!pending) return
@@ -519,13 +363,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     handoffDeferTimers.delete(loopName)
   }
 
-  /**
-   * Defers a phase handoff indefinitely while any loop session (the current turn's session,
-   * its subagents, and the other role's session) is busy or retrying, or a prompt is still
-   * queued in the session inbox, re-checking on the existing 1.5s retry timer. Only the
-   * standby sibling is exempt. Genuinely wedged sessions are left to the watchdog's
-   * progress-aware stall handling rather than a wall-clock cutoff here.
-   */
   async function deferWhileLoopSessionsBusy(state: LoopState): Promise<boolean> {
     const loopName = state.loopName
     let reason: string | null = null
@@ -571,12 +408,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return `Invalid handoff payload: ${details.join('; ')}`
   }
 
-  /**
-   * Records the current session's handoff under the per-loop state lock. Every check runs
-   * before the write so a rejected call leaves no pending row: session ownership, tool/phase
-   * pairing, subagent quiescence, the role's strict schema, the audit summary rules, and the
-   * tool call's abort signal, which is re-checked right before the write.
-   */
   async function recordHandoff(input: HandoffRecordingInput): Promise<HandoffRecordingResult> {
     const active = loopService.resolveActiveLoopForSession(input.sessionId)
     if (!active) return { ok: false, error: NOT_CURRENT_SESSION_ERROR }
@@ -639,13 +470,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  /**
-   * Ends a phase turn that produced no handoff. Re-sends the full phase prompt only when the
-   * turn was never answered at all, otherwise sends the short handoff nudge, on the phase's
-   * own agent and model. After MAX_HANDOFF_NUDGES the turn is abandoned through the
-   * `handoff-missing` transition: coding and auditing error out, post-action stays
-   * best-effort and completes.
-   */
   async function nudgeForMissingHandoff(
     loopName: string,
     state: LoopState,
@@ -698,11 +522,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  /**
-   * Reports a pending handoff that the current phase could not apply because it belongs to
-   * another role. The row is left pending for the role that wrote it. A row whose payload no
-   * longer parses is reported by the repository's row mapper instead.
-   */
   function reportUnappliedPendingHandoff(loopName: string, sessionId: string, expectedRole: LoopHandoffRole): void {
     const pending = loopService.getPendingHandoff(loopName)
     if (!pending || pending.sessionId !== sessionId || pending.role === expectedRole) return
@@ -713,24 +532,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
 
-  /**
-   * A standby session that may carry over into the next phase. `needsCompaction`
-   * marks a session whose last turn reached the role's context-reuse threshold:
-   * it is still reused, but its context is compacted before the follow-up turn.
-   */
   interface StandbyCandidate {
     sessionId: string
     needsCompaction: boolean
   }
 
-  /**
-   * Whether a session of `role` can carry over as the next standby: it must
-   * still exist, and its role's reuse percentage must not be `0`. A last
-   * assistant turn at or above that percentage of the model's context window
-   * marks the candidate for compaction instead of rejecting it. An unknown
-   * context window (no model on the message, a failed lookup, or no limit)
-   * allows reuse without compaction.
-   */
   async function inspectStandbyCandidate(
     sessionId: string,
     state: LoopState,
@@ -784,14 +590,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Compacts a reused standby session before its follow-up turn when its last
-   * turn reached the context threshold. Compaction and the follow-up prompt are
-   * both queued, so the host runs the compaction first and the prompt lands in
-   * the same session. Returns false when the compaction could not be enqueued,
-   * so the caller rotates to a fresh session instead of prompting a session
-   * whose context would overflow.
-   */
   async function compactStandbySession(
     loopName: string,
     state: LoopState,
@@ -808,14 +606,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * The single reusability predicate for the recorded standby: it must still
-   * exist, its role's reuse percentage must not be `0`, and it must have no
-   * blocking bug finding at the recurrence escalation threshold. Standbys only
-   * ever hold the other role of the current section (every section change and
-   * loop end releases them), so same-section membership holds by construction
-   * rather than by a stored field.
-   */
   async function inspectReusableStandby(state: LoopState): Promise<StandbyCandidate | null> {
     const standbySessionId = state.standbySessionId
     if (!standbySessionId || standbySessionId === state.sessionId) return null
@@ -828,13 +618,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return inspectStandbyCandidate(standbySessionId, state, usageRoleForPhase(standbyPhaseFor(state.phase)))
   }
 
-  /**
-   * Shared session-activation bookkeeping for a freshly created session and a
-   * reused standby session: clears the old prompt lifecycle and retry timer,
-   * registers the new session, keeps the retired session resolvable for delayed
-   * errors, starts a fresh handoff nudge budget for the new phase turn, and
-   * restarts the watchdog.
-   */
   function activateLoopSession(loopName: string, previousSessionId: string | null, newSessionId: string): void {
     clearPromptPending(projectId, loopName, logger)
     const oldRetryTimeout = retryTimeouts.get(loopName)
@@ -851,11 +634,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.start(loopName)
   }
 
-  /**
-   * Persists a session/phase replacement and, when the phase changes, starts a fresh
-   * handoff nudge budget for the new phase turn. A reused session keeps its conversation,
-   * so the previous turn's spent nudges must never shorten the new turn's budget.
-   */
   function replaceLoopSession(
     loopName: string,
     update: Parameters<LoopService['replaceSession']>[1],
@@ -865,11 +643,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (prior && prior.phase !== update.phase) handoffNudges.delete(loopName)
   }
 
-  /**
-   * Captures usage for and deletes the loop's recorded standby session, then
-   * clears the column. A standby always holds the role opposite the current
-   * phase, so its usage is attributed through the opposite phase's role.
-   */
   async function discardStandbySession(loopName: string, state: LoopState, context: string): Promise<void> {
     const standbySessionId = state.standbySessionId
     if (!standbySessionId) return
@@ -886,7 +659,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  /** Re-titles a reused session for the new iteration. Best-effort: a failed title update never blocks the phase switch. */
   async function updateReusedSessionTitle(
     loopName: string,
     sessionId: string,
@@ -904,12 +676,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Rotates to a new session in the same workspace. Creates and binds the new session FIRST,
-   * then (unless `options.keepPreviousSession`) fire-and-forget deletes the old session, so the
-   * caller can retain it as the standby. This ordering ensures the workspace always has at
-   * least one bound session, preventing the host from pruning it from non-focused TUIs.
-   */
   async function rotateSession(
     loopName: string,
     state: LoopState,
@@ -962,11 +728,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return newSessionId
   }
 
-  /**
-   * Shared: handle assistant error detection and model failure.
-   * Returns null if the loop was terminated (caller should return).
-   * Returns updated { assistantErrorDetected, currentState }.
-   */
   async function detectAndHandleAssistantError(
     loopName: string,
     currentState: LoopState,
@@ -974,8 +735,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     phase: string,
     errorSignal?: { name?: string; message?: string; statusCode?: number } | null,
   ): Promise<{ assistantErrorDetected: boolean; currentState: LoopState } | null> {
-    // `null` means the caller must `return` without continuing: the loop was
-    // terminated.
     if (!assistantError) {
       return { assistantErrorDetected: false, currentState }
     }
@@ -1004,27 +763,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return { assistantErrorDetected: true, currentState }
   }
 
-  /**
-   * Shared completion tail: enter the configured post-action phase when one is
-   * enabled, otherwise terminate the loop with `reason`. Sectioned completion
-   * (the last open section audit) and the non-sectioned audit-clear path both
-   * finish through here so the post-action/terminate decision has one owner.
-   */
   async function finishLoop(loopName: string, state: LoopState, reason: TerminationReason): Promise<void> {
     await discardStandbySession(loopName, state, 'at loop completion')
     if (reason.kind === 'completed' && await enterPostActionPhase(loopName, state)) {
-      // The post_action entry row is logged inside enterPostActionPhase (after
-      // the persisted phase commit, before the prompt send) so a prompt-send
-      // failure cannot insert a terminal row before the phase row.
       return
     }
     await terminateLoop(loopName, state, reason)
   }
 
-  /**
-   * Shared: check audit clear and terminate if ready.
-   * Returns true if the loop was terminated (caller should return).
-   */
   async function checkAuditClearAndTerminate(
     loopName: string,
     currentState: LoopState,
@@ -1052,15 +798,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  /**
-   * Applies the iteration-cap transition; returns the next iteration or null if terminated.
-   * Single source of truth for the maxIterations check so every path routes through
-   * `nextTransition({ type: 'iteration-cap' })` instead of inline divergent checks.
-   *
-   * Callers that need to persist side-effects before terminating (e.g. a path
-   * that persists audit metadata) pass an `onTerminate` wrapper; otherwise the
-   * default `terminateLoop` is used.
-   */
   async function nextIterationOrTerminate(
     loopName: string,
     state: LoopState,
@@ -1079,11 +816,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return nextIter
   }
 
-  /**
-   * Transition the loop into the post_action phase: creates a new session, builds the
-   * post-action prompt (with skill/prompt from config), sends it, and records the phase.
-   * Returns true if the loop entered post_action (caller should return without terminating).
-   */
   async function enterPostActionPhase(loopName: string, currentState: LoopState): Promise<boolean> {
     if (currentState.phase === 'post_action') return false
     const cfg = resolvePostActionConfig(getConfig())
@@ -1112,16 +844,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const prompt = loopService.buildPostActionPrompt(currentState, { skill: cfg.skill, prompt: cfg.prompt })
     loopService.setPhaseAndResetError(loopName, 'post_action')
-    // Retain the old session in the reverse index so delayed errors from the
-    // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(currentState.sessionId, loopName)
     replaceLoopSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
 
-    // Record the *entry* into post_action here — after the persisted phase commit
-    // AND before sending the post-action prompt. If the prompt send fails below,
-    // terminateLoop is invoked from inside this helper and would otherwise insert
-    // its terminal row before the entry row, reversing chronological id order.
-    // The source event type is the auditor handoff that drove the redirect.
     loopService.recordTransition(loopName, {
       eventType: 'auditor-handoff',
       transitionKind: 'phase',
@@ -1144,7 +869,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  /** Sends a prompt to the post-action session on the configured post-action model, falling back to the loop's auditor model. The auditor model is always sent with the auditor's variant; a configured post-action model has no variant. */
   function sendPostActionPrompt(loopName: string, sessionId: string, promptText: string) {
     const cfg = resolvePostActionConfig(getConfig())
     const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
@@ -1165,9 +889,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopService.bumpFindingRecurrence(loopName, bugFindings)
   }
 
-  /**
-   * Shared: reset error count after a successful (non-error) iteration.
-   */
   function resetErrorCountIfNeeded(loopName: string, currentState: LoopState, assistantErrorDetected: boolean, phase: string): LoopState {
     if (!assistantErrorDetected && currentState.errorCount && currentState.errorCount > 0) {
       loopService.resetError(loopName)
@@ -1178,16 +899,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return currentState
   }
 
-  /**
-   * Shared: rotate session and send continuation prompt with model fallback.
-   *
-   * When `transition` is supplied, the non-terminal transition row is recorded
-   * AFTER `replaceSession` (the persisted phase commit) and BEFORE the prompt
-   * send. This ordering is intentional: it leaves no phantom row if persistence
-   * somehow fails, and it guarantees the transition row's id precedes any
-   * terminate row produced by a downstream prompt-send failure (chronological
-   * id order).
-   */
   async function rotateAndSendContinuation(
     loopName: string,
     currentState: LoopState,
@@ -1222,11 +933,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     if (transition) {
-      // Record using the pre-transition state's iteration/sectionIndex so the
-      // row reflects the "from" side of the phase change (consistent with
-      // logTransition, which always uses `state.iteration`/`state.sectionIndex`
-      // from the prior LoopState). The post-persist phase is captured by
-      // `transition.toPhase`.
       recordTransitionEntry(loopName, currentState, transition)
     }
 
@@ -1263,31 +969,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopName: string
     currentState: LoopState
     stateUpdates: Partial<LoopState>
-    /** Short findings-only prompt for a reused coder session. */
     followUpPrompt: string
-    /** Full continuation prompt used when a fresh coder session is required. */
     fullPrompt: string
     assistantErrorDetected: boolean
     errorContext: string
     transition: TransitionLogEntry
-    /** Audit-error / audit-failure paths delete the failed audit session instead of retaining it. */
     discardAuditSession?: boolean
-    /** Pre-resolved standby probe for a caller that already inspected it. */
     standby?: StandbyCandidate | null
-    /** Overrides the default reset-on-successful-retry decision. */
     resetError?: boolean
-    /** Marks the loop's model as failed after the phase commit (audit-failure recovery). */
     markModelFailed?: boolean
   }
 
-  /**
-   * Shared dirty-audit → coding switch. Reuses the standby coder session when it
-   * is still usable and sends only the findings follow-up; otherwise rotates to a
-   * fresh coder session with the full continuation prompt. A reused session that
-   * reached its context threshold is compacted first, and a failed compaction
-   * falls back to the fresh-session path. The audit session becomes the next
-   * standby unless it failed (then it is deleted).
-   */
   async function switchToCodingPhase(input: CodingSwitchInput): Promise<void> {
     const { loopName, currentState, stateUpdates, followUpPrompt, fullPrompt, assistantErrorDetected, errorContext, transition } = input
     const auditSessionId = currentState.sessionId
@@ -1404,8 +1096,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'coding',
       resetError: false,
     })
-    // Record the recovery transition AFTER the persisted phase commit to coding
-    // so the abort/error → coding phase change is captured consistently.
     loopService.recordTransition(loopName, {
       eventType,
       transitionKind: 'error-recovery',
@@ -1440,8 +1130,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   function buildCodingPromptForCurrentState(state: LoopState): string {
     if (state.totalSections > 0) {
-      // `lastAuditResult` is only a "this section has already been audited"
-      // marker here; its text is display-only and never replayed to the coder.
       if (state.lastAuditResult) {
         return loopService.buildSectionContinuationPrompt(state)
       }
@@ -1461,10 +1149,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const { loopName, sessionId, directory, context, phase, state } = input
     const queue = loopRetainedSessions.get(loopName) ?? []
     
-    // Check if already queued by sessionId
     if (queue.some(entry => entry.sessionId === sessionId)) return
     
-    // Determine role and fallback model at queue time
     const role = usageRoleForPhase(phase)
     const fallbackModel = phase && state ? getFallbackModelForSession(state, phase) : undefined
     
@@ -1476,7 +1162,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const oldest = queue.shift()!
       logger.log(`Loop: trimming session ${oldest.sessionId} (loop=${loopName}, retention=${SESSION_RETENTION})`)
       
-      // Capture usage before deletion using stored metadata
       await captureLoopSessionUsage({
         loopName,
         sessionId: oldest.sessionId,
@@ -1495,10 +1180,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason, summary?: string): Promise<void> {
-    // Atomic admission guard: only one terminateLoop call per loop can proceed
-    // at a time.  Concurrent callers (e.g. user cancel vs. provider-limit
-    // detection vs. watchdog) see the flag and skip, preventing double execution
-    // of usage capture, abort, persistence, and host teardown.
     if (terminatingLoops.has(loopName)) {
       logger.debug(`Loop: terminateLoop called for already-terminating loop ${loopName}, skipping`)
       return
@@ -1506,19 +1187,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     terminatingLoops.add(loopName)
 
     try {
-    // Idempotency guard: if the loop was already terminated by a concurrent
-    // path (e.g. watchdog vs. runtime event), skip duplicate side effects.
     const current = loopService.getActiveState(loopName)
     if (!current?.active) {
       logger.debug(`Loop: terminateLoop called for already-terminated loop ${loopName}, skipping`)
       return
     }
-    // Adopt the authoritative under-lock state for every downstream side
-    // effect (usage capture, persistence, terminal transition, host teardown).
-    // The caller's snapshot can lag phase rotations that happened between the
-    // caller observing the state
-    // and terminateLoop acquiring the admission guard; using the stale
-    // snapshot would record the wrong fromPhase/iteration/section/session.
     state = current
 
     const sessionId = state.sessionId
@@ -1542,7 +1215,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
-      // Capture usage for retained sessions before deletion using stored metadata
       for (const entry of retained) {
         if (entry.sessionId === sessionId) continue
         await captureLoopSessionUsage({
@@ -1551,8 +1223,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           directory: entry.directory,
           role: entry.role,
           fallbackModel: entry.fallbackModel,
-        }).catch((err: unknown) => {
-          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
+        }).catch((cause: unknown) => {
+          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on terminate (loop=${loopName})`, cause)
         })
         void deleteSessionBestEffort(
           client,
@@ -1564,7 +1236,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopRetainedSessions.delete(loopName)
     }
 
-    // Clean up session→loop reverse index for this loop
     for (const [sid, ln] of sessionToLoop) {
       if (ln === loopName) {
         sessionToLoop.delete(sid)
@@ -1574,7 +1245,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     internalFallbackAborts.delete(sessionId)
     sessionToLoop.delete(sessionId)
 
-    // Capture usage for the final active session before termination
     const fallbackModel = getFallbackModelForSession(state, state.phase)
     const role = usageRoleForPhase(state.phase)
     await captureLoopSessionUsage({
@@ -1593,10 +1263,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       summary,
     })
 
-    // Record the terminal transition. This sits inside the `terminatingLoops`
-    // admission guard above so concurrent terminate attempts produce at most one
-    // row. Captures every bypass path (cancel/stall/provider-limit/watchdog/
-    // missing-worktree) that never flows through `nextTransition`.
     loopService.recordTerminalTransition(loopName, {
       reason,
       fromPhase: state.phase,
@@ -1607,15 +1273,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     try {
       await client.session.abort({ sessionID: sessionId })
     } catch {
-      // Session may already be idle
     }
 
     logger.log(`Loop terminated: reason="${terminationReasonToString(reason)}", loop="${state.loopName}", iteration=${state.iteration}`)
 
     logger.debug(`Loop: terminateLoop reason=${terminationReasonToString(reason)} worktree=${!!state.worktree} logEligible=${reason.kind === 'completed' && !!state.worktree}`)
 
-    // Delegate host-specific side-effects to the provided callback.
-    // This keeps worktree teardown, completion log, sandbox stop, TUI toast outside the core module.
     try {
       if (onTerminated) {
         await onTerminated(state, reason)
@@ -1628,24 +1291,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Abort a session's in-flight message so a replacement prompt can be sent on the
-   * SAME session, and mark the abort as internally initiated so the resulting
-   * AbortError event is consumed rather than treated as an audit failure or a user
-   * abort. The marker is added only once the abort succeeds: a rejected abort
-   * (session already idle) emits no AbortError, so leaving a marker would suppress a
-   * later genuine abort of the replacement prompt. After settling, the idle-gate and
-   * in-flight guard are cleared because they must not reject the resend. Any handoff
-   * recorded during the aborted turn belongs to that turn and is discarded so it can
-   * never be applied to the re-sent one.
-   */
   async function abortForInternalResend(loopName: string, sessionId: string): Promise<void> {
     loopService.discardPendingHandoff(loopName)
     try {
       await client.session.abort({ sessionID: sessionId })
       internalFallbackAborts.set(sessionId, (internalFallbackAborts.get(sessionId) ?? 0) + 1)
     } catch {
-      // Session may already be idle.
     }
     await new Promise((r) => setTimeout(r, AUDITOR_FALLBACK_SETTLE_MS))
 
@@ -1653,13 +1304,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     clearPromptInFlight(projectId, loopName)
   }
 
-  /**
-   * Abort the current audit session (it may be mid-retry when the provider limit
-   * arrives via `session.status`), settle, then re-dispatch the audit prompt on the
-   * SAME session using the fallback auditor model choice. `createAuditSession`
-   * never binds a model, so the existing session accepts a different model on the
-   * next prompt without creating a new session.
-   */
   async function resendAuditPromptWithAuditorModel(loopName: string, state: LoopState): Promise<{ error?: unknown }> {
     await abortForInternalResend(loopName, state.sessionId)
 
@@ -1702,13 +1346,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       const committed = loopService.advanceAuditorFallbackIndex(loopName, from, next)
       if (committed === null) {
-        // Another detection path already advanced; never double-prompt.
         logger.log(`Loop: auditor fallback already advanced for ${loopName}, skipping re-dispatch`)
         return { kind: 'concurrent' }
       }
 
-      // Record this session as coalesced so companion signals for the same
-      // failed prompt are absorbed above rather than advancing again.
       coalescedLimitSessions.set(loopName, state.sessionId)
 
       current = { ...current, auditorFallbackIndex: committed }
@@ -1733,11 +1374,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Single choke point for "auditor provider limit → fallback or terminate".
-   * Returns `true` when the limit was absorbed (caller must `return` without
-   * terminating), `false` when the caller must terminate exactly as today.
-   */
   async function handleAuditorProviderLimit(
     loopName: string,
     limitReason: string,
@@ -1747,15 +1383,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!state?.active || !isAuditorPhase(state.phase)) return false
     if (opts?.eventSessionId && opts.eventSessionId !== state.sessionId) return false
 
-    // A single failed prompt can emit multiple limit signals (one or more
-    // `session.status: retry` events and/or a terminal `session.error`) before
-    // the replacement prompt begins its own lifecycle. All of them belong to
-    // the same failure, so while the coalescing window is open for this session
-    // we absorb every further limit signal (status or error) and the chain
-    // advances exactly once per failed prompt. The window closes when the
-    // replacement emits `session.status: busy` (clearing `coalescedLimitSessions`),
-    // so a genuine limit from the active replacement prompt always advances or
-    // exhausts the chain. Prompt-send failures (no event type) are also genuine.
     if (opts?.eventType === 'error' || opts?.eventType === 'status') {
       if (coalescedLimitSessions.get(loopName) === state.sessionId) {
         logger.log(`Loop: coalescing duplicate auditor provider limit for ${loopName} (${limitReason})`)
@@ -1768,8 +1395,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  async function handlePromptError(loopName: string, _state: LoopState, context: string, err: unknown, retryFn?: () => Promise<void>): Promise<void> {
-    if (err instanceof ConcurrentPromptError) {
+  async function handlePromptError(loopName: string, _state: LoopState, context: string, cause: unknown, retryFn?: () => Promise<void>): Promise<void> {
+    if (cause instanceof ConcurrentPromptError) {
       logger.log(`Loop: ${context} — rejected as concurrent prompt (prior guard active), skipping retry/termination`)
       return
     }
@@ -1780,7 +1407,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    const signal = extractErrorSignal(err)
+    const signal = extractErrorSignal(cause)
     const limitReason = classifyProviderLimit(signal)
     if (limitReason) {
       if (await handleAuditorProviderLimit(loopName, limitReason)) return
@@ -1792,24 +1419,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const nextErrorCount = (currentState.errorCount ?? 0) + 1
     
     if (nextErrorCount < MAX_RETRIES) {
-      logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), will retry`, err)
+      logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), will retry`, cause)
       loopService.incrementError(loopName)
       if (retryFn) {
         const retryTimeout = setTimeout(() => {
-          // Serialize the retry send and its failure/exhaustion handling with
-          // phase-rotation ticks (which also acquire the per-loop state
-          // lock). Without this guard, a delayed retry could fire its send
-          // and (on failure) its exhausted termination concurrently with a
-          // phase rotation, racing the terminal row's fromPhase against the
-          // rotation's persisted phase and corrupting transition ordering.
-          // Holding the lock for the duration of the retry attempt and the
-          // recursive handlePromptError (which may terminate) guarantees
-          // any concurrent tick queues behind us and observes the
-          // authoritative post-retry state when it eventually runs. Inside
-          // the lock body, handlePromptError's `terminateLoop` runs nested
-          // without re-acquiring the lock (terminateLoop never wraps itself
-          // in withStateLock — only its public callers do), so there is no
-          // nested-lock deadlock.
           void withStateLock(loopName, async () => {
             const freshState = loopService.getActiveState(loopName)
             if (!freshState?.active) {
@@ -1827,7 +1440,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         retryTimeouts.set(loopName, retryTimeout)
       }
     } else {
-      logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), giving up`, err)
+      logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), giving up`, cause)
       await terminateLoop(loopName, currentState, { kind: 'error_max_retries', message: context })
     }
   }
@@ -1836,11 +1449,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopName: string
     sessionId: string
     agent: 'code' | 'auditor-loop'
-    /** Base label used in retry logs; inner retry errors report `retry failed ${errorContext}`. */
     errorContext: string
-    /** Extra freshness predicate beyond `freshState.active`; retry aborts (throws loop_cancelled) when it returns false. */
     isRetryValid?: (fresh: LoopState) => boolean
-    /** Custom retry send action. When omitted, the default `client.session.promptAsync` send with inner handlePromptError catch is used (requires promptText). */
     send?: (fresh: LoopState) => Promise<void>
     promptText?: string
   }
@@ -1848,13 +1458,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   function buildPromptRetryFn(opts: PromptRetryOptions): () => Promise<void> {
     const defaultSend = async (freshState: LoopState): Promise<void> => {
       try {
-        await client.session.promptAsync({
+        const params: SessionPromptAsyncParams = {
           sessionID: opts.sessionId,
           directory: freshState.worktreeDir,
-          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
           agent: opts.agent,
-          parts: [{ type: 'text' as const, text: opts.promptText ?? '' }],
-        })
+          parts: [{ type: 'text', text: opts.promptText ?? '' }],
+        }
+        if (freshState.workspaceId) params.workspace = freshState.workspaceId
+        await client.session.promptAsync(params)
       } catch (err) {
         await handlePromptError(opts.loopName, freshState, `retry failed ${opts.errorContext}`, err)
       }
@@ -1879,13 +1490,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     promptText: string
     model?: Parameters<typeof sendPromptWithFallback>[0]['model']
     variant?: string
-    /** State passed to handlePromptError when the initial send fails. */
     errorState: LoopState
-    /** Context for the initial-send failure; defaults to `failed to send ${errorContext}`. */
     sendErrorContext?: string
-    /** Watchdog activity tag recorded on successful send. Omit to skip. */
     activityTag?: string
-    /** Invoked once when the initial send fails, before retry recovery (e.g. clearPromptPending). */
     onSendError?: () => void
   }
 
@@ -1928,12 +1535,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  /**
-   * Recovery for a session wedged in `busy` with no tool activity: abort the stuck
-   * message and continue on the SAME session, preserving its conversation. The abort
-   * goes through `abortForInternalResend` so the AbortError is not misread as an audit
-   * failure or a user abort.
-   */
   async function nudgeStuckSession(
     loopName: string,
     _state: LoopState,
@@ -1971,12 +1572,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  /**
-   * Atomically check active state and terminate inside the state lock.
-   * Prevents duplicate side-effects when the watchdog and runtime detect the
-   * same provider limit concurrently — the second caller sees the loop
-   * already terminated and skips.
-   */
   async function tryTerminateLoop(loopName: string, _state: LoopState, reason: TerminationReason): Promise<void> {
     await withStateLock(loopName, async () => {
       const fresh = loopService.getActiveState(loopName)
@@ -2000,40 +1595,26 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const codeGraphSnapshotter = createCodeGraphSnapshotter({ logger })
 
-  /**
-   * Loops whose phase transition is waiting for a code-graph snapshot, or whose attach has not
-   * sent its first prompt yet, mapped to the transition token of the state they were held at.
-   * Process-wide because every instance's phase runners must see it.
-   */
-  const pendingCodeGraphSnapshots = processShared<Map<string, string>>(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map())
+  const pendingCodeGraphSnapshots = processShared(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map())
 
-  /** The persisted point in a loop a deferred transition resumes from. */
   function codeGraphTransitionToken(state: LoopState): string {
     return `${state.sessionId}|${state.phase}|${state.iteration ?? 0}|${state.currentSectionIndex ?? 0}`
   }
 
-  /** Whether `state` is the exact point a deferred code-graph transition will resume from. */
   function isAwaitingCodeGraphSnapshot(state: LoopState): boolean {
     return pendingCodeGraphSnapshots.get(stateLockKey(state.loopName)) === codeGraphTransitionToken(state)
   }
 
-  /** The report once it is written inside the sandbox, or null so no prompt points at a missing file. */
   async function writtenCodeGraphReport(target: CodeGraphTarget, relPath: string, text: string | null): Promise<string | null> {
     if (!text) return null
     return (await codeGraphSnapshotter.writeReport(target, relPath, text)) ? text : null
   }
 
-  /** One planned snapshot: `compute` runs the sandbox work, `record` persists its report. */
   interface CodeGraphSnapshotPlan {
     compute(): Promise<string | null>
     record(text: string): void
   }
 
-  /**
-   * Snapshot A: the code graph for the section that is about to start, before its first coder
-   * prompt is built. A section that already carries a report (restart, reused worktree) gets
-   * no plan, so the snapshot is taken exactly once per section.
-   */
   function planSectionCodeGraph(state: LoopState): CodeGraphSnapshotPlan | null {
     if (state.totalSections <= 0) return null
     const index = state.currentSectionIndex
@@ -2053,12 +1634,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Snapshot B: the code graph for the attempt that just ended, before the audit prompt is
-   * built. Both a fresh audit session and a reused standby then point at the affected tests
-   * and dependents of exactly this attempt, plus the callers of its changed symbols and the
-   * references still pointing at symbols it removed or renamed.
-   */
   function planAttemptCodeGraph(state: LoopState): CodeGraphSnapshotPlan | null {
     const attempt = loopService.getLatestAttempt(state)
     if (!attempt?.snapshotCommit || attempt.codeGraph) return null
@@ -2082,7 +1657,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /** Builds a plan, logging and dropping a storage throw: a snapshot must never fail or stall a loop. */
   function planCodeGraphSnapshot(loopName: string, plan: () => CodeGraphSnapshotPlan | null): CodeGraphSnapshotPlan | null {
     try {
       return plan()
@@ -2092,11 +1666,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Runs a plan's sandbox work with the loop marked live for its whole duration. A first index
-   * can run for minutes while no session is busy, so the heartbeat keeps the watchdog from
-   * treating the wait as a stall. Any failure is logged and yields no report.
-   */
   async function computeCodeGraphSnapshot(loopName: string, plan: CodeGraphSnapshotPlan): Promise<string | null> {
     const heartbeat = setInterval(
       () => watchdog.recordActivity(loopName, 'code-graph-snapshot'),
@@ -2122,12 +1691,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Snapshot A at loop attach, before the loop's first prompt. Attach does not hold the state
-   * lock, so this waits for the snapshot inline; the caller re-checks that the loop is still
-   * active before prompting. A loop that restarted into another session is left to snapshot
-   * itself.
-   */
   async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
     const active = loopService.getActiveState(state.loopName)
     if (active && active.sessionId !== state.sessionId) return
@@ -2136,14 +1699,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
   }
 
-  /**
-   * Keeps the coding phase runner from prompting a just-attached loop until attach sends its first
-   * prompt: the loop is persisted and its session registered before the sandbox is ready and the
-   * attach snapshot runs, so an idle event for the still-unprompted session would otherwise send a
-   * missing-handoff prompt ahead of the first one. The hold matches only `state` (its session,
-   * phase, iteration and section), so a restart into another session is never held. Returns the
-   * release, which attach runs once the first prompt is marked sent or abandoned.
-   */
   function holdUntilFirstPrompt(state: LoopState): () => void {
     const key = stateLockKey(state.loopName)
     const token = codeGraphTransitionToken(state)
@@ -2153,15 +1708,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Continues a phase transition after a code-graph snapshot without holding the loop's state
-   * lock while the snapshot runs, so a cancel, an abort, or shutdown never waits on codegraph.
-   * Called under the lock: with no plan it resumes inline; otherwise it schedules the snapshot
-   * and returns, and the caller must return too so the lock is released. While the snapshot
-   * runs, the coding phase runner ignores the loop at exactly the planned state. Afterwards the
-   * report is stored and the transition resumes under the lock, but only when the loop is still
-   * active at that same state; a cancel, restart, or termination in between drops it.
-   */
   async function continueAfterCodeGraphSnapshot(
     loopName: string,
     expected: LoopState,
@@ -2200,11 +1746,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       .finally(clearPending)
   }
 
-  /**
-   * Sends an audit prompt, handling workspace re-bind recovery and retry
-   * registration. The fresh-audit and standby-reuse paths share this dispatch so
-   * both recover identically; `buildPrompt` supplies the text re-sent on a retry.
-   */
   async function dispatchAuditPrompt(
     loopName: string,
     state: LoopState,
@@ -2243,7 +1784,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             watchdog.recordActivity(loopName, 'audit-recover')
             return
           }
-          // Resend failed — use the actual resend error for classification and retry
           effectiveErr = retryResult.error
         }
       }
@@ -2276,15 +1816,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.recordActivity(loopName, activityTag)
   }
 
-  /**
-   * coding → auditing switch onto a reused standby audit session. The coder
-   * session becomes the standby, so the next dirty audit can return to it with
-   * its exploration intact. A reused audit session that reached its context
-   * threshold is compacted before the audit follow-up; when that compaction
-   * cannot be enqueued the phase is left untouched and the caller rotates to a
-   * fresh audit session, so a session is never prompted past its context window.
-   * Returns whether the reused session was activated.
-   */
   async function switchToAuditingPhase(
     loopName: string,
     currentState: LoopState,
@@ -2345,7 +1876,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
 
-    // Classify persisted provider-limit errors before anything else.
     if (assistantInfo.errorSignal) {
       const limitReason = classifyProviderLimit(assistantInfo.errorSignal)
       if (limitReason) {
@@ -2375,8 +1905,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       handoffNudges.delete(loopName)
       if (!await loopService.captureAttempt(currentState, handoffCompletionKey(record), formatCoderHandoff(record.payload))) return
     } else {
-      // An assistant error still rotates to audit so the auditor sees the failure;
-      // it carries no coder handoff, so the attempt has no decisions.
       if (!await loopService.captureAttempt(currentState, `coding-error:${currentState.sessionId}:${currentState.iteration}`, null)) return
     }
 
@@ -2388,10 +1916,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     )
   }
 
-  /**
-   * The coding → auditing transition after an attempt is captured: resumes a reusable standby
-   * audit session, or creates a fresh one, and dispatches the audit prompt.
-   */
   async function startAuditAfterCoding(loopName: string, coderState: LoopState): Promise<void> {
     let currentState = coderState
     const currentConfig = getConfig()
@@ -2503,8 +2027,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     sessionToLoop.set(codeSessionId, loopName)
     sessionToLoop.set(created.auditSessionId, loopName)
 
-    // Record the coding→auditing rotation derived from the pure transition
-    // table.  logTransition (non-terminal-only wrapper) writes the row.
     logTransition(loopName, currentState, { type: 'coder-handoff' }, idleTrans, 'auditing')
 
     await dispatchAuditPrompt(
@@ -2517,13 +2039,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     )
   }
 
-  /**
-   * A clean section audit must carry a summary, so a pending auditor record that would
-   * finish a section without one is discarded before it is applied: the auditor can record
-   * a dirty handoff and then resolve its last blocking bug in the same turn, which leaves a
-   * summary-less record behind. Discarding it lets the turn take the missing-handoff path and
-   * ask the auditor to hand off again. Returns true when a record was discarded.
-   */
   function discardCleanSectionHandoffWithoutSummary(loopName: string, state: LoopState): boolean {
     if (!(state.totalSections > 0)) return false
     const pending = loopService.getPendingHandoff(loopName)
@@ -2557,8 +2072,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const { error: assistantError, errorSignal: auditErrorSignal, lastMessageRole: auditLastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
 
-    // Classify persisted provider-limit errors first so finish:'error'
-    // assistant messages terminate immediately.
     if (auditErrorSignal) {
       const limitReason = classifyProviderLimit(auditErrorSignal)
       if (limitReason) {
@@ -2655,7 +2168,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         loopService.finishAttempt(currentState, 'clean')
         logger.log(`Loop: section ${idx} audit clean, marking completed`)
 
-        // Reset recurrence for this section so resolved findings don't falsely escalate later
         loopService.resetSectionRecurrence(loopName, idx)
 
         loopService.setLastAuditResult(loopName, auditResult)
@@ -2817,11 +2329,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  /**
-   * Applies the post-action `loop-complete` record, stores its report, and terminates the loop.
-   * A null record completes without a report or summary, which is the best-effort outcome of
-   * the assistant-error and exhausted-nudge paths.
-   */
   async function completePostAction(
     loopName: string,
     state: LoopState,
@@ -2832,12 +2339,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await terminateLoop(loopName, state, reason, record ? formatPostActionSummary(record.payload) : undefined)
   }
 
-  /**
-   * Completes the post-action phase once its session is idle. Assistant errors complete
-   * best-effort. Otherwise it waits for every loop session, subagents included, to settle,
-   * then applies the pending `loop-complete` record and renders the post-action report. A
-   * turn without a record is nudged; past MAX_HANDOFF_NUDGES the loop completes best-effort.
-   */
   async function runPostActionPhase(loopName: string, _state: LoopState): Promise<void> {
     const currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
@@ -2884,29 +2385,27 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await completePostAction(loopName, currentState, record, trans.reason)
   }
 
-  // Single source of truth for idle/watchdog dispatch. Every persisted phase maps to
-  // exactly one phase runner; new phases must be added here to be reachable.
-  const phaseRunners: Record<LoopState['phase'], (loopName: string, state: LoopState) => Promise<void>> = {
+  const phaseRunners = {
     coding: runCodingPhase,
     auditing: runAuditingPhase,
     post_action: runPostActionPhase,
-  }
+  } satisfies Record<LoopState['phase'], (loopName: string, state: LoopState) => Promise<void>>
 
   async function tick(event: LoopEvent): Promise<void> {
-    // Streamed content proves the provider stream is alive even while no tool runs,
-    // which is the only progress signal a purely-thinking model emits. Fires once per
-    // streaming delta, so this stays the first and cheapest branch.
     if (event.type === 'message.part.updated') {
-      const part = event.properties?.part as { sessionID?: string } | undefined
-      const sessionId = part?.sessionID ?? (event.properties?.sessionID as string | undefined)
+      const properties = messagePartUpdatedPropertiesSchema.safeParse(event.properties)
+      if (!properties.success) return
+      const sessionId = properties.data.part?.sessionID ?? properties.data.sessionID
       if (sessionId) watchdog.recordSessionContent(sessionId)
       return
     }
 
     if (event.type === 'session.error') {
-      const errorProps = event.properties as { sessionID?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
-      const eventSessionId = errorProps?.sessionID
-      const errorName = errorProps?.error?.name
+      const parsedError = sessionErrorPropertiesSchema.safeParse(event.properties)
+      if (!parsedError.success) return
+      const errorProps = parsedError.data
+      const eventSessionId = errorProps.sessionID
+      const errorName = errorProps.error?.name
       const isAbort = errorName === 'MessageAbortedError' || errorName === 'AbortError'
 
       if (!eventSessionId) return
@@ -2917,23 +2416,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         await withStateLock(loopName, async () => {
           const state = loopService.getActiveState(loopName)
           if (!state?.active) return
-          // An instance that does not own the worktree never nudges this loop, so it
-          // also never holds the internal-abort marker that distinguishes a forge
-          // resend from a real user abort. Terminating here would kill a live loop on
-          // another instance's abort. Ownership is checked before the marker so the
-          // owner still consumes its own aborts normally.
           if (!ownsLoopWorktree(state.worktreeDir)) {
             logger.log(`Loop: ignoring aborted event for ${loopName}; worktree ${state.worktreeDir} is owned by another instance`)
             return
           }
-          // Consume an abort we initiated ourselves to re-dispatch the audit
-          // prompt on a fallback model. The fallback prompt was already sent on
-          // this same session, so its AbortError must not be treated as an audit
-          // failure that rotates the loop back to coding. A single fallback-chain
-          // walk can abort the same reused session more than once, so this is a
-          // counter: each outstanding internal abort consumes exactly one
-          // AbortError. Removing the final entry here (and the idle backstop
-          // below) means a later genuine abort is never suppressed.
           if (consumeInternalFallbackAbort(eventSessionId)) {
             logger.log(`Loop: consuming internal fallback abort for session ${eventSessionId}`)
             return
@@ -2963,8 +2449,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             }
             return
           }
-          // coding shares the default abort handling: a coding session aborted by
-          // the user terminates the loop as user_aborted.
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
           await terminateLoop(loopName, state, { kind: 'user_aborted' })
         })
@@ -3018,8 +2502,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await terminateLoop(loopName, state, { kind: 'completed' })
           return
         }
-        // coding keeps the default error handling: surface the error, flag a model
-        // failure when applicable, and let the next idle/error event drive recovery.
         logger.error(`Loop: session error for ${eventSessionId}: ${errorMessage}`)
         const isModelError = /provider|auth|model|api\s*error/i.test(errorMessage)
         if (isModelError && !state.modelFailed) {
@@ -3032,43 +2514,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (event.type !== 'session.status') return
 
-    const status = event.properties?.status as { type?: string; attempt?: number; message?: string } | undefined
-    const sessionId = event.properties?.sessionID as string
-    if (!sessionId) return
+    const parsedStatus = sessionStatusPropertiesSchema.safeParse(event.properties)
+    if (!parsedStatus.success) return
+    const status = parsedStatus.data.status
+    const sessionId = parsedStatus.data.sessionID
 
     if (status?.type === 'busy') {
       const loopName = loopService.resolveLoopName(sessionId)
-      // The replacement prompt has begun its own lifecycle, so the idle-gate and
-      // in-flight markers for this session belong to the freshly dispatched
-      // prompt and are cleared. This `busy` also closes the failed prompt's
-      // teardown window: a provider-limit `session.error` emitted before it is
-      // the failed prompt's terminal companion (absorbed by
-      // `coalescedLimitSessions`), whereas any limit signalled after the
-      // replacement starts belongs to the replacement and must advance the
-      // fallback chain. Clearing the coalesced record here keeps a genuine
-      // failure of the active replacement prompt from being mistaken for the
-      // previous prompt's companion.
-      //
-      // The idle-gate pending marker is cleared synchronously (outside the
-      // lock) because it only gates a premature `idle` that precedes this
-      // `busy`. A fast fallback can emit `busy` then `idle` while the fallback
-      // dispatch still holds the state lock; deferring this clear behind the
-      // lock would let the following idle observe the still-pending marker at
-      // its pre-lock gate and be suppressed, stalling the loop with no phase
-      // run. Busy proves the prompt started, so its idle is always legitimate.
-      //
-      // The in-flight marker is cleared synchronously as well: it is a
-      // membership check, not a guard against a queued lifecycle event, so
-      // clearing it immediately on this busy is always safe.
-      //
-      // The state lock is taken only when a coalesced provider-limit marker is
-      // present for this exact session. `busy` is the highest-frequency loop
-      // event and awaits the shared event pipeline, so we avoid paying the lock
-      // on every occurrence. The lock is required only to serialize the
-      // coalesced-limit clear against the queued limit handler: duplicate
-      // provider-limit signals for the same failed prompt are queued with
-      // `withStateLock`, so an unlocked cleanup would clear the guard before
-      // the queued handler consumed it, re-advancing the fallback index.
       if (loopName && isAwaitingBusy(projectId, loopName, sessionId)) {
         logger.debug(`[idle-gate] busy observed for ses=${sessionId} loop=${loopName}, clearing pending`)
         clearPromptPending(projectId, loopName, logger)
@@ -3129,9 +2581,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (isAwaitingBusy(projectId, loopName, sessionId)) {
       if (!isAwaitingBusyExpired(projectId, loopName)) {
         logger.debug(`[idle-gate] suppressing premature idle loop=${loopName} session=${sessionId} (no busy yet)`)
-        // This premature idle is the aborted prompt's abort terminal (the
-        // internal abort emitted idle instead of an AbortError). Consume its
-        // marker so it cannot suppress a later genuine abort of the replacement.
         consumeInternalFallbackAbort(sessionId)
         return
       }
@@ -3149,21 +2598,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
-      // Re-check the idle gate now that we hold the lock. During a provider-limit
-      // fallback, `resendAuditPromptWithAuditorModel` holds the lock while aborting,
-      // settling, and re-dispatching. The failed prompt's pending marker was already
-      // cleared (by sendLoopPrompt) before the settle delay, so an `idle` emitted by
-      // our internal abort can pass the pre-lock check above (line 2463) and queue
-      // behind the lock. By the time it runs here, the replacement prompt has been
-      // marked pending for this same reused session, so this stale idle must be
-      // suppressed against the latest lifecycle rather than running the phase on a
-      // session that is busy again.
       if (isAwaitingBusy(projectId, loopName, sessionId)) {
         if (!isAwaitingBusyExpired(projectId, loopName)) {
           logger.debug(`[idle-gate] suppressing queued premature idle loop=${loopName} session=${sessionId} (replacement prompt pending)`)
-          // Same as the pre-lock suppression: this stale idle is the failed
-          // prompt's abort terminal (idle, not AbortError). Consume the marker
-          // so it cannot suppress a later genuine abort of the replacement.
           consumeInternalFallbackAbort(sessionId)
           return
         }
@@ -3171,17 +2608,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         clearPromptPending(projectId, loopName, logger)
       }
 
-      // The session's prompt has completed its lifecycle. Any internal abort we
-      // issued for this session (to re-dispatch the audit on a fallback model)
-      // was issued before the replacement prompt, so its AbortError would have
-      // arrived by now. Clearing the counter here is the backstop that ensures
-      // a stale counter (from an internal abort that produced no event) can
-      // never suppress a later genuine abort.
       internalFallbackAborts.delete(sessionId)
-      // The failed prompt is definitively done once the replacement completes,
-      // so its companion limit signal (if any) has arrived. Clear the coalescing
-      // window so a genuine limit from the replacement prompt advances normally
-      // even when the original failure emitted no companion signal.
       if (coalescedLimitSessions.get(loopName) === sessionId) {
         coalescedLimitSessions.delete(loopName)
       }
@@ -3204,74 +2631,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function terminateAll(): Promise<void> {
-    // Serialize each per-loop shutdown operation so an in-flight phase runner
-    // (idle tick, watchdog recovery, retry timer, etc.) holding the per-loop
-    // state lock cannot commit a phase transition row AFTER our shutdown row.
-    // Without this guard, a phase runner paused mid-rotation while shutdown
-    // fires would record its rotate row out-of-order (its id could exceed our
-    // shutdown row's id, and our shutdown row's fromPhase would reflect a
-    // pre-rotation phase rather than the persisted phase at shutdown time).
-    //
-    // Each sweep runs two passes per fresh snapshot:
-    //
-    // 1. Eager synchronous pass for uncontended loops (no entry in `stateLocks`
-    //    means no in-flight tick holds the lock for that loop): admit into
-    //    `terminatingLoops`, re-read authoritative state, record the shutdown
-    //    row, and persist the cancellation synchronously. This fires the
-    //    'terminate' notify inline so callers/tests that synchronously inspect
-    //    notify state see the result without awaiting (parity with the prior
-    //    bulk-cancel semantics). JS is single-threaded, so even if a tick
-    //    fires concurrently during this synchronous body, its lock acquisition
-    //    is microtask-scheduled and cannot interleave our synchronous work.
-    //
-    // 2. Deferred locked pass for contended loops (`stateLocks.has(name)` is
-    //    true, meaning an in-flight tick already holds/queued the lock): we
-    //    queue behind that lock with `withStateLock`. When the tick finishes
-    //    (potentially recording a rotate row), our queued body acquires the
-    //    lock, re-reads authoritative state, and records the shutdown row with
-    //    the correct post-rotation phase. Ids are guaranteed in chronological
-    //    order because the rotate row is recorded while the tick holds the
-    //    lock and our shutdown row is recorded only after the tick releases.
-    //
-    // Loops already admitted by a canonical `terminateLoop` call (present in
-    // `terminatingLoops`) have an in-flight canonical termination that will
-    // record its own terminal row under the same admission guard; we MUST NOT
-    // queue behind their lock (that would deadlock terminateAll waiting for
-    // the canonical path to finish host-side teardown). We fast-path skip them
-    // in both passes.
-    //
-    // Sweeps repeat until either no active loops remain OR every remaining
-    // active loop is already admitted by a canonical `terminateLoop` call
-    // (so they will record their own row and persist their own cancellation
-    // without our help). Re-sweeping catches snapshot-timing gaps: a loop
-    // activated (e.g. by a concurrent restart) while an earlier sweep was
-    // awaiting a contended lock is observed fresh in the next sweep and gets
-    // exactly one ordered shutdown row. The previous implementation fell back
-    // to a raw `loopService.terminateAll()` that wrote `cancelled` rows for
-    // such gap loops without recording any transition row; this loop replaces
-    // that fallback with the same locked, guarded record+terminate path. The
-    // sweep cap bounds a misbehaving caller that keeps starting loops during
-    // shutdown, but in practice shutdown produces 1-2 sweeps then quiesces.
     const MAX_SWEEPS = 8
     for (let sweep = 0; sweep < MAX_SWEEPS; sweep++) {
       const active = loopService.listActive()
-      // Skip canonical-admitted loops fast; we have nothing to do for them.
       if (active.every((s) => terminatingLoops.has(s.loopName))) break
 
       const contended: typeof active = []
       for (const state of active) {
-        // Fast-path skip already-admitted loops in both passes.
         if (terminatingLoops.has(state.loopName)) {
           logger.debug(`Loop: terminateAll skipping shutdown row for already-terminating loop ${state.loopName}`)
           continue
         }
-        // Contended: defer to the locked pass so we serialize behind the
-        // in-flight tick's phase-rotation work.
         if (stateLocks.has(stateLockKey(state.loopName))) {
           contended.push(state)
           continue
         }
-        // Uncontended eager path: synchronously admit, record, and persist.
         terminatingLoops.add(state.loopName)
         const fresh = loopService.getActiveState(state.loopName)
         if (!fresh?.active) {
@@ -3279,12 +2653,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           continue
         }
         recordShutdownTransitionAndPersist(state.loopName, fresh)
-        // Persist cancellation inside the eager admission so a tick queued behind
-        // (or fired concurrently with) this synchronous body observes the
-        // inactive state on its next microtask and short-circuits before
-        // rotating the phase (which would commit a phase row after our terminal
-        // row). loopService.terminate fires the 'terminate' notify synchronously
-        // here so the shutdown is observable inline.
       }
       if (contended.length > 0) {
         await Promise.all(contended.map((state) =>
@@ -3294,8 +2662,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
               logger.debug(`Loop: terminateAll skipping shutdown row for already-terminated loop ${state.loopName}`)
               return
             }
-            // Re-check under the lock — a canonical terminateLoop may have been
-            // admitted between our outer snapshot and lock acquisition.
             if (terminatingLoops.has(state.loopName)) {
               logger.debug(`Loop: terminateAll skipping shutdown row for already-terminating loop ${state.loopName}`)
               return
@@ -3308,13 +2674,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Record one terminal `shutdown` transition row for the loop and persist the
-   * cancellation in place. Used by `terminateAll` for every loop it admits
-   * (both eager and contended passes, plus each re-sweep). Centralizing the
-   * record+persist pair prevents drift between the snapshot passes and any
-   * snapshot-gap re-sweep.
-   */
   function recordShutdownTransitionAndPersist(loopName: string, fresh: LoopState): void {
     const shutdownReason: TerminationReason = { kind: 'shutdown' }
     const shutdownStatus = terminationStatusFor(shutdownReason)
@@ -3358,11 +2717,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   async function cancelBySessionId(sessionId: string): Promise<boolean> {
     const loopName = loopService.resolveLoopName(sessionId)
     if (!loopName) return false
-    // Hold the state lock for the duration of terminateLoop so a concurrent
-    // phase-rotation tick cannot commit a rotation between the time we observe
-    // the loop and the time the terminal row is recorded. The authoritative
-    // under-lock state inside terminateLoop then drives the terminal row's
-    // fromPhase. See `terminateLoopByName` for the same rationale.
     return await withStateLock(loopName, async () => {
       const state = loopService.getActiveState(loopName)
       if (!state?.active) return false
@@ -3372,13 +2726,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function terminateLoopByName(loopName: string, reason: TerminationReason): Promise<boolean> {
-    // Serialize with phase-rotation ticks (which also acquire the state lock).
-    // Without this guard, a tick could rotate the phase (and commit its row)
-    // between cancel reading the caller's snapshot and terminateLoop recording
-    // the terminal row from that stale snapshot. Holding the lock for the
-    // duration of terminateLoop guarantees the authoritative under-lock state
-    // observed inside terminateLoop is the persisted phase at termination time,
-    // so the terminal row's fromPhase matches the persisted phase exactly.
     return await withStateLock(loopName, async () => {
       const state = loopService.getActiveState(loopName)
       if (!state?.active) return false
@@ -3407,7 +2754,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
-      // Capture usage for retained sessions before deletion using stored metadata
       for (const entry of retained) {
         await captureLoopSessionUsage({
           loopName,
@@ -3415,8 +2761,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           directory: entry.directory,
           role: entry.role,
           fallbackModel: entry.fallbackModel,
-        }).catch((err: unknown) => {
-          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on clear (loop=${loopName})`, err)
+        }).catch((cause: unknown) => {
+          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on clear (loop=${loopName})`, cause)
         })
         void deleteSessionBestEffort(
           client,
@@ -3474,13 +2820,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.start(name)
   }
 
-  /**
-   * Starts watchdogs for active loops this instance owns that were started or restarted
-   * in this process (registered in the loop registry). Loops persisted before this
-   * process are never recovered at boot — plugin init must not resurrect them — while a
-   * worktree instance that loads after another instance in the same process started the
-   * loop still finds it registered and supervises it.
-   */
   function superviseOwnedLoops(): string[] {
     if (instanceDirectory === null) return []
     const owned = listActive().filter(
@@ -3525,14 +2864,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function restart(name: string, params: { newState: LoopState; newSessionId: string }): void {
-    // Retain the old session in the reverse index before restoring state so that
-    // delayed errors from the pre-restart session still resolve to this loop.
     const oldState = loopService.getAnyState(name)
     const fromPhase = oldState?.phase ?? params.newState.phase
-    // In-place UPDATE preserves child rows (loop_transitions, section_plans)
-    // that would be cascade-deleted by the prior deleteState + setState pair.
-    // The loop row is restored in place (or inserted if concurrently deleted)
-    // so existing transition history survives restart.
     loopService.restoreState(name, params.newState)
     loopService.registerLoopSession(params.newSessionId, name)
     sessionToLoop.set(params.newSessionId, name)
@@ -3543,11 +2876,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       void discardStandbySession(name, oldState, 'at loop restart')
     }
     loopRegistry.add(projectId, name)
-    // Record at most one phase-changing restart row, matching the production
-    // restart path in services/execution.ts (eventType 'restart', kind 'phase',
-    // skipped when the restart preserves the persisted phase). The previous
-    // destructive implementation recorded nothing while erasing prior history
-    // via cascade.
     if (fromPhase !== params.newState.phase) {
       loopService.recordTransition(name, {
         eventType: 'restart',
@@ -3561,11 +2889,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function setPhase(name: string, phase: LoopState['phase']): void {
-    // Read the prior phase before persisting so we can record exactly one
-    // transition row when the phase actually changes (and none for a no-op).
-    // The public setPhase path does not flow through nextTransition, so it must
-    // emit its own row to satisfy the "every phase change produces exactly one
-    // loop_transitions row" invariant.
     const priorState = loopService.getAnyState(name)
     const fromPhase = priorState?.phase
     loopService.setPhase(name, phase)
@@ -3581,12 +2904,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  /**
-   * Populate the in-memory reverse index for a session that was registered
-   * through a path that does not call {@link start} (e.g. production execution
-   * service via {@link attachLoopToSession}). This ensures stale-session error
-   * events can still resolve their loop after session rotation.
-   */
   function registerSessionReverseIndex(sessionId: string, loopName: string): void {
     sessionToLoop.set(sessionId, loopName)
   }

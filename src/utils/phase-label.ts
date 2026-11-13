@@ -1,12 +1,10 @@
-/** Single source of human phase display text; unknown phases pass through. */
-const PHASE_LABELS: Record<string, string> = {
-  coding: 'Coding',
-  auditing: 'Auditing',
-  post_action: 'Post-action',
-}
+const PHASE_LABELS = new Map([
+  ['coding', 'Coding'],
+  ['auditing', 'Auditing'],
+  ['post_action', 'Post-action'],
+])
 
-/** Display label for a loop phase, shared by the TUI dashboard and the TUI sidebar. */
 export function phaseLabel(phase: string): string {
   if (phase === '') return 'Unknown'
-  return PHASE_LABELS[phase] ?? phase
+  return PHASE_LABELS.get(phase) ?? phase
 }

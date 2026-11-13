@@ -27,8 +27,8 @@ async function resolveSessionDirectory(ctx: Plugin.Context, sessionID: string): 
   }
 }
 
-function toJsonSchema(schema: ReturnType<typeof z.object>): Record<string, unknown> {
-  const json: Record<string, unknown> = z.toJSONSchema(schema, { io: 'input' })
+function toJsonSchema(schema: ReturnType<typeof z.object>) {
+  const json = z.toJSONSchema(schema, { io: 'input' })
   delete json.$schema
   return json
 }

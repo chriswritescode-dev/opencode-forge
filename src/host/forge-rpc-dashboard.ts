@@ -9,18 +9,10 @@ import type {
   AmendmentDiffLine,
   AmendmentSectionChange,
 } from '../utils/amendment-diff'
-import {
-  findJsonSchemaMismatch,
-  type JsonSchemaShape,
-  type JsonSchemaValidationOptions,
-} from '../utils/json-schema'
+import { z } from 'zod'
+import type { JsonSchemaDefinition } from '../utils/json-schema'
 import { readForgeRpcResult, type ForgeRpcError } from './forge-rpc-result'
 
-/**
- * Returns a literal enum list typed by the union it must cover. Compilation fails when the list
- * omits a union member or lists a non-member, because OpenCode rejects output whose enum value is
- * not listed.
- */
 function enumList<Union>() {
   return <const List extends readonly Union[]>(
     list: List,
@@ -126,7 +118,7 @@ const DASHBOARD_LOOP_SUMMARY_SCHEMA = {
     'activityAt',
   ],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const DASHBOARD_UNEXECUTED_PLAN_SCHEMA = {
   type: 'object',
@@ -138,7 +130,7 @@ const DASHBOARD_UNEXECUTED_PLAN_SCHEMA = {
   },
   required: ['sessionId', 'title', 'updatedAt', 'charCount'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const DASHBOARD_PROJECT_SUMMARY_SCHEMA = {
   type: 'object',
@@ -153,7 +145,7 @@ const DASHBOARD_PROJECT_SUMMARY_SCHEMA = {
   },
   required: ['projectId', 'loopCount', 'unexecutedPlanCount', 'bugCount', 'loops', 'unexecutedPlans'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const DASHBOARD_SUMMARY_SCHEMA = {
   type: 'object',
@@ -163,7 +155,7 @@ const DASHBOARD_SUMMARY_SCHEMA = {
   },
   required: ['generatedAt', 'projects'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 export const DASHBOARD_SUMMARY_METHOD = {
   input: DASHBOARD_SUMMARY_INPUT,
@@ -177,17 +169,54 @@ export const DASHBOARD_SUMMARY_METHOD = {
   },
 } as const
 
-/**
- * Readers tolerate unknown properties so a newer Forge server that adds fields does not
- * break an older TUI; every declared property is still validated against its schema.
- */
-const TOLERANT_READ_OPTIONS: JsonSchemaValidationOptions = { allowAdditionalProperties: true }
+const DASHBOARD_UNEXECUTED_PLAN_READ_SCHEMA = z.looseObject({
+  sessionId: z.string(),
+  title: z.string(),
+  updatedAt: z.number(),
+  charCount: z.number().int(),
+})
 
-export function readForgeDashboardSummary(value: unknown): ForgeDashboardSummaryOutput {
-  return readForgeRpcResult(value, 'dashboard summary', (record) =>
-    findJsonSchemaMismatch(DASHBOARD_SUMMARY_SCHEMA, record, TOLERANT_READ_OPTIONS) === null
-      ? (record as unknown as ForgeDashboardSummary)
-      : null)
+const DASHBOARD_LOOP_SUMMARY_READ_SCHEMA = z.looseObject({
+  loopName: z.string(),
+  status: z.enum(DASHBOARD_LOOP_STATUSES),
+  phase: z.enum(DASHBOARD_LOOP_PHASES),
+  iteration: z.number().int(),
+  maxIterations: z.number().int(),
+  currentSectionIndex: z.number().int(),
+  totalSections: z.number().int(),
+  sectionCount: z.number().int(),
+  bugCount: z.number().int(),
+  hasPlan: z.boolean(),
+  startedAt: z.number(),
+  completedAt: z.number().optional(),
+  activityAt: z.number(),
+  durationText: z.string().optional(),
+  totalCost: z.number().optional(),
+  branch: z.string().optional(),
+  executionModel: z.string().optional(),
+  auditorModel: z.string().optional(),
+})
+
+const DASHBOARD_PROJECT_SUMMARY_READ_SCHEMA = z.looseObject({
+  projectId: z.string(),
+  projectDir: z.string().optional(),
+  loopCount: z.number().int(),
+  unexecutedPlanCount: z.number().int(),
+  bugCount: z.number().int(),
+  loops: z.array(DASHBOARD_LOOP_SUMMARY_READ_SCHEMA),
+  unexecutedPlans: z.array(DASHBOARD_UNEXECUTED_PLAN_READ_SCHEMA),
+})
+
+const DASHBOARD_SUMMARY_READ_SCHEMA = z.looseObject({
+  generatedAt: z.number(),
+  projects: z.array(DASHBOARD_PROJECT_SUMMARY_READ_SCHEMA),
+})
+
+export function readForgeDashboardSummary<P>(payload: P): ForgeDashboardSummaryOutput {
+  return readForgeRpcResult(payload, 'dashboard summary', (value) => {
+    const parsed = DASHBOARD_SUMMARY_READ_SCHEMA.safeParse(value)
+    return parsed.success ? parsed.data : null
+  })
 }
 
 const DASHBOARD_SECTION_STATUSES = enumList<SectionPlanRow['status']>()([
@@ -399,7 +428,7 @@ const LOOP_DETAIL_ROW_SCHEMA = {
     'totalSections',
   ],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const SECTION_PLAN_SCHEMA = {
   type: 'object',
@@ -421,7 +450,7 @@ const SECTION_PLAN_SCHEMA = {
   },
   required: ['projectId', 'loopName', 'sectionIndex', 'sectionId', 'dependsOn', 'title', 'content', 'status', 'attempts'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const REVIEW_FINDING_SCHEMA = {
   type: 'object',
@@ -438,7 +467,7 @@ const REVIEW_FINDING_SCHEMA = {
   },
   required: ['projectId', 'file', 'line', 'severity', 'description', 'createdAt'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const USAGE_BUCKET_SCHEMA = {
   type: 'object',
@@ -453,7 +482,7 @@ const USAGE_BUCKET_SCHEMA = {
   },
   required: ['cost', 'inputTokens', 'outputTokens', 'reasoningTokens', 'cacheReadTokens', 'cacheWriteTokens', 'messageCount'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const LOOP_USAGE_SCHEMA = {
   type: 'object',
@@ -482,7 +511,7 @@ const LOOP_USAGE_SCHEMA = {
     'byRole',
   ],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const LOOP_TRANSITION_SCHEMA = {
   type: 'object',
@@ -502,7 +531,7 @@ const LOOP_TRANSITION_SCHEMA = {
   },
   required: ['id', 'projectId', 'loopName', 'eventType', 'transitionKind', 'fromPhase', 'iteration', 'createdAt'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const AMENDMENT_SUMMARY_SCHEMA = {
   type: 'object',
@@ -513,7 +542,7 @@ const AMENDMENT_SUMMARY_SCHEMA = {
   },
   required: ['added', 'removed', 'modified'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const PLAN_AMENDMENT_SCHEMA = {
   type: 'object',
@@ -529,7 +558,7 @@ const PLAN_AMENDMENT_SCHEMA = {
   },
   required: ['id', 'projectId', 'loopName', 'source', 'rationale', 'appliedAtSection', 'createdAt', 'summary'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const AMENDMENT_DIFF_LINE_SCHEMA = {
   type: 'object',
@@ -539,7 +568,7 @@ const AMENDMENT_DIFF_LINE_SCHEMA = {
   },
   required: ['kind', 'text'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const AMENDMENT_SECTION_DIFF_SCHEMA = {
   type: 'object',
@@ -552,7 +581,7 @@ const AMENDMENT_SECTION_DIFF_SCHEMA = {
   },
   required: ['index', 'change', 'title', 'lines'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const LOOP_DETAIL_SCHEMA = {
   type: 'object',
@@ -572,7 +601,7 @@ const LOOP_DETAIL_SCHEMA = {
   },
   required: ['loop', 'sections', 'findings', 'transitions', 'transitionsCapped', 'amendments'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const AMENDMENT_DIFF_SCHEMA = {
   type: 'object',
@@ -582,7 +611,7 @@ const AMENDMENT_DIFF_SCHEMA = {
   },
   required: ['sections', 'summary'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 const PROJECT_FINDINGS_SCHEMA = {
   type: 'object',
@@ -602,7 +631,7 @@ const PROJECT_FINDINGS_SCHEMA = {
   },
   required: ['loops'],
   additionalProperties: false,
-} as const satisfies JsonSchemaShape
+} as const satisfies JsonSchemaDefinition
 
 export const DASHBOARD_LOOP_DETAIL_METHOD = {
   input: {
@@ -686,28 +715,185 @@ export const DASHBOARD_PLAN_DELETE_METHOD = {
   },
 } as const
 
-export function readForgeLoopDetail(value: unknown): ForgeLoopDetailOutput {
-  return readForgeRpcResult(value, 'loop detail', (record) =>
-    findJsonSchemaMismatch(LOOP_DETAIL_SCHEMA, record, TOLERANT_READ_OPTIONS) === null
-      ? (record as unknown as ForgeLoopDetail)
-      : null)
+const LOOP_DETAIL_ROW_READ_SCHEMA = z.looseObject({
+  projectId: z.string(),
+  loopName: z.string(),
+  status: z.enum(DASHBOARD_LOOP_STATUSES),
+  currentSessionId: z.string(),
+  worktree: z.boolean(),
+  worktreeDir: z.string(),
+  worktreeBranch: z.string().optional(),
+  projectDir: z.string(),
+  maxIterations: z.number().int(),
+  iteration: z.number().int(),
+  auditCount: z.number().int(),
+  errorCount: z.number().int(),
+  phase: z.enum(DASHBOARD_LOOP_PHASES),
+  executionModel: z.string().optional(),
+  executionVariant: z.string().optional(),
+  auditorModel: z.string().optional(),
+  auditorVariant: z.string().optional(),
+  auditorFallbackIndex: z.number().int(),
+  modelFailed: z.boolean(),
+  sandbox: z.boolean(),
+  startedAt: z.number(),
+  completedAt: z.number().optional(),
+  terminationReason: z.string().optional(),
+  currentSectionIndex: z.number().int(),
+  totalSections: z.number().int(),
+  baseCommit: z.string().optional(),
+})
+
+const SECTION_PLAN_READ_SCHEMA = z.looseObject({
+  projectId: z.string(),
+  loopName: z.string(),
+  sectionIndex: z.number().int(),
+  sectionId: z.string(),
+  dependsOn: z.array(z.string()),
+  title: z.string(),
+  content: z.string(),
+  status: z.enum(DASHBOARD_SECTION_STATUSES),
+  attempts: z.number().int(),
+  summaryDone: z.string().optional(),
+  summaryDeviations: z.string().optional(),
+  summaryFollowUps: z.string().optional(),
+  startedAt: z.number().optional(),
+  completedAt: z.number().optional(),
+})
+
+const REVIEW_FINDING_READ_SCHEMA = z.looseObject({
+  projectId: z.string(),
+  file: z.string(),
+  line: z.number().int(),
+  severity: z.enum(DASHBOARD_FINDING_SEVERITIES),
+  description: z.string(),
+  scenario: z.string().optional(),
+  loopName: z.string().optional(),
+  sectionIndex: z.number().int().optional(),
+  createdAt: z.number(),
+})
+
+const USAGE_BUCKET_READ_SCHEMA = z.looseObject({
+  cost: z.number(),
+  inputTokens: z.number().int(),
+  outputTokens: z.number().int(),
+  reasoningTokens: z.number().int(),
+  cacheReadTokens: z.number().int(),
+  cacheWriteTokens: z.number().int(),
+  messageCount: z.number().int(),
+})
+
+const LOOP_USAGE_READ_SCHEMA = z.looseObject({
+  loopName: z.string(),
+  totalCost: z.number(),
+  totalInputTokens: z.number().int(),
+  totalOutputTokens: z.number().int(),
+  totalReasoningTokens: z.number().int(),
+  totalCacheReadTokens: z.number().int(),
+  totalCacheWriteTokens: z.number().int(),
+  totalMessageCount: z.number().int(),
+  byModel: z.record(z.string(), USAGE_BUCKET_READ_SCHEMA),
+  byRole: z.record(z.string(), USAGE_BUCKET_READ_SCHEMA),
+})
+
+const LOOP_TRANSITION_READ_SCHEMA = z.looseObject({
+  id: z.number().int(),
+  projectId: z.string(),
+  loopName: z.string(),
+  eventType: z.string(),
+  transitionKind: z.string(),
+  fromPhase: z.string(),
+  toPhase: z.string().optional(),
+  status: z.string().optional(),
+  reason: z.string().optional(),
+  iteration: z.number().int(),
+  sectionIndex: z.number().int().optional(),
+  createdAt: z.number(),
+})
+
+const AMENDMENT_SUMMARY_READ_SCHEMA = z.looseObject({
+  added: z.number().int(),
+  removed: z.number().int(),
+  modified: z.number().int(),
+})
+
+const PLAN_AMENDMENT_READ_SCHEMA = z.looseObject({
+  id: z.number().int(),
+  projectId: z.string(),
+  loopName: z.string(),
+  source: z.string(),
+  rationale: z.string(),
+  appliedAtSection: z.number().int(),
+  createdAt: z.number(),
+  summary: AMENDMENT_SUMMARY_READ_SCHEMA,
+})
+
+const LOOP_DETAIL_READ_SCHEMA = z.looseObject({
+  loop: LOOP_DETAIL_ROW_READ_SCHEMA,
+  durationText: z.string().optional(),
+  lastAuditResult: z.string().optional(),
+  postActionReport: z.string().optional(),
+  completionSummary: z.string().optional(),
+  plan: z.string().optional(),
+  sections: z.array(SECTION_PLAN_READ_SCHEMA),
+  findings: z.array(REVIEW_FINDING_READ_SCHEMA),
+  usage: LOOP_USAGE_READ_SCHEMA.optional(),
+  transitions: z.array(LOOP_TRANSITION_READ_SCHEMA),
+  transitionsCapped: z.boolean(),
+  amendments: z.array(PLAN_AMENDMENT_READ_SCHEMA),
+})
+
+const AMENDMENT_DIFF_LINE_READ_SCHEMA = z.looseObject({
+  kind: z.enum(DASHBOARD_DIFF_LINE_KINDS),
+  text: z.string(),
+})
+
+const AMENDMENT_SECTION_DIFF_READ_SCHEMA = z.looseObject({
+  index: z.number().int(),
+  change: z.enum(DASHBOARD_AMENDMENT_CHANGES),
+  title: z.string(),
+  previousTitle: z.string().optional(),
+  lines: z.array(AMENDMENT_DIFF_LINE_READ_SCHEMA),
+})
+
+const AMENDMENT_DIFF_READ_SCHEMA = z.looseObject({
+  sections: z.array(AMENDMENT_SECTION_DIFF_READ_SCHEMA),
+  summary: AMENDMENT_SUMMARY_READ_SCHEMA,
+})
+
+const PROJECT_FINDINGS_READ_SCHEMA = z.looseObject({
+  loops: z.array(z.looseObject({
+    loopName: z.string(),
+    findings: z.array(REVIEW_FINDING_READ_SCHEMA),
+  })),
+})
+
+const PLAN_DELETE_READ_SCHEMA = z.object({ deleted: z.boolean() })
+
+export function readForgeLoopDetail<P>(payload: P): ForgeLoopDetailOutput {
+  return readForgeRpcResult(payload, 'loop detail', (value) => {
+    const parsed = LOOP_DETAIL_READ_SCHEMA.safeParse(value)
+    return parsed.success ? parsed.data : null
+  })
 }
 
-export function readForgeProjectFindings(value: unknown): ForgeProjectFindingsOutput {
-  return readForgeRpcResult(value, 'project findings', (record) =>
-    findJsonSchemaMismatch(PROJECT_FINDINGS_SCHEMA, record, TOLERANT_READ_OPTIONS) === null
-      ? (record as unknown as ForgeProjectFindings)
-      : null)
+export function readForgeProjectFindings<P>(payload: P): ForgeProjectFindingsOutput {
+  return readForgeRpcResult(payload, 'project findings', (value) => {
+    const parsed = PROJECT_FINDINGS_READ_SCHEMA.safeParse(value)
+    return parsed.success ? parsed.data : null
+  })
 }
 
-export function readForgePlanDeleteOutput(value: unknown): ForgePlanDeleteOutput {
-  return readForgeRpcResult(value, 'plan delete result', (record) =>
-    record.deleted === true ? { deleted: true } : null)
+export function readForgePlanDeleteOutput<P>(payload: P): ForgePlanDeleteOutput {
+  return readForgeRpcResult(payload, 'plan delete result', (value) => {
+    const parsed = PLAN_DELETE_READ_SCHEMA.safeParse(value)
+    return parsed.success && parsed.data.deleted === true ? { deleted: true } : null
+  })
 }
 
-export function readForgeAmendmentDiff(value: unknown): ForgeAmendmentDiffOutput {
-  return readForgeRpcResult(value, 'amendment diff', (record) =>
-    findJsonSchemaMismatch(AMENDMENT_DIFF_SCHEMA, record, TOLERANT_READ_OPTIONS) === null
-      ? (record as unknown as ForgeAmendmentDiff)
-      : null)
+export function readForgeAmendmentDiff<P>(payload: P): ForgeAmendmentDiffOutput {
+  return readForgeRpcResult(payload, 'amendment diff', (value) => {
+    const parsed = AMENDMENT_DIFF_READ_SCHEMA.safeParse(value)
+    return parsed.success ? parsed.data : null
+  })
 }

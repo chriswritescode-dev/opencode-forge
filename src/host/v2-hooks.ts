@@ -8,7 +8,7 @@ import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client
 import { DEFAULT_MODEL_SUBAGENTS } from '../config'
 import { findLastIndex } from '../utils/array'
 import { resolveAutoApproveDecision, type PermissionEffectLike } from '../utils/auto-approve-policy'
-import { isRecord } from '../utils/is-record'
+import { z } from 'zod'
 import { processShared } from '../utils/process-shared'
 
 const V2_TO_V1_TOOL_NAME_TABLE = invertRenameTable(V1_TO_V2_TOOL_NAMES)
@@ -37,18 +37,18 @@ const SHELL_TOOL = V1_TO_V2_TOOL_NAMES.bash
 const SHELL_MARKER_PREFIX = 'forge-sandbox-required-'
 const SHELL_MARKER_PATTERN = /^(forge-sandbox-required-[0-9a-f-]{36}) && /
 
-/**
- * Sandboxes awaiting their shell, keyed by the one-off marker the shell tool wrapper prefixed
- * to the command. Process-wide because every plugin instance in the process may run the hook.
- */
 const pendingShellSandboxes = processShared('pending-shell-sandboxes.v1', () => new Map<string, SandboxContext>())
 
-/**
- * Wraps the built-in shell tool so a call from a sandboxed session reaches the shell hook
- * tagged with a one-off marker naming its sandbox. The shell hook carries no session
- * identity, so the marker is the only link between the two. An unstripped marker makes the
- * shell fail with "command not found", so a command never silently runs on the host.
- */
+const shellInputSchema = z.looseObject({ command: z.string() })
+
+const toolArgsSchema = z.looseObject({
+  path: z.string().optional().catch(undefined),
+  filePath: z.string().optional().catch(undefined),
+  include: z.string().optional().catch(undefined),
+  pattern: z.string().optional().catch(undefined),
+  patchText: z.string().optional().catch(undefined),
+})
+
 async function wrapShellToolForSandbox(ctx: Plugin.Context, core: ForgeHooksV2Core): Promise<void> {
   await ctx.tool.transform((editor) => {
     editor.update(SHELL_TOOL, (tool) => {
@@ -56,13 +56,14 @@ async function wrapShellToolForSandbox(ctx: Plugin.Context, core: ForgeHooksV2Co
       tool.execute = async (input, context) => {
         const sandbox = await core.resolveShellSandbox(context.sessionID)
         if (!sandbox) return execute(input, context)
-        if (!isRecord(input) || typeof input.command !== 'string') {
+        const parsed = shellInputSchema.safeParse(input)
+        if (!parsed.success) {
           throw new Error('Refusing to run a sandboxed shell call without a command')
         }
         const marker = `${SHELL_MARKER_PREFIX}${randomUUID()}`
         pendingShellSandboxes.set(marker, sandbox)
         try {
-          return await execute({ ...input, command: `${marker} && ${input.command}` }, context)
+          return await execute({ ...parsed.data, command: `${marker} && ${parsed.data.command}` }, context)
         } finally {
           pendingShellSandboxes.delete(marker)
         }
@@ -79,11 +80,6 @@ interface AutoApprovePermissionEvent {
   message?: string
 }
 
-/**
- * Resolves a permission `ask` for the session. When auto-approve applies, requests matching a configured
- * `autoApprove.deny` rule deny with a message and every other `ask` is allowed. OpenCode `deny` (and
- * `allow`) decisions are never touched.
- */
 async function resolvePermissionAsk(core: ForgeHooksV2Core, event: AutoApprovePermissionEvent): Promise<void> {
   if (event.effect !== 'ask') return
   if (!(await core.autoApprovesPermissions(event.sessionID))) return
@@ -104,41 +100,43 @@ interface ToolExecuteBeforeEvent {
 
 const SUBAGENT_TOOL = 'subagent'
 
-function subagentLaunchAgent(input: unknown): string | undefined {
-  if (!isRecord(input) || typeof input.agent !== 'string') return undefined
+type CompactionOutput = { context: string[]; prompt?: string }
+
+const subagentLaunchInputSchema = z.looseObject({
+  agent: z.string().optional(),
+  model: z.unknown(),
+  sessionID: z.unknown(),
+})
+
+type SubagentLaunchInput = z.infer<typeof subagentLaunchInputSchema>
+
+function subagentLaunchAgent(input: SubagentLaunchInput): string | undefined {
+  if (input.agent === undefined) return undefined
   if (input.model !== undefined && input.model !== '') return undefined
   if (input.sessionID !== undefined && input.sessionID !== '') return undefined
   return input.agent
 }
 
-/**
- * Gives a new subagent launch an explicit default model when its resolved agent has none, because
- * OpenCode otherwise resolves the child's model from the calling session. A user-pinned or
- * `executionModel` model on the agent wins, and a failed lookup leaves the input alone.
- */
 async function applySubagentDefaultModel(
   ctx: Pick<Plugin.Context, 'model' | 'agent'>,
   event: ToolExecuteBeforeEvent,
 ): Promise<void> {
   if (event.tool !== SUBAGENT_TOOL) return
-  const agent = subagentLaunchAgent(event.input)
+  const launchInput = subagentLaunchInputSchema.safeParse(event.input)
+  if (!launchInput.success) return
+  const agent = subagentLaunchAgent(launchInput.data)
   if (!agent || !DEFAULT_MODEL_SUBAGENTS.includes(agent)) return
   try {
     const resolved = await ctx.agent.get({ agentID: agent })
     if (resolved.data.model) return
     const result = await ctx.model.default()
     if (!result.data) return
-    event.input = { ...(event.input as Record<string, unknown>), model: `${result.data.providerID}/${result.data.id}` }
+    event.input = { ...launchInput.data, model: `${result.data.providerID}/${result.data.id}` }
   } catch (err) {
     console.error('[forge] Failed to resolve the default model for a subagent launch', err)
   }
 }
 
-/**
- * Decides whether Forge's agent addendum still applies to the session's resolved agent. A
- * user-configured `system` prompt on the agent takes precedence over the addendum, and a failed
- * lookup keeps the addendum so Forge's instructions are never dropped silently.
- */
 async function shouldInsertSystemAddendum(ctx: Pick<Plugin.Context, 'agent'>, agentID: string): Promise<boolean> {
   try {
     const resolved = await ctx.agent.get({ agentID })
@@ -159,13 +157,17 @@ export async function registerForgeHooksV2(
   await ctx.tool.hook('execute.before', async (event) => {
     await applySubagentDefaultModel(ctx, event)
     const input = { tool: toV1ToolName(event.tool), sessionID: event.sessionID, callID: event.id }
-    const output = { args: event.input }
+    const output = { args: toolArgsSchema.safeParse(event.input).data ?? {} }
     await core.toolBefore(input, output)
-    event.input = output.args
   })
 
   await ctx.tool.hook('execute.after', async (event) => {
-    const input = { tool: toV1ToolName(event.tool), sessionID: event.sessionID, callID: event.id, args: event.input }
+    const input = {
+      tool: toV1ToolName(event.tool),
+      sessionID: event.sessionID,
+      callID: event.id,
+      args: toolArgsSchema.safeParse(event.input).data ?? {},
+    }
     if (event.status === 'error') {
       await core.toolAfter(input, { title: '', output: event.error.message, metadata: {} })
       return
@@ -235,7 +237,7 @@ export async function registerForgeHooksV2(
   })
 
   await ctx.session.hook('compaction', async (event) => {
-    const output: { context: string[]; prompt?: string } = { context: [] }
+    const output: CompactionOutput = { context: [] }
     await core.compacting({ sessionID: event.sessionID }, output)
     if (output.prompt !== undefined) event.system.push({ type: 'text', text: output.prompt })
     for (const text of output.context) event.system.push({ type: 'text', text })

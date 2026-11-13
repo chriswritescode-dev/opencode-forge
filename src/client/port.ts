@@ -1,11 +1,12 @@
-// ── Permission types ──────────────────────────────────────────────────────────
+import { z } from 'zod'
+import type { JsonObject } from '../utils/json-schema'
+
 export type SessionPermissionRule = {
   permission: string
   pattern: string
   action: 'allow' | 'deny' | 'ask'
 }
 
-// ── Session param types ──────────────────────────────────────────────────────
 export type SessionCreateParams = {
   title?: string
   directory?: string
@@ -17,6 +18,7 @@ export type SessionCreateParams = {
 export type SessionGetParams = {
   sessionID: string
   directory?: string
+  workspace?: string
 }
 
 export type SessionUpdateParams = {
@@ -66,7 +68,6 @@ export type ModelContextLimitParams = {
   modelID: string
 }
 
-// ── Session result types ─────────────────────────────────────────────────────
 export type Session = {
   id: string
   slug: string
@@ -80,15 +81,23 @@ export type Session = {
   permission?: SessionPermissionRule[]
 }
 
-export type SessionStatus = Record<string, {
+export type SessionStatusEntry = {
   type: 'idle' | 'busy' | 'retry'
   attempt?: number
   message?: string
   next?: number
-  [key: string]: unknown
-}>
+}
 
-// ── Session message types ────────────────────────────────────────────────────
+export type SessionStatus = Record<string, SessionStatusEntry>
+
+export type SessionToolState = {
+  status: string
+  input?: string | JsonObject
+  output?: string
+  metadata?: JsonObject
+  error?: string
+}
+
 export type SessionMessagePart = {
   id?: string
   messageID?: string
@@ -98,7 +107,7 @@ export type SessionMessagePart = {
   synthetic?: boolean
   tool?: string
   callID?: string
-  state?: Record<string, unknown>
+  state?: SessionToolState
 }
 
 export type SessionMessageInfo = {
@@ -122,11 +131,21 @@ export type SessionMessage = {
 
 export type SessionMessages = SessionMessage[]
 
-// ── Workspace param types ────────────────────────────────────────────────────
+export type WorkspaceExtra = {
+  loopName?: unknown
+  baseRef?: unknown
+  branch?: unknown
+  projectDirectory?: unknown
+  workspaceCreatedAt?: unknown
+  permissionRules?: unknown
+  forgeLoop?: unknown
+  loopSandbox?: unknown
+}
+
 export type WorkspaceCreateParams = {
   type?: string
   branch?: string | null
-  extra?: Record<string, unknown> | null
+  extra?: WorkspaceExtra | null
 }
 
 export type WorkspaceListParams = {
@@ -143,21 +162,19 @@ export type WorkspaceWarpParams = {
   copyChanges?: boolean
 }
 
-// ── Workspace result types ───────────────────────────────────────────────────
 export type WorkspaceInfo = {
   id: string
   type?: string | null
   name?: string
   branch?: string | null
   directory?: string | null
-  extra?: Record<string, unknown> | null
+  extra?: WorkspaceExtra | null
   projectID?: string
 }
 
 export type WorkspaceCreateResult = WorkspaceInfo & { timeUsed?: number | string }
 export type WorkspaceList = WorkspaceInfo[]
 
-// ── Provider result types ──────────────────────────────────────────────────
 export type ProviderModelInfo = {
   id: string
   name: string
@@ -169,7 +186,7 @@ export type ProviderModelInfo = {
     attachment?: boolean
   }
   cost?: { input?: number; output?: number }
-  variants?: Record<string, { disabled?: boolean; [key: string]: unknown }>
+  variants?: Record<string, { disabled?: boolean }>
 }
 
 export type ProviderListEntry = {
@@ -184,7 +201,6 @@ export type ProviderList = {
   default: Record<string, string>
 }
 
-// ── Toast types ────────────────────────────────────────────────────────────
 export type ToastInput = {
   directory: string
   title?: string
@@ -193,21 +209,35 @@ export type ToastInput = {
   duration?: number
 }
 
-// ── Event types ────────────────────────────────────────────────────────────
-export type ForgeEvent = {
-  type: string
-  properties: Record<string, unknown>
+export type SessionErrorInfo = {
+  name: string
+  data: {
+    message: string
+    statusCode?: number
+  }
 }
 
-// ── Error model ──────────────────────────────────────────────────────────────
+export type ForgeEventProperties = {
+  sessionID?: string
+  status?: SessionStatusEntry
+  info?: Session
+  part?: SessionMessagePart
+  error?: SessionErrorInfo
+}
+
+export type ForgeEvent = {
+  type: string
+  properties: ForgeEventProperties
+}
 
 export type ForgeClientErrorKind = 'connection' | 'not-found' | 'unavailable' | 'request'
+
+const errorCodeSchema = z.looseObject({ code: z.string() })
 
 export class ForgeClientError extends Error {
   readonly kind: ForgeClientErrorKind
   readonly method: string
   override readonly cause?: unknown
-  /** SDK error code, propagated from `cause.code` when available (e.g. `"concurrent_prompt"`). */
   readonly code?: string
 
   constructor(args: { kind: ForgeClientErrorKind; method: string; message: string; cause?: unknown }) {
@@ -216,15 +246,10 @@ export class ForgeClientError extends Error {
     this.kind = args.kind
     this.method = args.method
     this.cause = args.cause
-    // Propagate SDK error code through so callers can detect specific error
-    // codes (e.g. 'concurrent_prompt') on a port-level error.
-    this.code = (args.cause && typeof args.cause === 'object' && 'code' in (args.cause as Record<string, unknown>))
-      ? (args.cause as { code: string }).code
-      : undefined
+    const coded = errorCodeSchema.safeParse(args.cause)
+    this.code = coded.success ? coded.data.code : undefined
   }
 }
-
-// ── Port interface ───────────────────────────────────────────────────────────
 
 export interface ForgeClient {
   session: {
@@ -235,11 +260,6 @@ export interface ForgeClient {
     status(params?: SessionStatusParams): Promise<SessionStatus>
     promptAsync(params: SessionPromptAsyncParams): Promise<void>
     abort(params: SessionAbortParams): Promise<void>
-    /**
-     * Enqueues a compaction in the session inbox. The host runs it before any
-     * prompt queued after it, so the session keeps its identity and its history
-     * collapses into the compaction summary.
-     */
     compact(params: SessionCompactParams): Promise<void>
     delete(params: SessionDeleteParams): Promise<void>
   }
@@ -250,12 +270,7 @@ export interface ForgeClient {
     warp(params: WorkspaceWarpParams): Promise<void>
   }
   model: {
-    /**
-     * Context window of a model in tokens, or `undefined` when the host does not
-     * know the model or reports no positive `limit.context`.
-     */
     contextLimit(params: ModelContextLimitParams): Promise<number | undefined>
   }
-  /** Emits a toast notification to the host TUI. */
   toast(input: ToastInput): Promise<void>
 }

@@ -1,7 +1,9 @@
+import { z } from 'zod'
 import type { ForgeClient, ForgeEvent, SessionGetParams } from '../client/port'
 import { ForgeClientError } from '../client/port'
 import { buildAgents } from '../agents'
 import { createConfigHandler } from '../config'
+import type { ChatMessageOutput } from '../hooks/session'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
 import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createSessionAutoApproveRepo } from '../storage'
 import type { LoopChangeNotifier } from '../loop'
@@ -44,7 +46,7 @@ import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } fro
 import { createLoopPermissionPatcher } from '../hooks/loop-permission'
 import { createSandboxMessageHook } from '../hooks/sandbox-message'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
-import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
+import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeExecutePlanSuccess, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
 import { createDashboardService, type DashboardService } from '../services/dashboard-service'
 import { processShared } from '../utils/process-shared'
@@ -52,69 +54,35 @@ import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
 import { withWriteNotifications } from '../utils/write-notifications'
 import { errorMessage } from '../utils/error-message'
 
-/**
- * Host-supplied inputs the core needs to run, built by the host adapter from its plugin
- * context so the core never touches a host-specific type.
- */
 export interface ForgeHostInput {
   directory: string
   projectId: string
   projectRoot: string
   client: ForgeClient
   registerWorkspaceAdapter: (adapter: ForgeWorkspaceAdapter) => void
-  /**
-   * Host push channel for TUI refresh events. Fire-and-forget: it must never
-   * throw into the core, and a failed publish is the host's to log.
-   */
   publishTuiEvent?: (event: ForgeTuiEvent) => void
 }
 
-/**
- * Host-neutral core of the Forge plugin: every handler the host adapter maps onto its own
- * hook surface, so routing, permissions, and sandbox resolution live in one implementation.
- */
 export interface ForgeCore {
   tools: Record<string, ToolDefinition>
-  applyConfig(cfg: Record<string, unknown>): Promise<void>
-  chatMessage(input: { sessionID: string; messageID?: string; agent?: string }, output: unknown): Promise<void>
+  applyConfig: ReturnType<typeof createConfigHandler>
+  chatMessage(input: { sessionID: string; messageID?: string; agent?: string }, output: ChatMessageOutput): Promise<void>
   systemTransform(input: { sessionID?: string }, output: { system: string[] }): Promise<void>
   onEvent(input: { event: ForgeEvent }): Promise<void>
   toolBefore(input: ToolBeforeInput, output: ToolBeforeOutput): Promise<void>
   toolAfter(input: ToolAfterInput, output: ToolAfterOutput): Promise<void>
   compacting(input: { sessionID: string }, output: { context: string[]; prompt?: string }): Promise<void>
   architectReminderFor(agent: string | undefined): string | null
-  /** Prompt appended after OpenCode's default system prompt for the named Forge agent, or null. */
   systemAddendumFor(agent: string | undefined): string | null
   executeTuiPlan(input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput>
-  /** Server-side loop-setting defaults the execution dialog shows before a loop is launched. */
   loopDefaults(): ForgeLoopDefaults
   resolveSandboxForDirectory(directory: string, opts?: { throwOnRestoreError?: boolean }): Promise<SandboxContext | null>
-  /**
-   * Sandbox for a shell tool call in `sessionID`, or null to run it on the host. Returns null
-   * without any session lookup while no loop is active and no host session sandbox is on.
-   * Fails closed: throws when an expected sandbox cannot be resolved or restored.
-   */
   resolveShellSandbox(sessionID: string): Promise<SandboxContext | null>
-  /**
-   * True when a permission prompt in `sessionID` should be approved automatically: the session has an
-   * enabled per-session auto-approve flag (its own or an ancestor's) and is not inside an active loop,
-   * or the session's shell calls run in a sandbox and `sandbox.autoApprovePermissions` is not disabled.
-   * Any resolution failure answers false so the prompt is still shown.
-   */
   autoApprovesPermissions(sessionID: string): Promise<boolean>
-  /** Resolves whether per-session auto-approve is on for `sessionID`, whether that is inherited, and the session that owns the flag. */
   getSessionAutoApproveState(sessionID: string): Promise<ForgeAutoApproveState>
-  /**
-   * Turns per-session auto-approve on or off for `sessionID`. Refuses to toggle a flag inherited from
-   * an ancestor, and refuses to enable it inside an active loop. Resolves to the resulting state, or
-   * an error when the toggle could not be applied.
-   */
   setSessionAutoApprove(sessionID: string, enabled: boolean): Promise<ForgeAutoApproveState>
-  /** Extra deny rules applied while auto-approve is on, from `autoApprove.deny`. */
   autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule>
-  /** Read and control surface the TUI reaches through the FORGE_RPC plugin RPC. */
   tui: TuiRpcService
-  /** Read model the dashboard RPC serves, for every project in the database. */
   dashboard: DashboardService
   cleanup(): Promise<void>
   shellShimPath: string | null
@@ -127,7 +95,7 @@ export interface CreateParentSessionLookupOptions {
   logger: ReturnType<typeof createLogger>
 }
 
-type SessionLookupAttempt = { label: string; directory?: string; input: Record<string, unknown> }
+type SessionLookupAttempt = { label: string; directory?: string; input: SessionGetParams }
 
 function buildSessionLookupAttempts(
   sessionId: string,
@@ -177,7 +145,7 @@ export function createParentSessionLookup({
 
     for (const attempt of attempts) {
       try {
-        const session = await client.session.get(attempt.input as SessionGetParams)
+        const session = await client.session.get(attempt.input)
         if (session) {
           const parentId = session.parentID ?? null
           cache.set(sessionId, parentId)
@@ -185,9 +153,6 @@ export function createParentSessionLookup({
         }
         failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:empty`)
       } catch (err) {
-        // A not-found on one attempt is not absence: a later attempt (another worktree) may still
-        // resolve the session, so only this attempt is recorded. Every other failure
-        // (connection/unavailable/request) propagates immediately.
         if (err instanceof ForgeClientError && err.kind === 'not-found') {
           failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:not-found`)
           continue
@@ -196,10 +161,6 @@ export function createParentSessionLookup({
       }
     }
 
-    // Exhausting every attempt means the parent is unknown, not absent. Returning null here would
-    // read as "no parent" and let a sandboxed session's sub-agent run on the host; throwing makes
-    // routing fail closed. Deliberately not cached: like any other lookup failure it must be
-    // retried, so a session that becomes readable resolves on the very next call.
     const detail = failures.join('; ')
     logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${detail}`)
     throw new ParentLookupUndeterminedError(sessionId, detail)
@@ -243,7 +204,7 @@ function createSessionIdentityLookup({
     const attempts = buildSessionLookupAttempts(sessionId, directory, loop)
     for (const attempt of attempts) {
       try {
-        const session = await client.session.get(attempt.input as SessionGetParams)
+        const session = await client.session.get(attempt.input)
         if (session?.directory && (!requireProjectId || session.projectID)) {
           const identity = { projectId: session.projectID ?? '', directory: session.directory }
           negativeCache.delete(sessionId)
@@ -251,7 +212,6 @@ function createSessionIdentityLookup({
           return identity
         }
       } catch {
-        // fall through to next attempt
       }
     }
 
@@ -276,13 +236,6 @@ Before designing, settle the route with grouped \`question\` rounds after resear
 
 type CoalescedProjectEventType = 'loopsChanged' | 'plansChanged'
 
-/**
- * Builds a publisher that emits at most one `{ type, projectId }` event per
- * project per microtask, so a burst of writes makes the TUI re-read once
- * instead of once per write. Writes for different projects in the same
- * microtask each emit once. `emit` is the writing instance's TUI channel, so a
- * write for another project still reaches the instance that performed it.
- */
 function createCoalescedTuiEvent(
   type: CoalescedProjectEventType,
   emit: (event: ForgeTuiEvent) => void,
@@ -304,7 +257,6 @@ function createCoalescedTuiEvent(
   }
 }
 
-/** Inputs the loop-change notifier needs. */
 export interface LoopChangeNotifierDeps {
   directory: string
   projectId: string
@@ -312,10 +264,6 @@ export interface LoopChangeNotifierDeps {
   logger: Logger
 }
 
-/**
- * Builds the loop-change notifier. Every loop change refreshes the loops surface;
- * the reason only feeds the debug log.
- */
 export function createLoopChangeNotifier(deps: LoopChangeNotifierDeps): LoopChangeNotifier {
   const { directory, projectId, publishLoopsChanged, logger } = deps
 
@@ -339,7 +287,7 @@ type SessionSandboxProvider = {
   resolveActiveLoopForSession: ResolveActiveLoopForSession
 }
 
-type SharedSessionSandboxController = {
+export type SharedSessionSandboxController = {
   controller: SessionSandboxController
   started: Promise<void>
   providerState: {
@@ -349,10 +297,6 @@ type SharedSessionSandboxController = {
   close: () => void
 }
 
-/**
- * One host sandbox controller per project for the whole process: every location's plugin instance
- * has its own module copy, and a second reconciler would race the first on the same container.
- */
 const sharedSessionSandboxControllers = processShared('session-sandbox-controllers.v1', () => new Map<string, SharedSessionSandboxController>())
 
 function preferredSessionSandboxProvider(providers: Set<SessionSandboxProvider>): SessionSandboxProvider {
@@ -431,24 +375,20 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const dataDir = resolveForgeDataDir(config.dataDir)
 
-  // Live TUI emitter for this instance. The host sandbox controller is process-shared and may
-  // outlive its creator, so it emits through the registry rather than a captured reference.
   const unregisterTuiEventEmitter = host.publishTuiEvent
     ? registerTuiEventEmitter(projectId, host.publishTuiEvent)
     : null
 
-  // Bursts of writes (phase rotation, section advance, findings, usage, plans)
-  // collapse to one event per microtask so the TUI re-reads once instead of once per write.
   const emitInstanceTuiEvent = (event: ForgeTuiEvent): void => emitTuiEvent(projectId, event)
   const publishLoopsChanged = createCoalescedTuiEvent('loopsChanged', emitInstanceTuiEvent)
   const publishPlansChanged = createCoalescedTuiEvent('plansChanged', emitInstanceTuiEvent)
   const notifyLoopsChanged = (): void => publishLoopsChanged(projectId)
   const notifyPlansChanged = (args: unknown[]): void => {
-    const planProjectId = args[0]
-    if (typeof planProjectId === 'string') publishPlansChanged(planProjectId)
+    const planProjectId = z.string().safeParse(args[0])
+    if (planProjectId.success) publishPlansChanged(planProjectId.data)
   }
 
-  const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox as unknown)
+  const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox)
   for (const warning of legacySandboxWarnings) {
     logger.log(warning)
   }
@@ -519,21 +459,22 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   } else {
     const sandboxMountConfigs = resolveSandboxMountConfigs(config)
     try {
-      sandboxManager = createSandboxManager(runtime, {
+      const sandboxConfig: Parameters<typeof createSandboxManager>[1] = {
         image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
         toolOutputDir: resolveOpencodeToolOutputDir(),
         tmpDir: resolveOpencodeTmpDir(),
         sourceProjectDir: projectRoot,
         mountProjectReadonly: config.sandbox?.mountProjectReadonly,
-        ...(sandboxMountConfigs.length > 0 ? { customMounts: sandboxMountConfigs } : {}),
-        ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
         buildContextDir: resolveBundledContainerDir(),
         templateBuildArgs: resolveTemplateBuildArgs(config),
-        ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
         resolveOverrides: (worktreeName) => worktreeName === hostSandboxManagerKey
           ? sandboxPreferences.getDesired(projectId)?.overrides
           : readSandboxOverrides(loopsRepo.get(projectId, worktreeName)?.sandboxSettings),
-      }, logger, defaultGitService)
+      }
+      if (sandboxMountConfigs.length > 0) sandboxConfig.customMounts = sandboxMountConfigs
+      if (config.sandbox?.network) sandboxConfig.network = config.sandbox.network
+      if (config.sandbox?.resources) sandboxConfig.resources = config.sandbox.resources
+      sandboxManager = createSandboxManager(runtime, sandboxConfig, logger, defaultGitService)
       logger.log('Sandbox manager initialized')
     } catch (err) {
       logger.error('Failed to initialize msb sandbox manager; refusing to run worktree-only while sandbox is enabled', err)
@@ -541,11 +482,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     }
   }
 
-  // Sandbox shell routing: opencode's native bash tool is pointed at a shim (via the `shell`
-  // config key) that routes commands into the loop container when the shell.env hook injects
-  // the container name. Without a working shim there is no safe way to route sandbox loop
-  // commands, so refuse to start with the sandbox enabled rather than silently executing on
-  // the host. The shim is POSIX sh, so Windows hosts (no shim) fail closed too.
   let shellShimPath: string | null = null
   if (sandboxManager) {
     shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger)
@@ -560,10 +496,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       try {
         const available = await runtime.checkAvailable()
         if (!available.available) {
-          // `unknown` means the probe itself could not answer (a daemon busy with other
-          // sandboxes; every worktree loads its own plugin instance, so probes race at startup).
-          // That is not evidence of unavailability, and the template probe below would be just as
-          // unreliable, so stay quiet instead of raising a false alarm about either.
           if (available.reason !== 'unknown') {
             publishToast({
               client: forgeClient,
@@ -596,14 +528,9 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     })()
   }
 
-  // Pending-teardown registry: caller (loop termination side-effects) writes
-  // iteration/reason/doCommit here right before invoking workspace.remove so
-  // the forge adapter can build informative commit messages while remaining
-  // the single source of truth for teardown behavior.
   const { createPendingTeardownRegistry } = await import('../workspace/pending-teardown')
   const pendingTeardowns = createPendingTeardownRegistry()
 
-  // Register the forge workspace adapter so loop worktrees are created under <dataDir>/worktrees/
   const { createForgeWorkspaceAdapter } = await import('../workspace/forge-adapter')
   host.registerWorkspaceAdapter(createForgeWorkspaceAdapter({
     dataDir,
@@ -694,7 +621,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     cleanupPromise = (async () => {
       logger.log('Cleaning up plugin resources...')
       
-      // Unregister process listeners before async work
       process.removeListener('exit', handleExit)
       process.removeListener('SIGINT', handleSigint)
       process.removeListener('SIGTERM', handleSigterm)
@@ -704,13 +630,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       
       loopHandler.clearAllRetryTimeouts()
 
-      // Disposal and DB close must both be exception-safe: a rejected controller disposal (e.g.
-      // a failed container removal or acknowledgement persistence) must never prevent the SQLite
-      // handle from closing. The error is logged and swallowed so cleanup completes and the
-      // idempotent cleanupPromise still resolves.
       try {
-        // Release rather than dispose: the controller is shared by every plugin instance in this
-        // process for this project, and only the last release may tear it down.
         if (sessionSandboxProjectId && sessionSandboxProvider) {
           await releaseSessionSandboxController(sessionSandboxProjectId, sessionSandboxProvider)
         }
@@ -726,23 +646,12 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const handleSigint = cleanup
   const handleSigterm = cleanup
-  // The `exit` event fires once the event loop has drained and cannot await asynchronous work,
-  // so it must never run the async disposal (container removal, applied-OFF persistence) — that
-  // work would be cut off mid-flight. The awaited shutdown runs through the host's
-  // location shutdown and the SIGINT/SIGTERM handlers (which keep the process
-  // alive while their async cleanup completes). This listener is registered so shutdown
-  // bookkeeping is explicit and cleaned up consistently with the other signals.
   const handleExit = () => {}
 
   process.once('exit', handleExit)
   process.once('SIGINT', handleSigint)
   process.once('SIGTERM', handleSigterm)
 
-  // Sandbox reconciliation interval removed per Phase 2 requirements.
-  // Sandbox reconciliation now only occurs for loops started/restarted
-  // in the current plugin process, triggered by explicit runtime events.
-
-  // Create forge-session-attach hook for triggering attachLoopToSession on session.created events
   const forgeAttachExecDeps = {
     projectId,
     directory,
@@ -804,15 +713,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     logger,
     getPermissionOptions: (workspaceId) => resolveLoopPermissionOptionsForWorkspace(forgeClient, config, workspaceId),
   })
-  // Host-session sandbox controller: reconciles the acknowledged host sandbox preference for
-  // sessions outside any loop. Always constructed — even when sandbox routing is unavailable
-  // (sandbox disabled, manager init failure, or no shell shim) — so a requested ON is
-  // acknowledged as OFF-with-error and the selected session is blocked fail-closed instead of
-  // silently executing on the host. Its initial reconcile starts in the background; host sandbox
-  // resolution waits for it before deciding whether a session may run on the host.
-  // Shared per project across every plugin instance in this process: a second reconciler would
-  // race this one on the same container. Only the first instance constructs and starts one, and
-  // it gets its own database handle so it never depends on that instance's lifetime.
   const hostSessionProvider: SessionSandboxProvider = {
     worktree: isForgeWorktreeDir(dataDir, directory),
     getParentSessionId: parentSessionLookup,
@@ -843,11 +743,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   sessionSandboxProvider = hostSessionProvider
   void sharedSessionSandbox.started.catch((err) => logger.error('Session sandbox controller failed to start', err))
 
-  // Unified, loop-first sandbox resolver. Loop resolution always takes precedence: an active
-  // sandbox loop owns its sessions; an active non-sandbox loop forces host (a host preference
-  // cannot override loop/worktree behavior); only sessions with no active loop consult the
-  // acknowledged host-session sandbox. Callers opt into fail-closed behavior via
-  // { throwOnRestoreError: true }.
   const resolveSandboxForSession = createUnifiedSandboxResolver({
     resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     resolveLoopSandbox: (resolved, opts) => resolveSandboxContextForLoop(sandboxManager, resolved, logger, opts),
@@ -857,16 +752,12 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     },
   })
 
-  // Tells the agent its tool calls run in a container. Driven by the same resolver as bash so
-  // the note appears for sandbox loops, their subagents, and host-sandbox sessions alike.
   const sandboxMessageHook = createSandboxMessageHook({
     resolveSandboxForSession: (sessionID, opts) => resolveSandboxForSession(sessionID, opts),
     probe: createEnvironmentProbe(logger),
     logger,
   })
 
-  // Execution service shared by TUI loop restarts and TUI plan execution.
-  // Built once and reused (stateless dispatch) so the dependency wiring lives in a single place.
   const executionService = createForgeExecutionService({
     projectId,
     directory,
@@ -925,7 +816,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     amendmentsRepo: planAmendmentsRepo,
   })
 
-  // ── Tool context ──────────────────────────────────────────────────────────
   const ctx: ToolContext = {
     projectId,
     directory,
@@ -984,8 +874,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       surface: 'tui',
       projectId,
       directory,
-      ...(input.sessionId ? { sourceSessionId: input.sessionId } : {}),
     }
+    if (input.sessionId) execCtx.sourceSessionId = input.sessionId
     const source: PlanSource = { kind: 'inline', planText: input.plan }
     const executionModel = input.executionModel || undefined
     const executionVariant = input.executionVariant || undefined
@@ -1031,13 +921,14 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       lifecycle: { startWatchdog: true },
     }))
     if (!response.ok) return { error: response.error.message }
-    return {
+    const launched: ForgeExecutePlanSuccess = {
       sessionId: response.data.sessionId,
       loopName: response.data.loopName,
-      ...(response.data.worktreeBranch ? { branch: response.data.worktreeBranch } : {}),
-      ...(response.data.worktreeDir ? { worktreeDir: response.data.worktreeDir } : {}),
-      ...(response.data.workspaceId ? { workspaceId: response.data.workspaceId } : {}),
     }
+    if (response.data.worktreeBranch) launched.branch = response.data.worktreeBranch
+    if (response.data.worktreeDir) launched.worktreeDir = response.data.worktreeDir
+    if (response.data.workspaceId) launched.workspaceId = response.data.workspaceId
+    return launched
   }
 
   const loopDefaults = (): ForgeLoopDefaults => ({
@@ -1112,8 +1003,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     chatMessage: async (input, output) => {
       touchAutoApproveFlag(input.sessionID)
       await forgeSessionMessageAttachHook(input)
-      // Fallback for filtered session.created events: subagent sessions inside
-      // loops must carry the loop ruleset before their first LLM step.
       await loopPermissionPatcher.ensurePatched({ sessionID: input.sessionID })
       await sessionHooks.onMessage(input, output)
     },
@@ -1121,20 +1010,14 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       await sandboxMessageHook(input, output)
     },
     onEvent: async (input) => {
-      const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
-      await planCaptureEventHook(eventInput)
-      await loopHandler.onEvent(eventInput)
-      await loopPermissionPatcher.onSessionCreated(eventInput)
-      await forgeSessionAttachHook(eventInput)
-      await sessionHooks.onEvent(eventInput)
-      await planApprovalEventHook(eventInput)
+      await planCaptureEventHook(input)
+      await loopHandler.onEvent(input)
+      await loopPermissionPatcher.onSessionCreated(input)
+      await forgeSessionAttachHook(input)
+      await sessionHooks.onEvent(input)
+      await planApprovalEventHook(input)
     },
     toolBefore: async (input, output) => {
-      // Loop bookkeeping (activity recording, permission patching) is best-effort for tool
-      // routing: a transient ancestry/session lookup failure must never reject native file and
-      // management tools (`read`, `edit`, `write`, ...), which are host-side by design.
-      // Sandbox-routed tools (bash/glob/grep) still fail closed through their own resolver
-      // calls, so shell + search isolation is not weakened.
       let resolved: Awaited<ReturnType<typeof sessionLoopResolver.resolveActiveLoopForSession>> | null = null
       try {
         resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
@@ -1169,10 +1052,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     },
     compacting: async (input, output) => {
       logger.log(`Compacting triggered`)
-      await sessionHooks.onCompacting(
-        input as { sessionID: string },
-        output as { context: string[]; prompt?: string }
-      )
+      await sessionHooks.onCompacting(input, output)
     },
     architectReminderFor,
     systemAddendumFor,

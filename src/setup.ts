@@ -9,8 +9,9 @@ import {
   resolveBundledConfigPath,
 } from './install/paths'
 import type { PluginConfig } from './types'
+import type { JsonObject, JsonValue } from './utils/json-schema'
+import { z } from 'zod'
 
-// Re-exported for consumers that import path helpers from setup.
 export {
   resolveConfigPath,
   resolvePromptsDir,
@@ -57,9 +58,10 @@ function getDefaultConfig(): PluginConfig {
   }
 }
 
-function isValidPluginConfig(config: unknown): config is PluginConfig {
-  if (!config || typeof config !== 'object') return false
-  return true
+const pluginConfigObjectSchema = z.looseObject({})
+
+function isValidPluginConfig(config: JsonValue): config is JsonObject & PluginConfig {
+  return pluginConfigObjectSchema.safeParse(config).success
 }
 
 function stripComments(content: string): string {
@@ -76,19 +78,12 @@ function stripTrailingCommas(content: string): string {
   return result
 }
 
-function parseJsonc<T = unknown>(content: string): T {
+function parseJsonc(content: string): JsonValue {
   const cleaned = stripComments(content)
   const normalized = stripTrailingCommas(cleaned)
-  return JSON.parse(normalized) as T
+  return z.json().parse(JSON.parse(normalized))
 }
 
-/**
- * Silently install bundled prompts and skills into the user config dir. This
- * runs on every plugin load and is intentionally non-interactive: it preserves
- * user edits and never deletes files. Use the standalone installer
- * (`bunx opencode-forge`) for interactive (re)install, conflict resolution, and
- * orphan pruning.
- */
 function ensureBundledAssets(): void {
   for (const spec of getBundleSpecs()) {
     if (!existsSync(spec.bundledDir)) continue

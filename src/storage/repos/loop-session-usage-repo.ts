@@ -1,4 +1,40 @@
 import type { Database } from 'bun:sqlite'
+import { z } from 'zod'
+
+const sessionUsageRoleSchema = z.enum(['code', 'auditor', 'unknown'])
+
+const loopSessionUsageRowSchema = z.object({
+  project_id: z.string(),
+  loop_name: z.string(),
+  session_id: z.string(),
+  role: sessionUsageRoleSchema,
+  model: z.string(),
+  cost: z.number(),
+  input_tokens: z.number(),
+  output_tokens: z.number(),
+  reasoning_tokens: z.number(),
+  cache_read_tokens: z.number(),
+  cache_write_tokens: z.number(),
+  message_count: z.number(),
+  captured_at: z.number(),
+})
+const loopSessionUsageRowsSchema = z.array(loopSessionUsageRowSchema)
+
+const aggregateGroupRowSchema = z.object({
+  role: sessionUsageRoleSchema,
+  model: z.string(),
+  cost: z.number(),
+  input_tokens: z.number(),
+  output_tokens: z.number(),
+  reasoning_tokens: z.number(),
+  cache_read_tokens: z.number(),
+  cache_write_tokens: z.number(),
+  message_count: z.number(),
+})
+const aggregateGroupRowsSchema = z.array(aggregateGroupRowSchema)
+
+const loopCostRowSchema = z.object({ loop_name: z.string(), cost: z.number() })
+const loopCostRowsSchema = z.array(loopCostRowSchema)
 
 export interface LoopSessionUsageRow {
   projectId: string
@@ -48,42 +84,13 @@ export interface LoopUsageAggregate {
 export interface LoopSessionUsageRepo {
   upsertSessionUsage(rows: LoopSessionUsageRow | LoopSessionUsageRow[]): void
   getAggregate(projectId: string, loopName: string): LoopUsageAggregate | null
-  /** Total cost per loop for this project, in one scan. */
   totalCostsByLoop(projectId: string): Map<string, number>
   listSessionUsage(projectId: string, loopName: string): LoopSessionUsageRow[]
   hasSession(projectId: string, loopName: string, sessionId: string): boolean
   deleteLoop(projectId: string, loopName: string): void
 }
 
-interface LoopSessionUsageRowRaw {
-  project_id: string
-  loop_name: string
-  session_id: string
-  role: string
-  model: string
-  cost: number
-  input_tokens: number
-  output_tokens: number
-  reasoning_tokens: number
-  cache_read_tokens: number
-  cache_write_tokens: number
-  message_count: number
-  captured_at: number
-}
-
 type UsageBucket = LoopUsageAggregate['byModel'][string]
-
-interface AggregateGroupRow {
-  role: string
-  model: string
-  cost: number
-  input_tokens: number
-  output_tokens: number
-  reasoning_tokens: number
-  cache_read_tokens: number
-  cache_write_tokens: number
-  message_count: number
-}
 
 function emptyUsageBucket(): UsageBucket {
   return {
@@ -100,7 +107,7 @@ function emptyUsageBucket(): UsageBucket {
 function accumulateUsageBucket<K extends string>(
   buckets: Partial<Record<K, UsageBucket>>,
   key: K,
-  row: AggregateGroupRow,
+  row: z.infer<typeof aggregateGroupRowSchema>,
 ): void {
   const bucket = (buckets[key] ??= emptyUsageBucket())
   bucket.cost += row.cost
@@ -112,12 +119,12 @@ function accumulateUsageBucket<K extends string>(
   bucket.messageCount += row.message_count
 }
 
-function mapRow(row: LoopSessionUsageRowRaw): LoopSessionUsageRow {
+function mapRow(row: z.infer<typeof loopSessionUsageRowSchema>): LoopSessionUsageRow {
   return {
     projectId: row.project_id,
     loopName: row.loop_name,
     sessionId: row.session_id,
-    role: row.role as LoopSessionUsageRow['role'],
+    role: row.role,
     model: row.model,
     cost: row.cost,
     inputTokens: row.input_tokens,
@@ -144,9 +151,6 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     WHERE project_id = ? AND loop_name = ? AND session_id = ?
   `)
 
-  // One scan of idx_loop_session_usage_project_loop produces the totals, the
-  // per-model split and the per-role split; the TUI dashboard loop detail calls
-  // this once per loop, so a statement per shape tripled the work for no extra data.
   const getAggregateStmt = db.prepare(`
     SELECT
       role,
@@ -220,7 +224,7 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     },
 
     getAggregate(projectId: string, loopName: string): LoopUsageAggregate | null {
-      const rows = getAggregateStmt.all(projectId, loopName) as AggregateGroupRow[]
+      const rows = aggregateGroupRowsSchema.parse(getAggregateStmt.all(projectId, loopName))
 
       if (rows.length === 0) return null
 
@@ -247,19 +251,19 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
         aggregate.totalMessageCount += row.message_count
 
         accumulateUsageBucket(aggregate.byModel, row.model, row)
-        accumulateUsageBucket(aggregate.byRole, row.role as LoopSessionUsageRow['role'], row)
+        accumulateUsageBucket(aggregate.byRole, row.role, row)
       }
 
       return aggregate
     },
 
     totalCostsByLoop(projectId: string): Map<string, number> {
-      const rows = totalCostsByLoopStmt.all(projectId) as { loop_name: string; cost: number }[]
+      const rows = loopCostRowsSchema.parse(totalCostsByLoopStmt.all(projectId))
       return new Map(rows.map((row) => [row.loop_name, row.cost]))
     },
 
     listSessionUsage(projectId: string, loopName: string): LoopSessionUsageRow[] {
-      const rows = listSessionUsageStmt.all(projectId, loopName) as LoopSessionUsageRowRaw[]
+      const rows = loopSessionUsageRowsSchema.parse(listSessionUsageStmt.all(projectId, loopName))
       return rows.map(mapRow)
     },
 

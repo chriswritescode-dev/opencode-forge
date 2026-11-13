@@ -18,7 +18,6 @@ export interface ParsedSectionMarker {
   errors: string[]
 }
 
-/** Parses one `<!-- forge-section id="..." after="a,b" -->` line. */
 export function parseSectionMarker(line: string): ParsedSectionMarker | null {
   const text = line.trim()
   const match = text.match(SECTION_MARKER_REGEX)
@@ -58,7 +57,6 @@ export function parseSectionMarker(line: string): ParsedSectionMarker | null {
   return { id, after, errors }
 }
 
-/** True when a trimmed line is a valid `<!-- forge-section ... -->` marker. */
 export function isSectionMarkerLine(line: string): boolean {
   return SECTION_MARKER_REGEX.test(line.trim())
 }
@@ -71,12 +69,6 @@ interface SectionMarkerScan {
   markerErrors: string[]
 }
 
-/**
- * The canonical section-marker scan: strips the plan wrapper and legacy paired
- * markers, then locates every unfenced `<!-- forge-section ... -->` line. Both
- * `decomposeDeterministically` and `decomposePlanSections` read it so a reported
- * marker count can never disagree with what the decomposer splits on.
- */
 function scanSectionMarkers(planText: string): SectionMarkerScan {
   const startMatch = planText.match(/<!--\s*forge-plan:start\s*-->\s*\n?/)
   const lineOffset = startMatch ? (startMatch[0].match(/\n/g) ?? []).length : 0
@@ -86,10 +78,8 @@ function scanSectionMarkers(planText: string): SectionMarkerScan {
 
   const rawLines = text.split('\n')
 
-  // Track fence state to skip markers inside ``` blocks
   const rawInFence = computeFenceMask(rawLines)
 
-  // Strip legacy paired markers from output (but they do NOT trigger sectioning)
   const kept: { line: string; number: number }[] = []
   for (let i = 0; i < rawLines.length; i++) {
     if (!rawInFence[i] && LEGACY_SECTION_PAIR_REGEX.test(rawLines[i].trim())) continue
@@ -98,7 +88,6 @@ function scanSectionMarkers(planText: string): SectionMarkerScan {
   const lines = kept.map((entry) => entry.line)
   const lineNumbers = kept.map((entry) => entry.number)
 
-  // Re-scan fence state aligned with the filtered lines array.
   const inFence = computeFenceMask(lines)
   const markerIndices: number[] = []
   const markers = new Map<number, ParsedSectionMarker>()
@@ -127,20 +116,10 @@ export interface PlanSection extends ParsedSection {
 
 export interface PlanDecomposition {
   sections: PlanSection[]
-  /**
-   * Unfenced `<!-- forge-section ... -->` markers found, before the cap and
-   * before empty-body skipping. Reported from the same scan that produced
-   * `sections`, so a marker count can never disagree with what was split on.
-   */
   markerCount: number
-  /** Marker parse errors plus section-graph validation errors, in stable order. */
   graphErrors: string[]
 }
 
-/**
- * Decomposes a plan and reports how many markers were seen. Callers that need
- * both counts use this so they do not have to scan the plan twice.
- */
 export function decomposePlanSections(planText: string, opts?: { maxSections?: number }): PlanDecomposition {
   const maxSections = opts?.maxSections ?? MAX_TOTAL_SECTIONS
   const { lines, inFence, markerIndices, markers, markerErrors } = scanSectionMarkers(planText)
@@ -209,7 +188,6 @@ export function decomposePlanSections(planText: string, opts?: { maxSections?: n
   }
 }
 
-/** Sections only. The common case; see `decomposePlanSections` for the count. */
 export function decomposeDeterministically(planText: string, opts?: { maxSections?: number }): PlanSection[] {
   return decomposePlanSections(planText, opts).sections
 }

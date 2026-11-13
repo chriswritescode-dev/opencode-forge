@@ -1,4 +1,3 @@
-/** @jsxImportSource @opentui/solid */
 import type { Plugin } from '@opencode/plugin/tui'
 import { existsSync } from 'fs'
 import { For, Show, createEffect, createMemo, createRoot, createSignal, onCleanup, type Accessor } from 'solid-js'
@@ -32,6 +31,8 @@ import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import { formatDuration } from '../utils/duration'
 import { phaseLabel } from '../utils/phase-label'
 import { isToastVariant } from '../utils/toast'
+import type { JsonObject } from '../utils/json-schema'
+import { z } from 'zod'
 import { isWithinDir } from '../workspace/forge-naming'
 import type { ForgeProjectClient } from './project-client'
 import { createExecutionContextCache, type ExecutionContextCache } from '../utils/tui-execution-context-cache'
@@ -48,13 +49,27 @@ import { createSessionAutoApproveToggle } from './session-auto-approve'
 import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
 import { VERSION } from '../version'
 
-/** Most recent loops shown in the sidebar. */
 const SIDEBAR_LOOP_LIMIT = 3
 
-/** A failed worktrees lookup is remembered briefly so a flapping RPC is not retried on every session. */
 const WORKTREES_NEGATIVE_CACHE_MS = 5000
 
-/** Current location directory, or null when neither the context nor its default resolves. */
+const forgeToastSchema = z.looseObject({
+  projectId: z.string(),
+  message: z.string(),
+  title: z.string().optional(),
+  variant: z.string().optional(),
+  duration: z.number().optional(),
+})
+
+const forgeEventDataSchema = z.record(z.string(), z.json())
+
+type KeymapLayerConfig = ReturnType<Parameters<Plugin.Context['keymap']['layer']>[0]>
+type KeymapCommandConfig = NonNullable<KeymapLayerConfig['commands']>[number]
+
+function withKeybind(command: KeymapCommandConfig, bind: string | undefined): KeymapCommandConfig {
+  return bind === undefined ? command : { ...command, bind }
+}
+
 function resolveV2TuiDirectory(context: Plugin.Context): string | null {
   try {
     return context.location?.directory ?? context.data.location.default().directory
@@ -63,11 +78,6 @@ function resolveV2TuiDirectory(context: Plugin.Context): string | null {
   }
 }
 
-/**
- * Project id for the current location, resolved through the client. Returns null
- * on any failure so callers render an empty sidebar instead of another project's
- * loops.
- */
 export async function resolveV2TuiProjectId(context: Plugin.Context): Promise<string | null> {
   const directory = resolveV2TuiDirectory(context)
   if (!directory) return null
@@ -83,16 +93,14 @@ async function resolveV2TuiProjectIdForDirectory(context: Plugin.Context, direct
   }
 }
 
-function readForgeToast(data: Readonly<Record<string, unknown>>): ForgeToastEvent | null {
-  const { projectId, message, title, variant, duration } = data
-  if (typeof projectId !== 'string' || typeof message !== 'string') return null
-  return {
-    projectId,
-    message,
-    ...(typeof title === 'string' ? { title } : {}),
-    ...(isToastVariant(variant) ? { variant } : {}),
-    ...(typeof duration === 'number' ? { duration } : {}),
-  }
+function readForgeToast(data: JsonObject): ForgeToastEvent | null {
+  const parsed = forgeToastSchema.safeParse(data)
+  if (!parsed.success) return null
+  const toast: ForgeToastEvent = { projectId: parsed.data.projectId, message: parsed.data.message }
+  if (parsed.data.title !== undefined) toast.title = parsed.data.title
+  if (parsed.data.variant !== undefined && isToastVariant(parsed.data.variant)) toast.variant = parsed.data.variant
+  if (parsed.data.duration !== undefined) toast.duration = parsed.data.duration
+  return toast
 }
 
 const MSB_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
@@ -130,12 +138,6 @@ function formatElapsed(ms: number): string {
   return formatDuration(Math.max(0, Math.floor(ms / 1000)))
 }
 
-/**
- * Detail of an expanded running loop: current phase with its elapsed time, then
- * section and total elapsed time. The row data arrives only with the
- * `loopsChanged`-driven refresh; the local clock only advances the displayed
- * times and stops when the row collapses.
- */
 function LoopRunDetail(props: { context: Plugin.Context; loop: LoopSidebarRow }) {
   const theme = () => props.context.theme
   const [now, setNow] = createSignal(Date.now())
@@ -228,12 +230,6 @@ function ForgeLoopsSidebar(props: {
   )
 }
 
-/**
- * V2 TUI surface: the dashboard pages and their `forge.dashboard` entry point,
- * execute-plan (which also pastes plans and restarts loops), sandbox-build
- * commands, loop session auto-follow, a loop sidebar, and the
- * missing-build-context toast. Returns the cleanup for all of them.
- */
 export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const pluginConfig = loadPluginConfig()
   const opts = resolveTuiOptions(pluginConfig.tui, context.options)
@@ -251,7 +247,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const lifecycle = new AbortController()
   const host = createV2TuiHost(context)
 
-  /** The TUI can switch projects, so each location directory gets its own client and cache. */
   const projectClients = new Map<string, { client: ForgeProjectClient; cache: ExecutionContextCache }>()
 
   const ensureClient = async (): Promise<{ client: ForgeProjectClient; cache: ExecutionContextCache } | null> => {
@@ -286,19 +281,19 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const call = createForgeRpcCaller(context, () => resolveV2TuiDirectory(context))
 
   const dashboardStore = createDashboardStore({
-    readSummary: () => call((rpc, location) => rpc.dashboardSummary({}, location), readForgeDashboardSummary),
-    readLoopDetail: (input) => call((rpc, location) => rpc.loopDetail(input, location), readForgeLoopDetail),
+    readSummary: () => call(async (rpc, location) => await rpc.dashboardSummary({}, location), readForgeDashboardSummary),
+    readLoopDetail: (input) => call(async (rpc, location) => await rpc.loopDetail(input, location), readForgeLoopDetail),
     readProjectFindings: (input) => call(
-      (rpc, location) => rpc.projectFindings(input, location),
+      async (rpc, location) => await rpc.projectFindings(input, location),
       readForgeProjectFindings,
     ),
-    readAmendmentDiff: (input) => call((rpc, location) => rpc.amendmentDiff(input, location), readForgeAmendmentDiff),
+    readAmendmentDiff: (input) => call(async (rpc, location) => await rpc.amendmentDiff(input, location), readForgeAmendmentDiff),
     readSessionPlan: ({ projectId, sessionId }) => call(
-      (rpc, location) => rpc.sessionPlan({ sessionId, projectId }, location),
+      async (rpc, location) => await rpc.sessionPlan({ sessionId, projectId }, location),
       readForgeSessionPlan,
     ),
     deletePlan: ({ projectId, sessionId }) => call(
-      (rpc, location) => rpc.planDelete({ projectId, sessionId }, location),
+      async (rpc, location) => await rpc.planDelete({ projectId, sessionId }, location),
       readForgePlanDeleteOutput,
     ),
     currentDirectory: () => resolveV2TuiDirectory(context),
@@ -320,12 +315,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   let worktreesFailure: { at: number; error: string } | null = null
   let worktreesRequest: Promise<ForgeWorktreesOutput> | null = null
 
-  /**
-   * The single worktrees lookup for this TUI. A success is cached for the TUI
-   * lifetime; a failure is remembered for {@link WORKTREES_NEGATIVE_CACHE_MS}.
-   * `fresh` bypasses both caches so a caller that must observe a worktree created
-   * mid-operation reads the live list.
-   */
   const loadWorktrees = (options?: { fresh?: boolean }): Promise<ForgeWorktreesOutput> => {
     if (!options?.fresh) {
       if (worktreesCache) return Promise.resolve(worktreesCache)
@@ -334,7 +323,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       }
       if (worktreesRequest) return worktreesRequest
     }
-    const request = call((rpc, location) => rpc.worktrees({}, location), readForgeWorktrees)
+    const request = call(async (rpc, location) => await rpc.worktrees({}, location), readForgeWorktrees)
       .then((result) => {
         if ('error' in result) {
           worktreesFailure = { at: Date.now(), error: result.error }
@@ -362,9 +351,9 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   })
 
   const hostSandbox = createHostSandboxToggle({
-    readState: () => call((rpc, location) => rpc.hostSandboxState({}, location), readForgeHostSandboxState),
+    readState: () => call(async (rpc, location) => await rpc.hostSandboxState({}, location), readForgeHostSandboxState),
     setState: (input) => call(
-      (rpc, location) => rpc.hostSandboxSet(input, location),
+      async (rpc, location) => await rpc.hostSandboxSet(input, location),
       readForgeHostSandboxSetOutput,
     ),
     currentSessionId,
@@ -373,8 +362,8 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
 
   const autoApprove = createSessionAutoApproveToggle({
     currentSessionId,
-    readState: (sessionId) => call((rpc, location) => rpc.autoApproveState({ sessionId }, location), readForgeAutoApproveState),
-    setState: (sessionId, enabled) => call((rpc, location) => rpc.autoApproveSet({ sessionId, enabled }, location), readForgeAutoApproveState),
+    readState: (sessionId) => call(async (rpc, location) => await rpc.autoApproveState({ sessionId }, location), readForgeAutoApproveState),
+    setState: (sessionId, enabled) => call(async (rpc, location) => await rpc.autoApproveSet({ sessionId, enabled }, location), readForgeAutoApproveState),
     isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(hostSandbox.preference(), id) === 'enabled',
     toast: (input) => host.toast(input),
   })
@@ -383,7 +372,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   if (opts.sidebar) {
     const sidebar = createLoopSidebarStore({
       readLoops: () => call(
-        (rpc, location) => rpc.loopSidebar({ limit: SIDEBAR_LOOP_LIMIT }, location),
+        async (rpc, location) => await rpc.loopSidebar({ limit: SIDEBAR_LOOP_LIMIT }, location),
         readForgeLoopSidebar,
       ),
     })
@@ -408,63 +397,57 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     return root !== null && isWithinDir(root, directory)
   })
 
-  // A keymap layer needs a component owner, so the command is registered from
-  // the always-mounted app slot rather than from setup itself.
   context.ui.slot({
     append: 'app',
     render: () => {
       context.keymap.layer(() => ({
         mode: 'global',
         commands: [
-          {
+          withKeybind({
             id: FORGE_DASHBOARD_COMMAND.id,
             title: FORGE_DASHBOARD_COMMAND.title,
             description: FORGE_DASHBOARD_COMMAND.description,
             group: FORGE_DASHBOARD_COMMAND.group,
             palette: true,
-            ...(opts.keybinds.dashboard ? { bind: opts.keybinds.dashboard } : {}),
             run: () => {
               dashboardStore.open(context.ui.router.current())
               context.ui.router.navigate({ type: 'plugin', name: 'forge-dashboard' })
             },
-          },
-          {
+          }, opts.keybinds.dashboard),
+          withKeybind({
             id: 'forge.plan.execute',
             title: 'Execute plan',
             description: 'Run the session plan or a pasted plan with loop settings, or restart a loop',
             group: 'Forge',
             palette: true,
-            ...(opts.keybinds.executePlan ? { bind: opts.keybinds.executePlan } : {}),
             run: () => { void planCommands.executePlan() },
-          },
-          {
+          }, opts.keybinds.executePlan),
+          withKeybind({
             id: 'forge.sandbox.toggleHost',
             title: 'Toggle sandbox',
             description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox or on the host, and set its CPUs, memory, and LAN access',
             group: 'Forge',
             palette: true,
-            ...(opts.keybinds.toggleHostSandbox ? { bind: opts.keybinds.toggleHostSandbox } : {}),
             run: () => {
               void editHostSandbox({
                 host,
                 sandbox: hostSandbox,
                 currentSessionId,
                 loadDefaults: async () => {
-                  const defaults = await call((rpc, location) => rpc.loopDefaults({}, location), readForgeLoopDefaults)
+                  const defaults = await call(async (rpc, location) => await rpc.loopDefaults({}, location), readForgeLoopDefaults)
                   return 'error' in defaults ? null : defaults
                 },
               })
             },
-          },
-          {
+          }, opts.keybinds.toggleHostSandbox),
+          withKeybind({
             id: 'forge.permissions.toggleAutoApprove',
             title: 'Toggle auto-approve',
             description: 'Allow or deny this session\'s permission requests without prompting',
             group: 'Forge',
             palette: true,
-            ...(opts.keybinds.toggleAutoApprove ? { bind: opts.keybinds.toggleAutoApprove } : {}),
             run: () => { void autoApprove.toggle() },
-          },
+          }, opts.keybinds.toggleAutoApprove),
           {
             id: 'forge.sandbox.buildImage',
             title: 'Build sandbox template',
@@ -482,12 +465,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const eventController = new AbortController()
   const eventProjectIds = new Map<string, Promise<string | null>>()
 
-  /**
-   * Whether an RPC event for `projectId` belongs to the project the TUI currently shows, or null
-   * when that is unknown because the lookup failed or the TUI moved to another location meanwhile.
-   * The TUI can switch projects, so the id is resolved for the current location, cached per
-   * directory, and a failed lookup is dropped so the next event retries it.
-   */
   const isCurrentProject = async (projectId: string): Promise<boolean | null> => {
     const directory = resolveV2TuiDirectory(context)
     if (!directory) return null
@@ -502,11 +479,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     return current === projectId
   }
 
-  /**
-   * Re-reads state for an RPC event unless it belongs to another project. An unknown current
-   * project still refreshes: a refresh only re-reads the current location, and dropping the event
-   * could lose the acknowledgement a pending host sandbox toggle waits for.
-   */
   const refreshForProject = (projectId: string, refresh: () => void): void => {
     void isCurrentProject(projectId).then((current) => {
       if (!eventController.signal.aborted && current !== false) refresh()
@@ -514,7 +486,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   }
 
   try {
-    if (typeof context.client.rpc !== 'function') {
+    if (!(context.client.rpc instanceof Function)) {
       throw new Error('context.client.rpc is unavailable')
     }
     const rpcEvents = context.client.rpc(FORGE_RPC).events
@@ -524,7 +496,8 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       hostSandbox.refresh()
     }
     followRpcEvent((s) => rpcEvents.subscribe('toast', { signal: s }), (event) => {
-      const toast = readForgeToast(event.data)
+      const eventData = forgeEventDataSchema.safeParse(event.data)
+      const toast = eventData.success ? readForgeToast(eventData.data) : null
       if (!toast) return
       void isCurrentProject(toast.projectId).then((current) => {
         if (eventController.signal.aborted || current !== true) return
@@ -537,7 +510,8 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       })
     }, { signal })
     followRpcEvent((s) => rpcEvents.subscribe('sessionDelete', { signal: s }), (event) => {
-      const sessionID = readForgeSessionDelete(event.data)
+      const sessionDeleteData = forgeEventDataSchema.safeParse(event.data)
+      const sessionID = sessionDeleteData.success ? readForgeSessionDelete(sessionDeleteData.data) : null
       if (sessionID) void removeSessionBestEffort(context, sessionID)
     }, { signal })
     followRpcEvent((s) => rpcEvents.subscribe('loopsChanged', { signal: s }), (event) => {
@@ -586,7 +560,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     return dispose
   })
 
-  void call((rpc, location) => rpc.version({}, location), readForgeVersion).then((result) => {
+  void call(async (rpc, location) => await rpc.version({}, location), readForgeVersion).then((result) => {
     if (lifecycle.signal.aborted) return
     const serverVersion = 'error' in result ? null : result.version
     if (serverVersion === VERSION) return
@@ -600,8 +574,8 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   void resolveV2TuiProjectId(context).then(async (projectId) => {
     if (!projectId || lifecycle.signal.aborted) return
     await removeOrphanedLoopSessions(context, projectId, loadWorktrees, lifecycle.signal)
-  }).catch((err: unknown) => {
-    console.error('[forge] failed to remove orphaned loop sessions', err)
+  }).catch((cause: unknown) => {
+    console.error('[forge] failed to remove orphaned loop sessions', cause)
   })
 
   return () => {

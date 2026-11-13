@@ -1,6 +1,51 @@
 import type { Database } from 'bun:sqlite'
+import { z } from 'zod'
+import { statementChanges } from '../sqlite-open'
 import type { Logger } from '../../types'
 import type { ReviewFindingRow } from './review-findings-repo'
+
+const storedFindingSchema = z.object({
+  projectId: z.string().catch(''),
+  file: z.string(),
+  line: z.number(),
+  severity: z.enum(['bug', 'warning']),
+  description: z.string(),
+  scenario: z.string().nullable().catch(null),
+  loopName: z.string().nullable().catch(null),
+  sectionIndex: z.number().nullable().catch(null),
+  createdAt: z.number().catch(0),
+})
+
+const loopAttemptRowSchema = z.object({
+  id: z.number(),
+  project_id: z.string(),
+  loop_name: z.string(),
+  scope: z.string(),
+  attempt_number: z.number(),
+  source_session_id: z.string(),
+  completion_key: z.string(),
+  auditor_session_id: z.string().nullable(),
+  iteration: z.number(),
+  worktree_dir: z.string(),
+  plan_hash: z.string(),
+  coder_decisions: z.string().nullable(),
+  snapshot_commit: z.string().nullable(),
+  snapshot_ref: z.string().nullable(),
+  previous_commit: z.string().nullable(),
+  diff_summary: z.string().nullable(),
+  fallback_reason: z.string().nullable(),
+  findings_before: z.string().nullable(),
+  findings_after: z.string().nullable(),
+  outcome: z.string().nullable(),
+  code_graph: z.string().nullable(),
+  created_at: z.number(),
+  audited_at: z.number().nullable(),
+})
+const loopAttemptRowsSchema = z.array(loopAttemptRowSchema)
+
+const loopGuardRowSchema = z.object({ status: z.string(), current_session_id: z.string() })
+const maxAttemptRowSchema = z.object({ max: z.number().nullable() })
+const unfinishedAttemptRowSchema = z.object({ id: z.number(), auditor_session_id: z.string().nullable() })
 
 export type LoopAttemptOutcome = 'clean' | 'dirty'
 
@@ -45,64 +90,19 @@ export interface LoopAttemptsRepo {
   invalidateSnapshot(projectId: string, loopName: string, id: number, reason: string): void
 }
 
-interface LoopAttemptRowRaw {
-  id: number
-  project_id: string
-  loop_name: string
-  scope: string
-  attempt_number: number
-  source_session_id: string
-  completion_key: string
-  auditor_session_id: string | null
-  iteration: number
-  worktree_dir: string
-  plan_hash: string
-  coder_decisions: string | null
-  snapshot_commit: string | null
-  snapshot_ref: string | null
-  previous_commit: string | null
-  diff_summary: string | null
-  fallback_reason: string | null
-  findings_before: string | null
-  findings_after: string | null
-  outcome: string | null
-  code_graph: string | null
-  created_at: number
-  audited_at: number | null
-}
-
 const ATTEMPT_COLUMNS = `id, project_id, loop_name, scope, attempt_number, source_session_id,
   completion_key, auditor_session_id, iteration, worktree_dir, plan_hash, coder_decisions,
   snapshot_commit, snapshot_ref, previous_commit, diff_summary, fallback_reason,
   findings_before, findings_after, outcome, code_graph, created_at, audited_at`
 
-function parseFinding(value: unknown): ReviewFindingRow | null {
-  if (typeof value !== 'object' || value === null) return null
-  const o = value as Record<string, unknown>
-  if (typeof o.file !== 'string' || typeof o.line !== 'number') return null
-  if (o.severity !== 'bug' && o.severity !== 'warning') return null
-  if (typeof o.description !== 'string') return null
-  return {
-    projectId: typeof o.projectId === 'string' ? o.projectId : '',
-    file: o.file,
-    line: o.line,
-    severity: o.severity,
-    description: o.description,
-    scenario: typeof o.scenario === 'string' ? o.scenario : null,
-    loopName: typeof o.loopName === 'string' ? o.loopName : null,
-    sectionIndex: typeof o.sectionIndex === 'number' ? o.sectionIndex : null,
-    createdAt: typeof o.createdAt === 'number' ? o.createdAt : 0,
-  }
-}
-
 function parseFindings(text: string): ReviewFindingRow[] | null {
   try {
-    const parsed = JSON.parse(text) as unknown
+    const parsed: unknown = JSON.parse(text)
     if (!Array.isArray(parsed)) return null
     const rows: ReviewFindingRow[] = []
     for (const item of parsed) {
-      const finding = parseFinding(item)
-      if (finding) rows.push(finding)
+      const finding = storedFindingSchema.safeParse(item)
+      if (finding.success) rows.push(finding.data)
     }
     return rows
   } catch {
@@ -114,7 +114,7 @@ function parseOutcome(value: string | null): LoopAttemptOutcome | null {
   return value === 'clean' || value === 'dirty' ? value : null
 }
 
-function mapRow(raw: LoopAttemptRowRaw): LoopAttemptRow {
+function mapRow(raw: z.infer<typeof loopAttemptRowSchema>): LoopAttemptRow {
   return {
     id: raw.id,
     projectId: raw.project_id,
@@ -216,19 +216,19 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
     WHERE project_id = ? AND loop_name = ? AND id = ?
   `)
 
-  function loopOwnedBy(loop: { status: string; current_session_id: string } | null | undefined, sessionId: string): boolean {
+  function loopOwnedBy(loop: z.infer<typeof loopGuardRowSchema> | null | undefined, sessionId: string): boolean {
     return !!loop && loop.status === 'running' && loop.current_session_id === sessionId
   }
 
   function record(input: LoopAttemptRecordInput): LoopAttemptRow | null {
     return db.transaction(() => {
-      const loop = stmtLoopGuard.get(input.projectId, input.loopName) as { status: string; current_session_id: string } | undefined
+      const loop = loopGuardRowSchema.nullish().parse(stmtLoopGuard.get(input.projectId, input.loopName))
       if (!loopOwnedBy(loop, input.sourceSessionId)) return null
 
-      const existing = stmtGetByKey.get(input.projectId, input.loopName, input.scope, input.completionKey) as LoopAttemptRowRaw | undefined
+      const existing = loopAttemptRowSchema.nullish().parse(stmtGetByKey.get(input.projectId, input.loopName, input.scope, input.completionKey))
       if (existing) return mapRow(existing)
 
-      const maxRow = stmtNextAttemptNumber.get(input.projectId, input.loopName, input.scope) as { max: number | null }
+      const maxRow = maxAttemptRowSchema.parse(stmtNextAttemptNumber.get(input.projectId, input.loopName, input.scope))
       try {
         stmtInsert.run(
           input.projectId,
@@ -251,13 +251,13 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
         )
       } catch (err) {
         if (err instanceof Error && err.message.includes('UNIQUE constraint')) {
-          const raced = stmtGetByKey.get(input.projectId, input.loopName, input.scope, input.completionKey) as LoopAttemptRowRaw | undefined
+          const raced = loopAttemptRowSchema.nullish().parse(stmtGetByKey.get(input.projectId, input.loopName, input.scope, input.completionKey))
           return raced ? mapRow(raced) : null
         }
         throw err
       }
 
-      const inserted = stmtGetByKey.get(input.projectId, input.loopName, input.scope, input.completionKey) as LoopAttemptRowRaw
+      const inserted = loopAttemptRowSchema.parse(stmtGetByKey.get(input.projectId, input.loopName, input.scope, input.completionKey))
       return mapRow(inserted)
     })()
   }
@@ -265,11 +265,11 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
   function bindAudit(projectId: string, loopName: string, scope: string, sourceSessionId: string, auditorSessionId: string, replaceSession?: () => void): void {
     db.transaction(() => {
       if (replaceSession) {
-        const loop = stmtLoopGuard.get(projectId, loopName) as { status: string; current_session_id: string } | undefined
+        const loop = loopGuardRowSchema.nullish().parse(stmtLoopGuard.get(projectId, loopName))
         if (!loopOwnedBy(loop, sourceSessionId)) throw new Error('Audit handoff source session is no longer active')
         replaceSession()
       }
-      const row = stmtNewestUnfinished.get(projectId, loopName, scope, sourceSessionId) as { id: number; auditor_session_id: string | null } | undefined
+      const row = unfinishedAttemptRowSchema.nullish().parse(stmtNewestUnfinished.get(projectId, loopName, scope, sourceSessionId))
       if (!row) return
       stmtBind.run(auditorSessionId, row.id, auditorSessionId)
     })()
@@ -284,9 +284,9 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
     findings: ReviewFindingRow[],
   ): boolean {
     return db.transaction(() => {
-      const loop = stmtLoopGuard.get(projectId, loopName) as { status: string; current_session_id: string } | undefined
+      const loop = loopGuardRowSchema.nullish().parse(stmtLoopGuard.get(projectId, loopName))
       if (!loopOwnedBy(loop, auditorSessionId)) return false
-      const result = stmtFinish.run(
+      const changes = statementChanges(stmtFinish.run(
         Date.now(),
         JSON.stringify(findings),
         outcome,
@@ -294,8 +294,8 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
         loopName,
         scope,
         auditorSessionId,
-      ) as unknown as { changes: number }
-      return result.changes > 0
+      ))
+      return changes > 0
     })()
   }
 
@@ -323,13 +323,15 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
         conditions.push('id < ?')
         params.push(beforeId)
       }
-      const rows = db
-        .prepare(`SELECT ${ATTEMPT_COLUMNS} FROM loop_attempts WHERE ${conditions.join(' AND ')} ORDER BY id DESC LIMIT ?`)
-        .all(...params, clamped) as LoopAttemptRowRaw[]
+      const rows = loopAttemptRowsSchema.parse(
+        db
+          .prepare(`SELECT ${ATTEMPT_COLUMNS} FROM loop_attempts WHERE ${conditions.join(' AND ')} ORDER BY id DESC LIMIT ?`)
+          .all(...params, clamped),
+      )
       return rows.reverse().map(mapRow)
     },
     latest(projectId: string, loopName: string, scope: string): LoopAttemptRow | null {
-      const row = stmtLatest.get(projectId, loopName, scope) as LoopAttemptRowRaw | undefined
+      const row = loopAttemptRowSchema.nullish().parse(stmtLatest.get(projectId, loopName, scope))
       return row ? mapRow(row) : null
     },
     bindAudit,

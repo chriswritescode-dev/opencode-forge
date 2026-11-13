@@ -53,17 +53,35 @@ export function parseTerminationReasonString(str: string): TerminationReason {
     if (prefix === 'provider_limit') return { kind: 'provider_limit', message }
   }
 
-  // For simple kinds without messages
-  const knownKinds = [
-    'completed', 'cancelled', 'user_aborted', 'shutdown',
-    'max_iterations', 'stall_timeout', 'missing_worktree_dir',
-    'session_creation_failed', 'handoff_missing',
-    'restart_prompt_failed',
-  ] as const
+  const plain = plainTerminationReason(str)
+  if (plain) return plain
 
-  if ((knownKinds as readonly string[]).includes(str)) {
-    return { kind: str as typeof knownKinds[number] }
+  return { kind: 'error_max_retries', message: str }
+}
+
+function plainTerminationReason(str: string): TerminationReason | null {
+  switch (str) {
+    case 'completed':
+      return { kind: 'completed' }
+    case 'cancelled':
+      return { kind: 'cancelled' }
+    case 'user_aborted':
+      return { kind: 'user_aborted' }
+    case 'shutdown':
+      return { kind: 'shutdown' }
+    case 'max_iterations':
+      return { kind: 'max_iterations' }
+    case 'stall_timeout':
+      return { kind: 'stall_timeout' }
+    case 'missing_worktree_dir':
+      return { kind: 'missing_worktree_dir' }
+    case 'session_creation_failed':
+      return { kind: 'session_creation_failed' }
+    case 'handoff_missing':
+      return { kind: 'handoff_missing' }
+    case 'restart_prompt_failed':
+      return { kind: 'restart_prompt_failed' }
+    default:
+      return null
   }
-
-  return { kind: 'error_max_retries', message: str } as TerminationReason
 }

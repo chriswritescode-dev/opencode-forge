@@ -12,9 +12,9 @@ export async function retryWithModelFallback<T>(
   callWithModel: () => Promise<{ data?: T; error?: unknown }>,
   callWithoutModel: () => Promise<{ data?: T; error?: unknown }>,
   model: { providerID: string; modelID: string } | undefined,
-  logger: { error: (msg: string, err?: unknown) => void; log: (msg: string) => void },
+  logger: { error: (msg: string, cause?: unknown) => void; log: (msg: string) => void },
   maxRetries: number = 2,
-  isFatalError?: (error: unknown) => boolean,
+  isFatalError?: (cause: unknown) => boolean,
 ): Promise<{ result: { data?: T; error?: unknown }; usedModel: { providerID: string; modelID: string } | undefined }> {
   if (!model) {
     return { result: await callWithoutModel(), usedModel: undefined }
@@ -28,10 +28,9 @@ export async function retryWithModelFallback<T>(
     }
     lastError = result.error
     if (
-      typeof result.error === 'object' &&
-      result.error !== null &&
+      result.error instanceof Object &&
       'code' in result.error &&
-      (result.error as { code?: unknown }).code === 'concurrent_prompt'
+      result.error.code === 'concurrent_prompt'
     ) {
       return { result: { data: result.data, error: result.error }, usedModel: model }
     }

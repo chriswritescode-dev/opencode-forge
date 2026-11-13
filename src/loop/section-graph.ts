@@ -1,9 +1,7 @@
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 
-/** Allowed section id shape: lowercase letters, digits and hyphens, at most 64 characters. */
 export const SECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 
-/** Id assigned to a section that did not declare one. */
 export function generatedSectionId(index: number): string {
   return `section-${index + 1}`
 }
@@ -14,7 +12,6 @@ export interface SectionGraphNode {
   after: string[]
 }
 
-/** Row subset the graph helpers need; structurally satisfied by `SectionPlanRow`. */
 export interface SectionGraphRow {
   sectionIndex: number
   sectionId: string
@@ -22,12 +19,6 @@ export interface SectionGraphRow {
   status: string
 }
 
-/**
- * Validates a section graph and returns actionable errors in a stable order:
- * nodes sorted by index, then each node's own id errors before its dependency
- * errors, then the over-cap error. Dependencies may only point at a lower-index
- * section, so cycles are reported as forward/self dependencies.
- */
 export function validateSectionGraph(
   nodes: SectionGraphNode[],
   opts: { maxSections?: number } = {},
@@ -76,7 +67,6 @@ export function validateSectionGraph(
   return errors
 }
 
-/** Every id reachable from `sectionId` by following `dependsOn`, excluding itself. */
 export function ancestorSectionIds(rows: SectionGraphRow[], sectionId: string): Set<string> {
   const byId = new Map(rows.map((row) => [row.sectionId, row]))
   const ancestors = new Set<string>()
@@ -93,7 +83,6 @@ export function ancestorSectionIds(rows: SectionGraphRow[], sectionId: string): 
   return ancestors
 }
 
-/** Open rows (not completed) whose every dependency is completed, by section index. */
 export function readySections<T extends SectionGraphRow>(rows: T[]): T[] {
   const completedIds = new Set(
     rows.filter((row) => row.status === 'completed').map((row) => row.sectionId),
@@ -107,12 +96,10 @@ export function readySections<T extends SectionGraphRow>(rows: T[]): T[] {
     .sort((a, b) => a.sectionIndex - b.sectionIndex)
 }
 
-/** The first ready section, or null when every open section still waits on a dependency. */
 export function selectNextSection<T extends SectionGraphRow>(rows: T[]): T | null {
   return readySections(rows)[0] ?? null
 }
 
-/** True when every row other than `currentIndex` is completed. */
 export function isLastOpenSectionIndex(rows: SectionGraphRow[], currentIndex: number): boolean {
   return rows.every(
     (row) => row.sectionIndex === currentIndex || row.status === 'completed',

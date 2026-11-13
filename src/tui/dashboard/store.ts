@@ -37,16 +37,12 @@ export type DashboardSection = 'loops' | 'findings' | 'plans'
 
 export type DashboardChangeType = 'loops' | 'plans'
 
-/** The TUI route the dashboard returns to; the plugin package does not export it directly. */
 export type DashboardRoute = ReturnType<Plugin.Context['ui']['router']['current']>
 
-/** Routes owned by the dashboard; opening from one of them must keep the pre-dashboard return route. */
 const DASHBOARD_ROUTE_NAMES = new Set(['forge-dashboard', 'forge-dashboard-loop'])
 
-/** Trailing debounce that collapses a burst of backend events into one summary refresh. */
 export const DASHBOARD_SUMMARY_EVENT_DEBOUNCE_MS = 150
 
-/** Copies a route so the host mutating its live route object cannot rewrite the return route. */
 function snapshotRoute(route: DashboardRoute): DashboardRoute {
   if (route.type !== 'plugin' || !route.data) return { ...route }
   return { ...route, data: { ...route.data } }
@@ -122,12 +118,6 @@ export interface DashboardStore {
   toggleAmendment(id: number): Promise<void>
 }
 
-/**
- * Every dashboard value, held outside the pages because the TUI remounts a page
- * on each navigation. Fetches coalesce per surface and a result for a selection
- * that has since changed is dropped. While no page is mounted, change events
- * only mark state stale so a closed dashboard never fetches.
- */
 export function createDashboardStore(deps: DashboardStoreDeps): DashboardStore {
   const [summary, setSummary] = createSignal<ForgeDashboardSummary | null>(null)
   const [error, setError] = createSignal<string | null>(null)

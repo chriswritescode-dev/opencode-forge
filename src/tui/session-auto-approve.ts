@@ -17,21 +17,12 @@ export interface SessionAutoApproveToggleDeps {
 }
 
 export interface SessionAutoApproveToggle {
-  /** Whether auto-approve is on for the session currently on the route. */
   enabled: Accessor<boolean>
-  /** Re-read the flag for the current route; coalesced with any in-flight read. */
   refresh(): void
   toggle(): Promise<void>
   dispose(): void
 }
 
-/**
- * The TUI side of per-session auto-approve: reads and writes the effective flag for
- * the session on the current route through the Forge server RPC, so the TUI works
- * against a remote server without opening the Forge database. It reads once at startup
- * and on every `autoApproveChanged` push or open-session change. The server resolves
- * every prompt for the session and its subagents to allow or deny without prompting.
- */
 export function createSessionAutoApproveToggle(deps: SessionAutoApproveToggleDeps): SessionAutoApproveToggle {
   const [enabled, setEnabled] = createSignal(false)
   const lifecycle = new AbortController()

@@ -1,9 +1,10 @@
-import { tool, type ToolDefinition } from './tool'
+import { tool } from './tool'
 import type { ToolContext } from './types'
+import { errorMessage } from '../utils/error-message'
 
 const z = tool.schema
 
-export function createPlanTools(ctx: ToolContext): Record<string, ToolDefinition> {
+export function createPlanTools(ctx: ToolContext) {
   const { plansRepo, projectId, logger } = ctx
   const loop = ctx.loop
 
@@ -25,8 +26,8 @@ export function createPlanTools(ctx: ToolContext): Record<string, ToolDefinition
             let regex: RegExp
             try {
               regex = new RegExp(args.pattern)
-            } catch (e) {
-              return `Invalid regex pattern: ${(e as Error).message}`
+            } catch (cause) {
+              return `Invalid regex pattern: ${errorMessage(cause)}`
             }
             const matches = plansRepo.searchRecent(projectId, regex, { limit: args.count })
             if (matches.length === 0) {
@@ -37,7 +38,6 @@ export function createPlanTools(ctx: ToolContext): Record<string, ToolDefinition
               const updated = new Date(row.updatedAt).toISOString()
               const contentLines = row.content.split('\n')
               const title = contentLines[0] || ''
-              // Find first line matching the regex (including title on line 1)
               for (let i = 0; i < contentLines.length; i++) {
                 regex.lastIndex = 0
                 if (regex.test(contentLines[i])) {
@@ -88,8 +88,8 @@ export function createPlanTools(ctx: ToolContext): Record<string, ToolDefinition
           let regex: RegExp
           try {
             regex = new RegExp(args.pattern)
-          } catch (e) {
-            return `Invalid regex pattern: ${(e as Error).message}`
+          } catch (cause) {
+            return `Invalid regex pattern: ${errorMessage(cause)}`
           }
 
           const lines = content.split('\n')

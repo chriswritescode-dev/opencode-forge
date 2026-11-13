@@ -1,17 +1,5 @@
-/**
- * The in-sandbox half of a code-graph snapshot. `runCodeGraphSnapshot` is serialized with
- * `Function.prototype.toString()` and executed by codegraph's bundled Node inside the loop
- * sandbox, where the index lives, so it must stay self-contained: it may reference only its
- * parameters and globals, never another module-level binding. Its result is the typed contract
- * Forge parses back on the host with `parseCodeGraphRunnerResult`.
- *
- * The library surface below is the subset of `@colbymchenry/codegraph` v1.6.2 (the exact
- * version pinned in `container/Dockerfile`) this runner calls. It must exist in the published
- * release asset the image installs: source builds that also call themselves 1.6.2 add methods,
- * such as `getUnresolvedReferenceSourcesNamed`, that the release lacks.
- */
+import { z } from 'zod'
 
-/** A codegraph index node, as returned by `CodeGraph.getNodesInFile` and `getNode`. */
 interface CodeGraphNodeRecord {
   id: string
   name: string
@@ -22,30 +10,29 @@ interface CodeGraphNodeRecord {
   endLine: number
 }
 
-/** `CodeGraph.indexAll` result fields this runner reads. */
 interface CodeGraphIndexResult {
   success: boolean
   filesIndexed: number
   errors: unknown[]
 }
 
-/** An open codegraph index. */
 interface CodeGraphHandle {
   indexAll(): Promise<CodeGraphIndexResult>
-  sync(): Promise<unknown>
+  sync(): Promise<void>
   getNodesInFile(filePath: string): CodeGraphNodeRecord[]
   getFileDependents(filePath: string): string[]
   getCallers(nodeId: string, maxDepth?: number): Array<{ node: CodeGraphNodeRecord; edge: { line?: number } }>
   getNode(id: string): CodeGraphNodeRecord | null
-  /** Which of `names` the index holds an unresolved reference to. */
   getUnresolvedNamesAmong(names: Iterable<string>): Set<string>
   getFiles(): Array<{ path: string }>
-  /** References from a file's symbols that never resolved to an indexed node, in line order. */
   getUnresolvedReferencesInFile(filePath: string): Array<{ fromNodeId: string; referenceName: string; referenceKind: string; line: number }>
   destroy(): void
 }
 
-/** `lib/dist/index.js` of the codegraph release. */
+interface CodeGraphLoggerSink {
+  log(message: string): void
+}
+
 interface CodeGraphLibrary {
   CodeGraph: {
     isInitialized(projectRoot: string): boolean
@@ -53,70 +40,48 @@ interface CodeGraphLibrary {
     open(projectRoot: string, options?: { readOnly?: boolean }): Promise<CodeGraphHandle>
     recreate(projectRoot: string): Promise<CodeGraphHandle>
   }
-  /** Thrown by `sync`/`indexAll` when another live process holds the index's `codegraph.lock`. */
   LockUnavailableError: abstract new (...args: never[]) => Error
-  setLogger(logger: unknown): void
-  silentLogger: unknown
+  setLogger(logger: CodeGraphLoggerSink): void
+  silentLogger: CodeGraphLoggerSink
 }
 
-/**
- * `lib/dist/mcp/writer-lock.js` of the codegraph release: the `rebuild.pid` lock `codegraph index`
- * takes, which the CLI's read commands check to warn about a half-built index.
- */
 interface CodeGraphWriterLock {
   tryAcquireWriterLock(projectRoot: string, mode: string, lockName: 'rebuild.pid'): { kind: 'acquired' | 'taken' }
   releaseWriterLock(projectRoot: string, lockName: 'rebuild.pid'): void
 }
 
-/** Node's `fs`, as far as this runner uses it. */
 interface FileSystem {
-  mkdirSync(path: string, options: { recursive: true }): unknown
+  mkdirSync(path: string, options: { recursive: true }): void
 }
 
-/** `lib/dist/search/query-utils.js` of the codegraph release. */
 interface CodeGraphQueryUtils {
   isTestPath(filePath: string): boolean
 }
 
-/** Input of one snapshot run. */
+export interface CodeGraphModuleLoader {
+  (path: string): CodeGraphLibrary & CodeGraphQueryUtils & CodeGraphWriterLock & FileSystem
+}
+
 export interface CodeGraphRunnerInput {
-  /** The release's `lib` directory, e.g. `/opt/codegraph/lib`. */
   libDir: string
   projectRoot: string
-  /** Directory the project's `.codegraph` link points at; created when missing. */
   indexDir: string
-  /** Repo-relative files to report on. */
   files: string[]
-  /** Maximum reverse-dependency depth when collecting affected tests. */
   maxDepth: number
-  /**
-   * The runner prints a `deadline` result and exits after this many milliseconds, so it never
-   * outlives the host's exec timeout inside the sandbox even if killing the host-side exec does
-   * not reach it.
-   */
   deadlineMs: number
-  /**
-   * Audit checkpoints only: also report the callers of changed symbols and the code that still
-   * refers to symbols the change removed or renamed. Absent at section start, where no code has
-   * changed yet.
-   */
   impact?: CodeGraphImpactInput
 }
 
-/** A changed line range on the new side of a diff, 1-based and inclusive. */
 export interface CodeGraphLineRange {
   start: number
   end: number
 }
 
 export interface CodeGraphImpactInput {
-  /** New-side changed line ranges per repo-relative file in `files`. */
   ranges: Record<string, CodeGraphLineRange[]>
-  /** Callers listed per changed symbol; the rest are only counted. */
   callerLimit: number
 }
 
-/** One place in the code that refers to a symbol: the referring symbol and the line of the reference. */
 export interface CodeGraphReference {
   name: string
   kind: string
@@ -124,45 +89,27 @@ export interface CodeGraphReference {
   line: number
 }
 
-/** A symbol whose definition overlaps a changed range, with its callers outside the changed files. */
 export interface CodeGraphChangedSymbol {
   name: string
   kind: string
   path: string
   startLine: number
-  /** At most `callerLimit` callers, sorted by path and line. */
   callers: CodeGraphReference[]
-  /** All callers outside the changed files, including those beyond `callerLimit`. */
   callerCount: number
-  /**
-   * The number of raw callers codegraph reports for the symbol before Forge's filtering. An upper
-   * bound for `codegraph callers -l`, which applies its limit before the filtering, so it covers
-   * every caller.
-   */
   callerQueryLimit: number
 }
 
-/**
- * A symbol present in a changed file before the run's sync and gone after it, still referenced elsewhere.
- * Members are never reported: they are matched only by bare name, so a vanished `method`, `property`,
- * `field`, `parameter`, or `enum_member` name collides with unrelated local variables, parameters, and
- * property accesses across the repo.
- */
 export interface CodeGraphRemovedSymbol {
   name: string
-  /** The file the symbol was defined in before the change. */
   path: string
-  /** Unresolved references to the name, sorted by path and line. */
   references: CodeGraphReference[]
 }
 
 export interface CodeGraphImpactReport {
   changedSymbols: CodeGraphChangedSymbol[]
-  /** Only removed or renamed symbols that still have references. */
   removedSymbols: CodeGraphRemovedSymbol[]
 }
 
-/** How the run brought the index up to date before querying it. */
 export type CodeGraphIndexAction = 'created' | 'synced' | 'rebuilt'
 
 export interface CodeGraphSymbol {
@@ -175,17 +122,12 @@ export interface CodeGraphSymbol {
 export interface CodeGraphFileReport {
   path: string
   symbols: CodeGraphSymbol[]
-  /** Files that import this one, directly. */
   dependents: string[]
 }
 
-/**
- * Where a run failed. `locked`: another live process holds the index (`codegraph.lock` or
- * `rebuild.pid`), so the run left it untouched. `deadline`: the run hit `deadlineMs`.
- */
-export type CodeGraphRunnerStage = 'load' | 'locked' | 'index' | 'query' | 'deadline'
+const CODE_GRAPH_RUNNER_STAGES = ['load', 'locked', 'index', 'query', 'deadline'] as const
 
-const CODE_GRAPH_RUNNER_STAGES: readonly CodeGraphRunnerStage[] = ['load', 'locked', 'index', 'query', 'deadline']
+export type CodeGraphRunnerStage = (typeof CODE_GRAPH_RUNNER_STAGES)[number]
 
 export type CodeGraphRunnerResult =
   | {
@@ -193,31 +135,15 @@ export type CodeGraphRunnerResult =
       index: CodeGraphIndexAction
       files: CodeGraphFileReport[]
       affectedTests: string[]
-      /** Present exactly when the input asked for `impact`. */
       impact?: CodeGraphImpactReport
     }
   | { ok: false; stage: CodeGraphRunnerStage; error: string }
 
-/**
- * Brings the index up to date and collects each file's symbols, direct dependents, and the test
- * files reachable through reverse imports (the same walk as `codegraph affected`: a changed test
- * file counts itself, and the walk stops at test files and at `maxDepth`). With `impact`, it also
- * reports the symbols overlapping the changed ranges with their callers, and the non-member symbols the
- * change removed or renamed that still have references.
- *
- * A missing index is created with a full index; an existing one is synced, and a failed sync is
- * replaced by a full rebuild. Creating and rebuilding hold `rebuild.pid`, like `codegraph index`.
- * When another live process holds the index (a sync refused with `LockUnavailableError`, or
- * `rebuild.pid` taken), the run reports `locked` and leaves the index alone instead of deleting
- * an index that process still uses. The library never installs git hooks or writes a
- * `.gitignore` on this path, unlike the `codegraph init` command. Never throws: every failure is
- * reported with the stage it happened in.
- */
 export async function runCodeGraphSnapshot(
-  load: (path: string) => unknown,
+  load: CodeGraphModuleLoader,
   input: CodeGraphRunnerInput,
 ): Promise<CodeGraphRunnerResult> {
-  const message = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+  const message = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
   const close = (handle: CodeGraphHandle): void => {
     try {
       handle.destroy()
@@ -247,7 +173,6 @@ export async function runCodeGraphSnapshot(
     a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1
   const visibleSymbols = (handle: CodeGraphHandle, filePath: string): CodeGraphNodeRecord[] =>
     handle.getNodesInFile(filePath).filter((node) => !hiddenKinds.has(node.kind))
-  /** Names eligible for the removed-symbol check: members are excluded because they are matched by bare name only. */
   const trackedSymbolNames = (handle: CodeGraphHandle, filePath: string): string[] =>
     visibleSymbols(handle, filePath)
       .filter((node) => !memberKinds.has(node.kind))
@@ -337,11 +262,11 @@ export async function runCodeGraphSnapshot(
   let queryUtils: CodeGraphQueryUtils
   let writerLock: CodeGraphWriterLock
   try {
-    lib = load(`${input.libDir}/dist/index.js`) as CodeGraphLibrary
-    queryUtils = load(`${input.libDir}/dist/search/query-utils.js`) as CodeGraphQueryUtils
-    writerLock = load(`${input.libDir}/dist/mcp/writer-lock.js`) as CodeGraphWriterLock
+    lib = load(`${input.libDir}/dist/index.js`)
+    queryUtils = load(`${input.libDir}/dist/search/query-utils.js`)
+    writerLock = load(`${input.libDir}/dist/mcp/writer-lock.js`)
     lib.setLogger(lib.silentLogger)
-    ;(load('fs') as FileSystem).mkdirSync(input.indexDir, { recursive: true })
+    load('fs').mkdirSync(input.indexDir, { recursive: true })
   } catch (err) {
     return { ok: false, stage: 'load', error: message(err) }
   }
@@ -359,10 +284,8 @@ export async function runCodeGraphSnapshot(
 
   let graph: CodeGraphHandle | null = null
   let index: CodeGraphIndexAction
-  /** Names of each impact file's non-member symbols before this run's sync; null when there was no index to read. */
   let baseline: Map<string, string[]> | null = null
-  /** A baseline read failure is reported with the other impact queries, after the index is up to date. */
-  let baselineError: unknown = null
+  let baselineError: unknown
   try {
     if (!lib.CodeGraph.isInitialized(input.projectRoot)) {
       if (!acquireRebuildLock()) return rebuildBusy
@@ -454,12 +377,6 @@ export async function runCodeGraphSnapshot(
   }
 }
 
-/**
- * The `node -e` program that runs `runCodeGraphSnapshot` with the JSON input passed as the first
- * argument, prints the result as the last line of stdout, and exits once it is flushed (the
- * library can leave worker handles open). At `deadlineMs` it prints a `deadline` result and
- * exits instead; codegraph's locks record the pid, so a lock left behind is cleared as stale.
- */
 export function buildCodeGraphRunnerScript(): string {
   return [
     'const input = JSON.parse(process.argv[1]);',
@@ -471,103 +388,71 @@ export function buildCodeGraphRunnerScript(): string {
   ].join('\n')
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
+const codeGraphReferenceSchema = z.looseObject({
+  name: z.string(),
+  kind: z.string(),
+  path: z.string(),
+  line: z.number(),
+})
 
-function isSymbol(value: unknown): value is CodeGraphSymbol {
-  if (!value || typeof value !== 'object') return false
-  const symbol = value as Record<string, unknown>
-  return (
-    typeof symbol.name === 'string' &&
-    typeof symbol.kind === 'string' &&
-    (symbol.signature === null || typeof symbol.signature === 'string') &&
-    typeof symbol.startLine === 'number'
-  )
-}
+const codeGraphSymbolSchema = z.looseObject({
+  name: z.string(),
+  kind: z.string(),
+  signature: z.string().nullable(),
+  startLine: z.number(),
+})
 
-function isFileReport(value: unknown): value is CodeGraphFileReport {
-  if (!value || typeof value !== 'object') return false
-  const file = value as Record<string, unknown>
-  return typeof file.path === 'string' && Array.isArray(file.symbols) && file.symbols.every(isSymbol) && isStringArray(file.dependents)
-}
+const codeGraphFileReportSchema = z.looseObject({
+  path: z.string(),
+  symbols: z.array(codeGraphSymbolSchema),
+  dependents: z.array(z.string()),
+})
 
-function isReference(value: unknown): value is CodeGraphReference {
-  if (!value || typeof value !== 'object') return false
-  const reference = value as Record<string, unknown>
-  return (
-    typeof reference.name === 'string' &&
-    typeof reference.kind === 'string' &&
-    typeof reference.path === 'string' &&
-    typeof reference.line === 'number'
-  )
-}
+const codeGraphChangedSymbolSchema = z.looseObject({
+  name: z.string(),
+  kind: z.string(),
+  path: z.string(),
+  startLine: z.number(),
+  callers: z.array(codeGraphReferenceSchema),
+  callerCount: z.number(),
+  callerQueryLimit: z.number(),
+})
 
-function isChangedSymbol(value: unknown): value is CodeGraphChangedSymbol {
-  if (!value || typeof value !== 'object') return false
-  const symbol = value as Record<string, unknown>
-  return (
-    typeof symbol.name === 'string' &&
-    typeof symbol.kind === 'string' &&
-    typeof symbol.path === 'string' &&
-    typeof symbol.startLine === 'number' &&
-    typeof symbol.callerCount === 'number' &&
-    typeof symbol.callerQueryLimit === 'number' &&
-    Array.isArray(symbol.callers) &&
-    symbol.callers.every(isReference)
-  )
-}
+const codeGraphRemovedSymbolSchema = z.looseObject({
+  name: z.string(),
+  path: z.string(),
+  references: z.array(codeGraphReferenceSchema),
+})
 
-function isRemovedSymbol(value: unknown): value is CodeGraphRemovedSymbol {
-  if (!value || typeof value !== 'object') return false
-  const symbol = value as Record<string, unknown>
-  return (
-    typeof symbol.name === 'string' &&
-    typeof symbol.path === 'string' &&
-    Array.isArray(symbol.references) &&
-    symbol.references.every(isReference)
-  )
-}
+const codeGraphImpactReportSchema = z.looseObject({
+  changedSymbols: z.array(codeGraphChangedSymbolSchema),
+  removedSymbols: z.array(codeGraphRemovedSymbolSchema),
+})
 
-function isImpactReport(value: unknown): value is CodeGraphImpactReport {
-  if (!value || typeof value !== 'object') return false
-  const report = value as Record<string, unknown>
-  return (
-    Array.isArray(report.changedSymbols) &&
-    report.changedSymbols.every(isChangedSymbol) &&
-    Array.isArray(report.removedSymbols) &&
-    report.removedSymbols.every(isRemovedSymbol)
-  )
-}
+const codeGraphRunnerResultSchema = z.discriminatedUnion('ok', [
+  z.looseObject({
+    ok: z.literal(true),
+    index: z.enum(['created', 'synced', 'rebuilt']),
+    files: z.array(codeGraphFileReportSchema),
+    affectedTests: z.array(z.string()),
+    impact: codeGraphImpactReportSchema.optional(),
+  }),
+  z.looseObject({
+    ok: z.literal(false),
+    stage: z.enum(CODE_GRAPH_RUNNER_STAGES),
+    error: z.string(),
+  }),
+])
 
-/**
- * Parses the runner's stdout: the last non-empty line must be a result matching
- * `CodeGraphRunnerResult`. Anything else (no output, a crash trace, a shape from another
- * version) returns null.
- */
 export function parseCodeGraphRunnerResult(stdout: string): CodeGraphRunnerResult | null {
   const line = stdout.split('\n').map((entry) => entry.trim()).filter(Boolean).at(-1)
   if (!line) return null
-  let parsed: unknown
+  let decoded: unknown
   try {
-    parsed = JSON.parse(line)
+    decoded = JSON.parse(line)
   } catch {
     return null
   }
-  if (!parsed || typeof parsed !== 'object') return null
-  const result = parsed as Record<string, unknown>
-  if (result.ok === true) {
-    if (result.index !== 'created' && result.index !== 'synced' && result.index !== 'rebuilt') return null
-    if (!Array.isArray(result.files) || !result.files.every(isFileReport) || !isStringArray(result.affectedTests)) return null
-    if (result.impact === undefined) {
-      return { ok: true, index: result.index, files: result.files, affectedTests: result.affectedTests }
-    }
-    if (!isImpactReport(result.impact)) return null
-    return { ok: true, index: result.index, files: result.files, affectedTests: result.affectedTests, impact: result.impact }
-  }
-  const stage = CODE_GRAPH_RUNNER_STAGES.find((candidate) => candidate === result.stage)
-  if (result.ok === false && stage && typeof result.error === 'string') {
-    return { ok: false, stage, error: result.error }
-  }
-  return null
+  const parsed = codeGraphRunnerResultSchema.safeParse(decoded)
+  return parsed.success ? parsed.data : null
 }

@@ -1,4 +1,22 @@
 import type { Database } from 'bun:sqlite'
+import { z } from 'zod'
+import { statementChanges } from '../sqlite-open'
+
+const reviewFindingRowSchema = z.object({
+  project_id: z.string(),
+  file: z.string(),
+  line: z.number(),
+  severity: z.enum(['bug', 'warning']),
+  description: z.string(),
+  scenario: z.string().nullable(),
+  loop_name: z.string(),
+  section_index: z.number().nullable(),
+  created_at: z.number(),
+})
+const reviewFindingRowsSchema = z.array(reviewFindingRowSchema)
+
+const loopBugCountRowSchema = z.object({ loop_name: z.string(), cnt: z.number() })
+const loopBugCountRowsSchema = z.array(loopBugCountRowSchema)
 
 export interface ReviewFindingRow {
   projectId: string
@@ -23,10 +41,6 @@ export interface ReviewFindingsRepo {
   write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario' | 'sectionIndex'> & { scenario?: string | null; sectionIndex?: number | null }): WriteFindingResult
   listAll(projectId: string, sectionIndex?: number | null): ReviewFindingRow[]
   listByLoopName(projectId: string, loopName: string | null, sectionIndex?: number | null): ReviewFindingRow[]
-  /**
-   * Bug-severity finding count per loop for this project, in one scan. Keyed by
-   * the stored loop name, so findings written without a loop key on `''`.
-   */
   bugCountsByLoop(projectId: string): Map<string, number>
   listByFile(projectId: string, file: string): ReviewFindingRow[]
   delete(projectId: string, file: string, line: number, scope?: DeleteScope): boolean
@@ -106,17 +120,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
-  function mapRaw(raw: {
-    project_id: string
-    file: string
-    line: number
-    severity: 'bug' | 'warning'
-    description: string
-    scenario: string | null
-    loop_name: string
-    section_index: number | null
-    created_at: number
-  }): ReviewFindingRow {
+  function mapRaw(raw: z.infer<typeof reviewFindingRowSchema>): ReviewFindingRow {
     return {
       projectId: raw.project_id,
       file: raw.file,
@@ -131,7 +135,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
   }
 
   function write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario' | 'sectionIndex'> & { scenario?: string | null; sectionIndex?: number | null }): WriteFindingResult {
-    const result = stmtWrite.run(
+    const changes = statementChanges(stmtWrite.run(
       row.projectId,
       loopToDb(row.loopName),
       row.file,
@@ -141,19 +145,15 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       toScenario(row.scenario),
       row.sectionIndex ?? null,
       Date.now()
-    ) as unknown as { changes: number }
-    if (result.changes > 0) {
+    ))
+    if (changes > 0) {
       return { ok: true }
     }
     return { ok: false, conflict: true }
   }
 
   function listAll(projectId: string, sectionIndex?: number | null): ReviewFindingRow[] {
-    const rows = stmtListAll.all(projectId) as Array<{
-      project_id: string; file: string; line: number; severity: 'bug' | 'warning';
-      description: string; scenario: string | null; loop_name: string;
-      section_index: number | null; created_at: number
-    }>
+    const rows = reviewFindingRowsSchema.parse(stmtListAll.all(projectId))
     let mapped = rows.map(mapRaw)
     if (sectionIndex !== undefined) {
       mapped = mapped.filter(r => r.sectionIndex === sectionIndex)
@@ -163,11 +163,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
 
   function listByLoopName(projectId: string, loopName: string | null, sectionIndex?: number | null): ReviewFindingRow[] {
     const dbLoopName = loopToDb(loopName)
-    const rows = stmtListByLoopName.all(projectId, dbLoopName) as Array<{
-      project_id: string; file: string; line: number; severity: 'bug' | 'warning';
-      description: string; scenario: string | null; loop_name: string;
-      section_index: number | null; created_at: number
-    }>
+    const rows = reviewFindingRowsSchema.parse(stmtListByLoopName.all(projectId, dbLoopName))
     let mapped = rows.map(mapRaw)
     if (sectionIndex !== undefined) {
       mapped = mapped.filter(r => r.sectionIndex === sectionIndex)
@@ -176,42 +172,37 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
   }
 
   function bugCountsByLoop(projectId: string): Map<string, number> {
-    const rows = stmtBugCountsByLoop.all(projectId) as { loop_name: string; cnt: number }[]
+    const rows = loopBugCountRowsSchema.parse(stmtBugCountsByLoop.all(projectId))
     return new Map(rows.map(r => [r.loop_name, r.cnt]))
   }
 
   function listByFile(projectId: string, file: string): ReviewFindingRow[] {
-    const rows = stmtListByFile.all(projectId, file) as Array<{
-      project_id: string; file: string; line: number; severity: 'bug' | 'warning';
-      description: string; scenario: string | null; loop_name: string;
-      section_index: number | null; created_at: number
-    }>
+    const rows = reviewFindingRowsSchema.parse(stmtListByFile.all(projectId, file))
     return rows.map(mapRaw)
   }
 
   function deleteFinding(projectId: string, file: string, line: number, scope?: DeleteScope): boolean {
     if (scope?.sectionIndex !== undefined) {
       if (scope.sectionIndex === null) {
-        const result = db.prepare(`
+        const changes = statementChanges(db.prepare(`
           DELETE FROM review_findings
           WHERE project_id = ? AND loop_name = ? AND file = ? AND line = ? AND section_index = -1
-        `).run(projectId, loopToDb(scope.loopName), file, line) as unknown as { changes: number }
-        return result.changes > 0
+        `).run(projectId, loopToDb(scope.loopName), file, line))
+        return changes > 0
       }
-      const result = stmtDeleteWithLoopNameAndSection.run(projectId, loopToDb(scope.loopName), file, line, scope.sectionIndex) as unknown as { changes: number }
-      return result.changes > 0
+      const changes = statementChanges(stmtDeleteWithLoopNameAndSection.run(projectId, loopToDb(scope.loopName), file, line, scope.sectionIndex))
+      return changes > 0
     }
     if (scope) {
-      const result = stmtDeleteWithLoopName.run(projectId, loopToDb(scope.loopName), file, line) as unknown as { changes: number }
-      return result.changes > 0
+      const changes = statementChanges(stmtDeleteWithLoopName.run(projectId, loopToDb(scope.loopName), file, line))
+      return changes > 0
     }
-    const result = stmtDelete.run(projectId, file, line) as unknown as { changes: number }
-    return result.changes > 0
+    const changes = statementChanges(stmtDelete.run(projectId, file, line))
+    return changes > 0
   }
 
   function deleteByLoopName(projectId: string, loopName: string): number {
-    const result = stmtDeleteByLoopName.run(projectId, loopName) as unknown as { changes: number }
-    return result.changes
+    return statementChanges(stmtDeleteByLoopName.run(projectId, loopName))
   }
 
   return {

@@ -1,10 +1,19 @@
-import type { ForgeClient } from '../client/port'
+import type { ForgeClient, SessionPromptAsyncParams } from '../client/port'
 import type { Logger, PluginConfig } from '../types'
 import type { LoopService } from './service'
 import { sendLoopPrompt } from './send-loop-prompt'
 import { resolveLoopModel } from '../utils/loop-helpers'
 import { markPromptSent } from './idle-gate'
 import { promptAuditSession } from '../utils/audit-session'
+
+interface AuditPromptInput {
+  sessionId: string
+  worktreeDir: string
+  workspaceId?: string
+  prompt: string
+  auditorModel?: { providerID: string; modelID: string }
+  auditorVariant?: string
+}
 
 export interface PromptDispatchDeps {
   client: ForgeClient
@@ -20,12 +29,8 @@ export interface SendPromptInput {
   promptText: string
   agent: 'code' | 'auditor-loop'
   model?: { providerID: string; modelID: string } | null
-  /** Model used for the fallback attempt when the primary model fails. Defaults to the
-   *  session/default model. */
   fallbackModel?: { providerID: string; modelID: string } | null
   variant?: string
-  /** Variant used for the fallbackModel attempt; when unset, the fallback attempt
-   *  sends no variant. Ignored when the attempt is not the fallbackModel. */
   fallbackVariant?: string
 }
 
@@ -50,13 +55,17 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
           const freshState = loopService.getActiveState(loopName)
           if (!freshState?.active) throw new Error('loop_cancelled')
           markPromptSent(projectId, loopName, sessionId, logger)
-          const r = await promptAuditSession(client, {
+          const auditParams: AuditPromptInput = {
             sessionId,
             worktreeDir: freshState.worktreeDir,
             workspaceId: freshState.workspaceId,
             prompt: promptText,
-            ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
-          })
+          }
+          if (model) {
+            auditParams.auditorModel = model
+            if (input.variant) auditParams.auditorVariant = input.variant
+          }
+          const r = await promptAuditSession(client, auditParams)
           return r.ok ? {} : { error: r.error }
         },
       })
@@ -75,14 +84,18 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         const isFallbackAttempt = input.fallbackModel != null && model === input.fallbackModel
         const variant = isFallbackAttempt ? input.fallbackVariant : input.variant
         try {
-          await client.session.promptAsync({
+          const promptParams: SessionPromptAsyncParams = {
             sessionID: sessionId,
             directory: freshState.worktreeDir,
-            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
             agent: 'code',
-            parts: [{ type: 'text' as const, text: promptText }],
-            ...(model ? { model, ...(variant ? { variant } : {}) } : {}),
-          })
+            parts: [{ type: 'text', text: promptText }],
+          }
+          if (freshState.workspaceId) promptParams.workspace = freshState.workspaceId
+          if (model) {
+            promptParams.model = model
+            if (variant) promptParams.variant = variant
+          }
+          await client.session.promptAsync(promptParams)
           return {}
         } catch (err) {
           return { error: err }
@@ -98,10 +111,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         sessionID: sessionId,
         directory: worktreeDir,
         limit: 4,
-      }) as Array<{
-        info: { id?: string; role: string; finish?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
-        parts: Array<{ type: string; text?: string }>
-      }>
+      })
 
       const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null
 

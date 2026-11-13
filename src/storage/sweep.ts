@@ -1,20 +1,6 @@
 import type { Database } from 'bun:sqlite'
+import { statementChanges } from './sqlite-open'
 
-/**
- * Sweeps expired completed loops from the database.
- * 
- * Deletes rows from `loops` where:
- * - status != 'running'
- * - completed_at + ttlMs < now()
- * 
- * Cascade deletes propagate to:
- * - loop_large_fields (via FK)
- * - plans with loop_name matching deleted loops (explicit DELETE)
- * 
- * @param db - Database instance
- * @param ttlMs - TTL in milliseconds for completed loops
- * @returns Number of rows deleted from loops table
- */
 export function sweepExpiredLoops(db: Database, ttlMs: number): number {
   const cutoff = Date.now() - ttlMs
 
@@ -35,13 +21,11 @@ export function sweepExpiredLoops(db: Database, ttlMs: number): number {
       AND completed_at < ?
   `)
 
-  const run = db.transaction((cutoffMs: unknown) => {
-    const cutoff = Number(cutoffMs)
+  const run = db.transaction(() => {
     deletePlans.run(cutoff)
-    const loopsResult = deleteLoops.run(cutoff) as unknown as { changes: number }
-    return Number(loopsResult.changes)
-  }) as (cutoffMs: number) => number
+    return statementChanges(deleteLoops.run(cutoff))
+  })
 
-  return run(cutoff)
+  return run()
 }
 

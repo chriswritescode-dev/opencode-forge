@@ -2,7 +2,6 @@ import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { resolveShippedRoot } from '../utils/shipped-paths'
 
-/** Directory containing the bundled prompts (`<shippedRoot>/prompts`). */
 export const BUNDLED_PROMPTS_DIR = join(resolveShippedRoot(import.meta.url), 'prompts')
 
 const promptCache = new Map<string, string>()
