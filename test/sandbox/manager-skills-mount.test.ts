@@ -88,7 +88,7 @@ describe('SandboxManager skills mount', () => {
     expect(active?.mounts.some((mount) => mount.containerDir === resolve(root))).toBe(false)
   })
 
-  test('mounts the root plus a skill directory whose symlink target is outside it', async () => {
+  test('skips a skill symlinked outside the skills root and mounts only the root', async () => {
     const root = createTempDir()
     const skillsRoot = join(root, 'skills')
     const external = join(root, 'external-skills', 'media-use')
@@ -96,23 +96,37 @@ describe('SandboxManager skills mount', () => {
     createSkill(external)
     symlinkSync(external, join(skillsRoot, 'media-use'), 'dir')
 
-    const { manager, runtime } = createManager(async () => [
+    const { manager, runtime, logger } = createManager(async () => [
       join(skillsRoot, 'pr-review', 'SKILL.md'),
       join(skillsRoot, 'media-use', 'SKILL.md'),
     ])
     await manager.start('test', WORKSPACE)
 
-    const resolvedRoot = resolve(skillsRoot)
-    const resolvedLink = resolve(skillsRoot, 'media-use')
-    const active = manager.getActive('test')
-    expect(active?.mounts).toContainEqual(readOnlyMount(resolvedRoot))
-    expect(active?.mounts).toContainEqual(readOnlyMount(resolvedLink))
-    expect(workspaceEntries(runtime)).toContainEqual({
-      hostDir: realpathSync(external),
-      containerDir: resolvedLink,
-      readOnly: true,
-    })
+    expect(workspaceEntries(runtime)).toEqual([
+      { hostDir: WORKSPACE, containerDir: WORKSPACE },
+      { hostDir: realpathSync(skillsRoot), containerDir: resolve(skillsRoot), readOnly: true },
+    ])
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining(resolve(skillsRoot, 'media-use')))
   })
+
+  test('does not mount a skill symlink that points back inside the skills root', async () => {
+    const root = createTempDir()
+    const skillsRoot = join(root, 'skills')
+    createSkill(join(skillsRoot, 'pr-review'))
+    symlinkSync('pr-review', join(skillsRoot, 'alias'), 'dir')
+
+    const { manager, runtime } = createManager(async () => [
+      join(skillsRoot, 'pr-review', 'SKILL.md'),
+      join(skillsRoot, 'alias', 'SKILL.md'),
+    ])
+    await manager.start('test', WORKSPACE)
+
+    const containerDirs = workspaceEntries(runtime).map((entry) => entry.containerDir)
+    const rootDir = resolve(skillsRoot)
+    expect(containerDirs).toContain(rootDir)
+    expect(containerDirs.filter((dir) => dir === rootDir || dir.startsWith(`${rootDir}/`))).toHaveLength(1)
+  })
+
 
   test('ignores flat skills that have no skill directory', async () => {
     const root = createTempDir()

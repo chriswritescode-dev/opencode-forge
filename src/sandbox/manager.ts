@@ -201,6 +201,10 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
   const canonicalRoots = rootCandidates.map((root) => canonicalizePath(root))
   for (const dir of resolvedSkillDirs) {
     if (canonicalRoots.some((root) => isSameOrDescendantPath(canonicalizePath(dir), root))) continue
+    if (rootCandidates.some((root) => isSameOrDescendantPath(dir, root))) {
+      logger.log(`Sandbox: skipping skill that resolves outside its skills directory: ${dir}`)
+      continue
+    }
     addSkillDir(dir)
   }
 
