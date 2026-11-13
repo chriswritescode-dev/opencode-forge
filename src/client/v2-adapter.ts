@@ -62,7 +62,6 @@ const sessionStatusEntrySchema = z.object({
   message: z.string().optional(),
   next: z.number().optional(),
 })
-const permissionResourceEffectsSchema = z.record(z.string(), permissionEffectSchema)
 const permissionTableSchema = z.looseObject({})
 const modelLimitSchema = z.looseObject({ context: z.number().optional() })
 
