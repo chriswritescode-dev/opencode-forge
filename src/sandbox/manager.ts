@@ -4,7 +4,7 @@ import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, 
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, basename, dirname, posix as posixPath } from 'path'
-import { mkdirSync, existsSync } from 'fs'
+import { mkdirSync, existsSync, lstatSync, readlinkSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
@@ -226,8 +226,13 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
     if (accepted.some((root) => isSameOrDescendantPath(canonical, root))) continue
     accepted.push(canonical)
     const nestedUnderRoot = roots.some((root) => dir !== root && isSameOrDescendantPath(dir, root))
-    const target = nestedUnderRoot ? canonical : dir
-    mounts.push({ hostDir: target, containerDir: target, readOnly: true })
+    if (!nestedUnderRoot) {
+      mounts.push({ hostDir: dir, containerDir: dir, readOnly: true })
+      continue
+    }
+    const guestTarget = lstatSync(dir).isSymbolicLink() ? resolve(dirname(dir), readlinkSync(dir)) : canonical
+    if (roots.some((root) => isSameOrDescendantPath(guestTarget, root))) continue
+    mounts.push({ hostDir: canonical, containerDir: guestTarget, readOnly: true })
   }
   return mounts
 }
