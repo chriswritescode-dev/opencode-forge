@@ -235,7 +235,11 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
 function resolveNestedSkillGuestPath(dir: string, canonical: string, reserved: readonly string[]): string {
   if (!lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) return canonical
   const linkTarget = resolve(dirname(dir), readlinkSync(dir))
-  return reserved.some((path) => isSameOrDescendantPath(linkTarget, resolve(path))) ? canonical : linkTarget
+  const overlapsReserved = reserved.some((path) => {
+    const reservedPath = resolve(path)
+    return isSameOrDescendantPath(linkTarget, reservedPath) || isSameOrDescendantPath(reservedPath, linkTarget)
+  })
+  return overlapsReserved ? canonical : linkTarget
 }
 
 export function createSandboxManager(
