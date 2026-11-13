@@ -32,7 +32,6 @@ import { formatDuration } from '../utils/duration'
 import { phaseLabel } from '../utils/phase-label'
 import { isToastVariant } from '../utils/toast'
 import type { JsonObject } from '../utils/json-schema'
-import { jsonValueSchema } from '../utils/json-schema'
 import { z } from 'zod'
 import { isWithinDir } from '../workspace/forge-naming'
 import type { ForgeProjectClient } from './project-client'
@@ -282,19 +281,19 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const call = createForgeRpcCaller(context, () => resolveV2TuiDirectory(context))
 
   const dashboardStore = createDashboardStore({
-    readSummary: () => call(async (rpc, location) => jsonValueSchema.parse(await rpc.dashboardSummary({}, location)), readForgeDashboardSummary),
-    readLoopDetail: (input) => call(async (rpc, location) => jsonValueSchema.parse(await rpc.loopDetail(input, location)), readForgeLoopDetail),
+    readSummary: () => call(async (rpc, location) => await rpc.dashboardSummary({}, location), readForgeDashboardSummary),
+    readLoopDetail: (input) => call(async (rpc, location) => await rpc.loopDetail(input, location), readForgeLoopDetail),
     readProjectFindings: (input) => call(
-      async (rpc, location) => jsonValueSchema.parse(await rpc.projectFindings(input, location)),
+      async (rpc, location) => await rpc.projectFindings(input, location),
       readForgeProjectFindings,
     ),
-    readAmendmentDiff: (input) => call(async (rpc, location) => jsonValueSchema.parse(await rpc.amendmentDiff(input, location)), readForgeAmendmentDiff),
+    readAmendmentDiff: (input) => call(async (rpc, location) => await rpc.amendmentDiff(input, location), readForgeAmendmentDiff),
     readSessionPlan: ({ projectId, sessionId }) => call(
-      async (rpc, location) => jsonValueSchema.parse(await rpc.sessionPlan({ sessionId, projectId }, location)),
+      async (rpc, location) => await rpc.sessionPlan({ sessionId, projectId }, location),
       readForgeSessionPlan,
     ),
     deletePlan: ({ projectId, sessionId }) => call(
-      async (rpc, location) => jsonValueSchema.parse(await rpc.planDelete({ projectId, sessionId }, location)),
+      async (rpc, location) => await rpc.planDelete({ projectId, sessionId }, location),
       readForgePlanDeleteOutput,
     ),
     currentDirectory: () => resolveV2TuiDirectory(context),
@@ -324,7 +323,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       }
       if (worktreesRequest) return worktreesRequest
     }
-    const request = call(async (rpc, location) => jsonValueSchema.parse(await rpc.worktrees({}, location)), readForgeWorktrees)
+    const request = call(async (rpc, location) => await rpc.worktrees({}, location), readForgeWorktrees)
       .then((result) => {
         if ('error' in result) {
           worktreesFailure = { at: Date.now(), error: result.error }
@@ -352,9 +351,9 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   })
 
   const hostSandbox = createHostSandboxToggle({
-    readState: () => call(async (rpc, location) => jsonValueSchema.parse(await rpc.hostSandboxState({}, location)), readForgeHostSandboxState),
+    readState: () => call(async (rpc, location) => await rpc.hostSandboxState({}, location), readForgeHostSandboxState),
     setState: (input) => call(
-      async (rpc, location) => jsonValueSchema.parse(await rpc.hostSandboxSet(input, location)),
+      async (rpc, location) => await rpc.hostSandboxSet(input, location),
       readForgeHostSandboxSetOutput,
     ),
     currentSessionId,
@@ -363,8 +362,8 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
 
   const autoApprove = createSessionAutoApproveToggle({
     currentSessionId,
-    readState: (sessionId) => call(async (rpc, location) => jsonValueSchema.parse(await rpc.autoApproveState({ sessionId }, location)), readForgeAutoApproveState),
-    setState: (sessionId, enabled) => call(async (rpc, location) => jsonValueSchema.parse(await rpc.autoApproveSet({ sessionId, enabled }, location)), readForgeAutoApproveState),
+    readState: (sessionId) => call(async (rpc, location) => await rpc.autoApproveState({ sessionId }, location), readForgeAutoApproveState),
+    setState: (sessionId, enabled) => call(async (rpc, location) => await rpc.autoApproveSet({ sessionId, enabled }, location), readForgeAutoApproveState),
     isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(hostSandbox.preference(), id) === 'enabled',
     toast: (input) => host.toast(input),
   })
@@ -373,7 +372,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   if (opts.sidebar) {
     const sidebar = createLoopSidebarStore({
       readLoops: () => call(
-        async (rpc, location) => jsonValueSchema.parse(await rpc.loopSidebar({ limit: SIDEBAR_LOOP_LIMIT }, location)),
+        async (rpc, location) => await rpc.loopSidebar({ limit: SIDEBAR_LOOP_LIMIT }, location),
         readForgeLoopSidebar,
       ),
     })
@@ -435,7 +434,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
                 sandbox: hostSandbox,
                 currentSessionId,
                 loadDefaults: async () => {
-                  const defaults = await call(async (rpc, location) => jsonValueSchema.parse(await rpc.loopDefaults({}, location)), readForgeLoopDefaults)
+                  const defaults = await call(async (rpc, location) => await rpc.loopDefaults({}, location), readForgeLoopDefaults)
                   return 'error' in defaults ? null : defaults
                 },
               })
@@ -561,7 +560,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     return dispose
   })
 
-  void call(async (rpc, location) => jsonValueSchema.parse(await rpc.version({}, location)), readForgeVersion).then((result) => {
+  void call(async (rpc, location) => await rpc.version({}, location), readForgeVersion).then((result) => {
     if (lifecycle.signal.aborted) return
     const serverVersion = 'error' in result ? null : result.version
     if (serverVersion === VERSION) return

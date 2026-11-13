@@ -1861,6 +1861,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return handleLoopCancel(ctx, command)
       case 'loop.restart':
         return handleLoopRestart(ctx, command)
+      default:
+        return fail('bad_request', 400, 'Unknown command type')
     }
   }
   

@@ -39,6 +39,23 @@ afterEach(() => {
   for (const testDb of openDbs.splice(0)) testDb.cleanup()
 })
 
+describe('dispatch', () => {
+  test('rejects an unknown command type from a runtime surface', async () => {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const { client } = createFakeForgeClient()
+    const { deps } = buildExecutionDeps(testDb.db, { client })
+    const service = createForgeExecutionService(deps)
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      JSON.parse('{"type":"loop.unknown"}'),
+    )
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'bad_request', message: 'Unknown command type' } })
+  })
+})
+
 describe('handleStartLoop builtin worktree workspace', () => {
   let db: ReturnType<typeof createTestDb>['db']
 

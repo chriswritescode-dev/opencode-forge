@@ -26,7 +26,7 @@ export interface JsonSchemaValidationOptions {
   allowAdditionalProperties?: boolean
 }
 
-export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
     z.string(),
     z.number(),

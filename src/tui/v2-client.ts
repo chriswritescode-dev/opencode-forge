@@ -14,7 +14,6 @@ import {
 import type { ExecutionContext, ForgeProjectClient } from './project-client'
 import { deriveExecutionPreferencesFromWorkspaces } from '../utils/tui-execution-preferences'
 import { providersFromProviderList, type LoopInfo, type WorkspaceForRecents } from '../utils/tui-models'
-import { jsonValueSchema, type JsonValue } from '../utils/json-schema'
 
 export interface V2ForgeProjectClientOptions {
   projectId: string
@@ -41,14 +40,14 @@ type ForgeRpcClient = ReturnType<typeof forgeRpcClient>
 
 const forgeRpcClient = (context: Plugin.Context) => context.client.rpc(FORGE_RPC)
 
-export type ForgeRpcInvoke = (
+export type ForgeRpcInvoke<P> = (
   rpc: ForgeRpcClient,
   options: { location: { directory: string } },
-) => Promise<JsonValue>
+) => Promise<P>
 
-export type ForgeRpcCall = <T>(
-  invoke: ForgeRpcInvoke,
-  read: (value: JsonValue) => T | { error: string },
+export type ForgeRpcCall = <P, T>(
+  invoke: ForgeRpcInvoke<P>,
+  read: (value: P) => T | { error: string },
 ) => Promise<T | { error: string }>
 
 const rpcErrorSchema = z.looseObject({
@@ -181,7 +180,7 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
         return call(
           async (rpc, location) => {
             try {
-              return jsonValueSchema.parse(await rpc.executePlan(input, location))
+              return await rpc.executePlan(input, location)
             } catch (err) {
               throw new Error(`Plan execution failed: ${describeRpcError(err)}`, { cause: err })
             }
@@ -195,19 +194,19 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
     },
     async loadLatestPlan(sessionId) {
       const result = await call(
-        async (rpc, location) => jsonValueSchema.parse(await rpc.sessionPlan({ sessionId }, location)),
+        async (rpc, location) => await rpc.sessionPlan({ sessionId }, location),
         readForgeSessionPlan,
       )
       return 'error' in result ? null : result.plan
     },
     async loadLoops() {
-      return call(async (rpc, location) => jsonValueSchema.parse(await rpc.loops({}, location)), readForgeLoops)
+      return call(async (rpc, location) => await rpc.loops({}, location), readForgeLoops)
     },
     async loadExecutionContext() {
       const { defaultModel, ...models } = await loadModels(context, directory)
       const [loopsResult, loopDefaults] = await Promise.all([
-        call(async (rpc, location) => jsonValueSchema.parse(await rpc.loops({}, location)), readForgeLoops),
-        call(async (rpc, location) => jsonValueSchema.parse(await rpc.loopDefaults({}, location)), readForgeLoopDefaults),
+        call(async (rpc, location) => await rpc.loops({}, location), readForgeLoops),
+        call(async (rpc, location) => await rpc.loopDefaults({}, location), readForgeLoopDefaults),
       ])
       const loops = 'error' in loopsResult ? [] : loopsResult.loops
       const workspaces = loopsToWorkspacesForRecents(projectId, loops)
@@ -230,7 +229,7 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
       if (force !== undefined) input.force = force
       if (expectedStartedAt) input.expectedStartedAt = expectedStartedAt
       const result = await call(
-        async (rpc, location) => jsonValueSchema.parse(await rpc.loopRestart(input, location)),
+        async (rpc, location) => await rpc.loopRestart(input, location),
         readForgeLoopRestartOutput,
       )
       if ('error' in result) throw new Error(result.error)
