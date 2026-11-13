@@ -1,32 +1,30 @@
 import { join } from 'path'
 import { existsSync, writeFileSync } from 'fs'
-import type { Logger } from '../types'
+import { z } from 'zod'
+import type { Logger, PluginConfig } from '../types'
 
-/** Filename forge writes the inline opencode config to inside a worktree. */
+export type WorktreeOpencodeConfig = NonNullable<NonNullable<PluginConfig['loop']>['worktreeOpencodeConfig']>
+
+const jsonValueSchema = z.json()
+type JsonValue = z.infer<typeof jsonValueSchema>
+const jsonObjectSchema = z.record(z.string(), jsonValueSchema)
+type JsonObject = z.infer<typeof jsonObjectSchema>
+
+function isJsonObject(value: JsonValue): value is JsonObject {
+  return jsonObjectSchema.safeParse(value).success
+}
+
 export const WORKTREE_OPENCODE_CONFIG_FILENAME = 'opencode.jsonc'
 
-/**
- * Placeholder token users may embed in `loop.worktreeOpencodeConfig` string values
- * (typically MCP `command` arrays). Replaced with the loop's sandbox container name
- * at write time; MCP entries referencing it are dropped when the loop has no sandbox.
- */
 export const SANDBOX_CONTAINER_PLACEHOLDER = '{{FORGE_SANDBOX_CONTAINER}}'
 
-/** Filenames opencode discovers as a project config; any present means "already configured". */
 const OPENCODE_CONFIG_FILENAMES = ['opencode.jsonc', 'opencode.json'] as const
 
 type WriteWorktreeOpencodeConfigReason = 'no-config' | 'exists' | 'written' | 'error'
 
 export interface WriteWorktreeOpencodeConfigInput {
-  /** Absolute worktree root directory. */
   directory: string
-  /** Inline config object from `loop.worktreeOpencodeConfig` (may be undefined/empty). */
-  config: Record<string, unknown> | undefined
-  /**
-   * Sandbox container name for this loop, when one will be provisioned.
-   * Substituted for {@link SANDBOX_CONTAINER_PLACEHOLDER} in config string values.
-   * When undefined, MCP entries referencing the placeholder are dropped instead.
-   */
+  config: WorktreeOpencodeConfig | undefined
   sandboxContainerName?: string
   logger: Logger
 }
@@ -34,42 +32,36 @@ export interface WriteWorktreeOpencodeConfigInput {
 export interface WriteWorktreeOpencodeConfigResult {
   written: boolean
   reason: WriteWorktreeOpencodeConfigReason
-  /** Path written when `written` is true; undefined otherwise. */
   path?: string
 }
 
-function substituteDeep(value: unknown, containerName: string): unknown {
-  if (typeof value === 'string') return value.split(SANDBOX_CONTAINER_PLACEHOLDER).join(containerName)
+function substituteDeep(value: JsonValue, containerName: string): JsonValue {
+  const text = z.string().safeParse(value)
+  if (text.success) return text.data.split(SANDBOX_CONTAINER_PLACEHOLDER).join(containerName)
   if (Array.isArray(value)) return value.map((item) => substituteDeep(item, containerName))
-  if (value && typeof value === 'object') {
+  if (isJsonObject(value)) {
     return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substituteDeep(v, containerName)]))
   }
   return value
 }
 
-/**
- * Resolve {@link SANDBOX_CONTAINER_PLACEHOLDER} in a config object. With a container
- * name, every string occurrence is substituted. Without one (loop has no sandbox),
- * MCP entries referencing the placeholder are dropped so opencode never spawns a
- * `docker exec` against a container that does not exist; any residual occurrence
- * outside `mcp` is logged as a warning and left as-is.
- */
 function resolveSandboxPlaceholder(
-  config: Record<string, unknown>,
+  config: JsonObject,
   sandboxContainerName: string | undefined,
   logger: Logger,
-): Record<string, unknown> {
+): JsonObject {
   if (!JSON.stringify(config).includes(SANDBOX_CONTAINER_PLACEHOLDER)) return config
   if (sandboxContainerName) {
-    return substituteDeep(config, sandboxContainerName) as Record<string, unknown>
+    const substituted = jsonObjectSchema.safeParse(substituteDeep(config, sandboxContainerName))
+    return substituted.success ? substituted.data : config
   }
-  const result = { ...config }
+  const result: JsonObject = { ...config }
   const mcp = result.mcp
-  if (mcp && typeof mcp === 'object' && !Array.isArray(mcp)) {
-    const kept: Record<string, unknown> = {}
+  if (isJsonObject(mcp)) {
+    const kept: JsonObject = {}
     const dropped: string[] = []
     for (const [name, entry] of Object.entries(mcp)) {
-      if (JSON.stringify(entry)?.includes(SANDBOX_CONTAINER_PLACEHOLDER)) dropped.push(name)
+      if (JSON.stringify(entry).includes(SANDBOX_CONTAINER_PLACEHOLDER)) dropped.push(name)
       else kept[name] = entry
     }
     if (dropped.length > 0) {
@@ -88,19 +80,18 @@ function resolveSandboxPlaceholder(
   return result
 }
 
-/**
- * Write the inline opencode config into a worktree as `opencode.jsonc`.
- * Skip-if-exists (never overwrites a committed opencode config) and non-fatal:
- * any failure is logged and reported via `reason: 'error'`, never thrown.
- */
 export function writeWorktreeOpencodeConfig(
   input: WriteWorktreeOpencodeConfigInput,
 ): WriteWorktreeOpencodeConfigResult {
   const { directory, logger, sandboxContainerName } = input
-  if (!input.config || typeof input.config !== 'object' || Object.keys(input.config).length === 0) {
+  if (!input.config) {
     return { written: false, reason: 'no-config' }
   }
-  const config = resolveSandboxPlaceholder(input.config, sandboxContainerName, logger)
+  const decoded = jsonObjectSchema.safeParse(input.config)
+  if (!decoded.success || Object.keys(decoded.data).length === 0) {
+    return { written: false, reason: 'no-config' }
+  }
+  const config = resolveSandboxPlaceholder(decoded.data, sandboxContainerName, logger)
   if (Object.keys(config).length === 0) {
     return { written: false, reason: 'no-config' }
   }

@@ -1,10 +1,3 @@
-/**
- * Forge Execution Service - Command Bus Interface
- * 
- * Shared execution service for plan execution and loop lifecycle.
- * Provides a unified interface for internal tools, API, and TUI surfaces.
- */
-
 import type { PluginConfig, Logger, LoopSandboxSettings } from '../types'
 import type { ForgeClient } from '../client/port'
 import { publishToast } from '../utils/toast'
@@ -42,31 +35,25 @@ import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
 import { defaultGitService, type GitService } from '../utils/git-service'
+import { z } from 'zod'
+import type { SessionPromptAsyncParams } from '../client/port'
+import type { JsonObject } from '../utils/json-schema'
 
-/**
- * A freshly created + warped loop session can transiently report "Session not
- * found" (and, less often, "Workspace not found") before it is durably
- * registered — the `session.created` event lags the synchronous `create()`
- * return. Such failures are retryable; a real misconfiguration is not.
- */
-function isTransientSessionError(err: unknown): boolean {
-  const msg = err instanceof Error
-    ? err.message
-    : typeof err === 'string'
-      ? err
-      : (() => { try { return JSON.stringify(err ?? '') } catch { return String(err) } })()
-  return /Session not found/i.test(msg) || isWorkspaceNotFoundError(err)
+function stringifyCause(cause: unknown): string {
+  try {
+    return JSON.stringify(cause ?? '')
+  } catch {
+    return String(cause)
+  }
 }
 
-// ============================================================================
-// Surface Types - Identifies the caller boundary
-// ============================================================================
+function isTransientSessionError(cause: unknown): boolean {
+  const text = z.string().safeParse(cause)
+  const msg = cause instanceof Error ? cause.message : text.success ? text.data : stringifyCause(cause)
+  return /Session not found/i.test(msg) || isWorkspaceNotFoundError(cause)
+}
 
 export type ForgeExecutionSurface = 'tool' | 'approval-hook' | 'api' | 'tui'
-
-// ============================================================================
-// Request Context
-// ============================================================================
 
 export interface ForgeExecutionRequestContext {
   surface: ForgeExecutionSurface
@@ -76,18 +63,10 @@ export interface ForgeExecutionRequestContext {
   requestId?: string
 }
 
-// ============================================================================
-// Plan Source Types
-// ============================================================================
-
 export type PlanSource =
   | { kind: 'inline'; planText: string }
   | { kind: 'stored'; sessionId: string }
   | { kind: 'loop-state'; loopName: string }
-
-// ============================================================================
-// Loop Extra / Attach Types
-// ============================================================================
 
 export interface ForgeLoopExtra {
   hostSessionId?: string
@@ -100,9 +79,7 @@ export interface ForgeLoopExtra {
   planText?: string
   initialPromptOwner?: 'server' | 'tui'
   pendingAttachStartedAt?: number
-  /** Whether the loop runs sandboxed. Written by the attach hook and remote launches; read on re-attach. */
   sandboxEnabled?: boolean
-  /** msb container name when the loop runs sandboxed. */
   sandboxContainer?: string
 }
 
@@ -122,9 +99,7 @@ export interface AttachLoopInput {
   maxIterations: number
   sandboxEnabled: boolean
   sandboxContainer?: string
-  /** Exact commit sha the loop's worktree branched from; omitted for legacy rows. */
   baseCommit?: string
-  /** Per-loop sandbox overrides persisted with the loop so restart and re-attach honor them. */
   sandboxSettings?: LoopSandboxSettings
   planText: string
   startWatchdog?: boolean
@@ -139,18 +114,10 @@ export interface AttachLoopInput {
   }) => void
 }
 
-// ============================================================================
-// Loop Selector Types
-// ============================================================================
-
 export type LoopSelector =
   | { kind: 'exact'; name: string }
   | { kind: 'partial'; name: string }
   | { kind: 'only-active' }
-
-// ============================================================================
-// Command Types - Discriminated Union
-// ============================================================================
 
 export interface ExecutePlanNewSessionCommand {
   type: 'plan.execute.newSession'
@@ -184,11 +151,8 @@ export interface StartLoopCommand {
   executionVariant?: string
   auditorVariant?: string
   hostSessionId?: string
-  /** Per-loop sandbox overrides; omitted fields fall back to the `sandbox` config. */
   sandbox?: LoopSandboxSettings
-  /** Explicit base ref the loop worktree branches from; omitted branches from the project HEAD. */
   baseRef?: string
-  /** Explicit local branch the loop worktree checks out; omitted uses forge/<slug>. */
   branch?: string
   lifecycle?: {
     startWatchdog?: boolean
@@ -246,12 +210,6 @@ export interface RestartLoopCommand {
   auditorVariant?: string
   executionModel?: string
   executionVariant?: string
-  /**
-   * Optimistic precondition carried from the TUI: the loop's `startedAt` when the
-   * restart dialog was opened. When set, the restart is rejected unless the
-   * under-lock loop still has that exact generation, so a stale view cannot abort
-   * and overwrite a restart that already happened.
-   */
   expectedStartedAt?: string
 }
 
@@ -277,16 +235,12 @@ export type ForgeExecutionCommand =
   | CancelLoopCommand
   | GetLoopStatusCommand
 
-// ============================================================================
-// Response/Error Types
-// ============================================================================
-
 export interface ForgeExecutionError {
   code: 'bad_request' | 'not_found' | 'conflict' | 'disabled' | 'prompt_failed' | 'lifecycle_failed' | 'internal_error' | 'provider_limit'
   status: number
   message: string
   candidates?: string[]
-  details?: Record<string, unknown>
+  details?: JsonObject
 }
 
 export interface ForgeExecutionWarning {
@@ -297,10 +251,6 @@ export interface ForgeExecutionWarning {
 export type ForgeExecutionResponse<T> =
   | { ok: true; data: T; warnings?: ForgeExecutionWarning[] }
   | { ok: false; error: ForgeExecutionError }
-
-// ============================================================================
-// Result Types per Command
-// ============================================================================
 
 export interface PlanExecutionStartedResult {
   operation: 'plan.execute.newSession' | 'plan.execute.here'
@@ -396,7 +346,6 @@ export interface LoopStatusResult {
   recent: LoopStatusView[]
 }
 
-// Type mapping from command to result
 export type ForgeExecutionResult<C extends ForgeExecutionCommand> =
   C extends ExecutePlanNewSessionCommand ? PlanExecutionStartedResult :
   C extends ExecutePlanHereCommand ? PlanExecutionStartedResult :
@@ -406,20 +355,14 @@ export type ForgeExecutionResult<C extends ForgeExecutionCommand> =
   C extends GetLoopStatusCommand ? LoopStatusResult :
   never
 
-// ============================================================================
-// Service Interface
-// ============================================================================
-
 export interface ForgeExecutionService {
-  dispatch<C extends ForgeExecutionCommand>(
-    ctx: ForgeExecutionRequestContext,
-    command: C,
-  ): Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
+  dispatch(ctx: ForgeExecutionRequestContext, command: ExecutePlanNewSessionCommand): Promise<ForgeExecutionResponse<PlanExecutionStartedResult>>
+  dispatch(ctx: ForgeExecutionRequestContext, command: ExecutePlanHereCommand): Promise<ForgeExecutionResponse<PlanExecutionStartedResult>>
+  dispatch(ctx: ForgeExecutionRequestContext, command: StartLoopCommand): Promise<ForgeExecutionResponse<LoopStartedResult>>
+  dispatch(ctx: ForgeExecutionRequestContext, command: RestartLoopCommand): Promise<ForgeExecutionResponse<LoopRestartedResult>>
+  dispatch(ctx: ForgeExecutionRequestContext, command: CancelLoopCommand): Promise<ForgeExecutionResponse<LoopCancelledResult>>
+  dispatch(ctx: ForgeExecutionRequestContext, command: GetLoopStatusCommand): Promise<ForgeExecutionResponse<LoopStatusResult>>
 }
-
-// ============================================================================
-// Service Dependencies
-// ============================================================================
 
 export interface ForgeExecutionServiceDeps {
   projectId: string
@@ -437,13 +380,29 @@ export interface ForgeExecutionServiceDeps {
   reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
   loopSessionUsageRepo?: import('../storage/repos/loop-session-usage-repo').LoopSessionUsageRepo
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
-  /** Inject a custom GitService (defaults to real git if omitted). */
   gitService?: GitService
 }
 
-// ============================================================================
-// Helper Functions
-// ============================================================================
+type AttachLoopFailureCode = 'already_attached' | 'conflict' | 'internal_error' | 'prompt_failed' | 'provider_limit'
+
+function executionCodeForAttachFailure(code: AttachLoopFailureCode): ForgeExecutionError['code'] {
+  switch (code) {
+    case 'conflict':
+      return 'conflict'
+    case 'prompt_failed':
+      return 'prompt_failed'
+    case 'provider_limit':
+      return 'provider_limit'
+    case 'internal_error':
+      return 'internal_error'
+    case 'already_attached':
+      return 'conflict'
+  }
+}
+
+interface PromptAttemptResult {
+  error?: unknown
+}
 
 function normalizeModelString(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
@@ -458,7 +417,7 @@ function fail(
   code: ForgeExecutionError['code'],
   status: number,
   message: string,
-  details?: Record<string, unknown>,
+  details?: JsonObject,
   candidates?: string[]
 ): ForgeExecutionResponse<never> {
   return {
@@ -466,10 +425,6 @@ function fail(
     error: { code, status, message, details, candidates }
   }
 }
-
-// ============================================================================
-// Plan Source Resolution
-// ============================================================================
 
 async function resolvePlanSource(
   ctx: ForgeExecutionRequestContext,
@@ -514,10 +469,6 @@ async function resolvePlanSource(
   }
 }
 
-// ============================================================================
-// attachLoopToSession
-// ============================================================================
-
 export async function attachLoopToSession(
   deps: ForgeExecutionServiceDeps,
   ctx: ForgeExecutionRequestContext,
@@ -558,8 +509,6 @@ export async function attachLoopToSession(
     return { ok: false, code: 'conflict', message: `Loop ${loopName} is terminal. Use loop restart to resume or start a new suffixed loop.` }
   }
 
-  // Defensive purge of orphaned per-loop rows (section_plans cascade may not have fired
-  // historically; plans/review_findings have no FK). Idempotent.
   try {
     const removedSections = deps.sectionPlansRepo?.deleteAll(ctx.projectId, loopName) ?? 0
     deps.plansRepo.deleteForLoop(ctx.projectId, loopName)
@@ -569,13 +518,8 @@ export async function attachLoopToSession(
     }
   } catch (err) {
     deps.logger.error(`attachLoopToSession: failed to purge orphaned per-loop rows for ${loopName}`, err)
-    // Non-fatal — proceed.
   }
 
-  // The plugin instance handling this tool call may be bound to a worktree
-  // directory, so ctx.directory is not a reliable project root. Resolve the
-  // real project directory from the host session that launched the loop, and
-  // only fall back to ctx.directory when that lookup is unavailable.
   const resolvedProjectDir =
     (await resolveHostSessionDirectory(deps.client, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
 
@@ -583,7 +527,6 @@ export async function attachLoopToSession(
   const attachOwnsLoop = (): boolean => deps.loop.service.getActiveState(loopName)?.sessionId === sessionId
 
   try {
-    // Persist loop state
     const state: import('../loop/state').LoopState = {
       active: true,
       sessionId,
@@ -629,7 +572,6 @@ export async function attachLoopToSession(
       workspaceId,
     })
 
-    // === Initial prompt ===
     const decomposition = applyPlanDecomposition({
       projectId: ctx.projectId,
       loopName,
@@ -649,7 +591,6 @@ export async function attachLoopToSession(
     }
     const { totalSections } = decomposition
 
-    // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
     if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
       const dbPath = resolveForgeDbPath(deps.dataDir)
       if (existsSync(dbPath)) {
@@ -691,10 +632,8 @@ export async function attachLoopToSession(
       ? deps.loop.service.buildSectionInitialPrompt(updatedState)
       : deps.loop.service.buildPlanInitialPrompt(planText)
 
-    // Send initial prompt with fallback
     const sessionDir = worktreeDir
     const promptParts = [{ type: 'text' as const, text: promptText }]
-    const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
 
     const promptResult = await sendLoopPrompt({
       projectId: ctx.projectId,
@@ -708,14 +647,15 @@ export async function attachLoopToSession(
         markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
         releaseFirstPromptHold()
         try {
-          await deps.client.session.promptAsync({
+          const promptParams: SessionPromptAsyncParams = {
             sessionID: sessionId,
             directory: sessionDir,
             parts: promptParts,
             agent: 'code',
-            ...workspaceParam,
-            ...(model ? { model } : {}),
-          })
+          }
+          if (workspaceId) promptParams.workspace = workspaceId
+          if (model) promptParams.model = model
+          await deps.client.session.promptAsync(promptParams)
           return {}
         } catch (err) {
           return { error: err }
@@ -740,15 +680,13 @@ export async function attachLoopToSession(
       return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
     }
 
-    // Success: start watchdog if requested
     if (startWatchdog && deps.loopHandler) {
       deps.loopHandler.startWatchdog(loopName)
     }
 
-    // Abort source session if requested
     if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
-      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-        deps.logger.error('attachLoopToSession: failed to abort source session', err as Error)
+      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((cause: unknown) => {
+        deps.logger.error('attachLoopToSession: failed to abort source session', cause)
       })
     }
 
@@ -773,10 +711,6 @@ export async function attachLoopToSession(
   }
 }
 
-// ============================================================================
-// Service Implementation
-// ============================================================================
-
 export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): ForgeExecutionService {
   const inFlightLoopStarts = new Map<string, Promise<ForgeExecutionResponse<LoopStartedResult>>>()
   const git = deps.gitService ?? defaultGitService
@@ -790,7 +724,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     ctx: ForgeExecutionRequestContext,
     command: ExecutePlanNewSessionCommand,
   ): Promise<ForgeExecutionResponse<PlanExecutionStartedResult>> {
-    // Resolve plan text
     const planResult = await resolvePlanSource(ctx, command.source, deps)
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
@@ -801,7 +734,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const parsedModel = parseModelString(executionModel)
     const executionVariant = command.executionVariant ?? deps.config.executionVariant
     
-    // Create new session
     let sessionId: string
     let sessionWorkspaceId: string | undefined
     try {
@@ -817,19 +749,18 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
     deps.logger.log(`handlePlanNewSession: created session=${sessionId}`)
     
-    // Prompt code agent
-    let promptError: unknown = null
-    const workspaceParam = sessionWorkspaceId ? { workspace: sessionWorkspaceId } : {}
+    let promptError: unknown
     try {
-      await deps.client.session.promptAsync({
+      const promptParams: SessionPromptAsyncParams = {
         sessionID: sessionId,
         directory: ctx.directory,
-        parts: [{ type: 'text' as const, text: planText }],
+        parts: [{ type: 'text', text: planText }],
         agent: 'code',
-        model: parsedModel!,
-        ...(executionVariant ? { variant: executionVariant } : {}),
-        ...workspaceParam,
-      })
+      }
+      if (parsedModel) promptParams.model = parsedModel
+      if (executionVariant) promptParams.variant = executionVariant
+      if (sessionWorkspaceId) promptParams.workspace = sessionWorkspaceId
+      await deps.client.session.promptAsync(promptParams)
     } catch (err) {
       promptError = err
     }
@@ -837,7 +768,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (promptError) {
       deps.logger.error('handlePlanNewSession: failed to prompt session', promptError)
       
-      // Delete created session if requested
       if (command.lifecycle?.deleteSessionOnPromptFailure) {
         await deleteSessionBestEffort(
           deps.client,
@@ -850,10 +780,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return fail('prompt_failed', 502, 'Session created but failed to send plan')
     }
     
-    // Abort source session if requested
     if (command.lifecycle?.abortSourceSession && ctx.sourceSessionId) {
-      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-        deps.logger.error('handlePlanNewSession: failed to abort source session', err as Error)
+      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((cause: unknown) => {
+        deps.logger.error('handlePlanNewSession: failed to abort source session', cause)
       })
     }
     
@@ -878,7 +807,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return fail('bad_request', 400, 'execute-here mode requires targetSessionId')
     }
     
-    // Resolve plan text
     const planResult = await resolvePlanSource(ctx, command.source, deps)
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
@@ -888,20 +816,19 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const parsedModel = parseModelString(executionModel)
     const executionVariant = command.executionVariant ?? deps.config.executionVariant
     
-    // Build execute-here prompt
     const executeHerePrompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${planText}`
     
-    // Prompt code agent in target session
-    let promptError: unknown = null
+    let promptError: unknown
     try {
-      await deps.client.session.promptAsync({
+      const promptParams: SessionPromptAsyncParams = {
         sessionID: command.targetSessionId,
         directory: ctx.directory,
-        parts: [{ type: 'text' as const, text: executeHerePrompt }],
+        parts: [{ type: 'text', text: executeHerePrompt }],
         agent: 'code',
-        ...(parsedModel ? { model: parsedModel } : {}),
-        ...(executionVariant ? { variant: executionVariant } : {}),
-      })
+      }
+      if (parsedModel) promptParams.model = parsedModel
+      if (executionVariant) promptParams.variant = executionVariant
+      await deps.client.session.promptAsync(promptParams)
     } catch (err) {
       promptError = err
     }
@@ -924,13 +851,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     })
   }
   
-  /**
-   * Worktree loops require a committed git project. When opencode starts in a
-   * directory without a root commit it scopes the instance to project 'global',
-   * while sessions created in the forge worktree resolve their project from the
-   * root commit (which forge itself creates). The resulting session is invisible
-   * to the TUI and cannot be selected, so fail fast with the remedy instead.
-   */
   function guardCommittedProject(ctx: ForgeExecutionRequestContext): ForgeExecutionResponse<never> | null {
     const errorMsg = getWorktreeProjectPreconditionError(ctx.projectId)
     if (errorMsg) {
@@ -958,7 +878,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     ctx: ForgeExecutionRequestContext,
     command: StartLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopStartedResult>> {
-    // Check if loops are disabled in plugin config
     if (deps.config.loop?.enabled === false) {
       return fail('disabled', 403, 'Loops are disabled in plugin config')
     }
@@ -966,7 +885,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const projectGuard = guardCommittedProject(ctx)
     if (projectGuard) return projectGuard
 
-    // Resolve plan text
     const planResult = await resolvePlanSource(ctx, command.source, deps)
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
@@ -977,7 +895,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return fail('bad_request', 400, `Plan section graph is invalid:\n- ${graphErrors.join('\n- ')}`)
     }
 
-    // Extract loop names first so the session title can prefer the explicit Loop Name
     const { displayName, executionName } = extractPlanExecutionMetadata(planText)
     const title = command.title ?? displayName
     const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
@@ -987,7 +904,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       (name) => git.branchExists(ctx.directory, forgeBranchName(name)),
     )
 
-    // In-flight dedupe: suppress concurrent starts for the same source
     const dedupeKey = `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`
     const existing = inFlightLoopStarts.get(dedupeKey)
     if (existing) {
@@ -1005,20 +921,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     })
     if (!branchValidation.ok) return fail('bad_request', 400, branchValidation.message)
 
-    // Wrapped inner async to store/clean up in-flight promise
     async function doStart(): Promise<ForgeExecutionResponse<LoopStartedResult>> {
-    // Resolve models
     const resolvedExecutionModel = command.executionModel ?? deps.config.executionModel
     const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel
     
-    // Resolve variants
     const resolvedExecutionVariant = command.executionVariant ?? deps.config.executionVariant
     const resolvedAuditorVariant = command.auditorVariant ?? deps.config.auditorVariant
     
-    // Resolve max iterations
     const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
     
-    // Track created resources for rollback
     let createdSessionId: string | null = null
     let createdWorkspaceId: string | undefined
     let hostWorktreeDir: string | undefined
@@ -1030,12 +941,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let loopStatePersisted = false
     let previousBranchTip: string | null = null
 
-    /**
-     * The workspace adapter moves an existing local branch onto `baseRef` (`git branch -f`)
-     * before adding the worktree, so a failed start must put the caller's branch back where
-     * it was. Runs last in rollback because git refuses `branch -f` on a branch that a live
-     * worktree still has checked out.
-     */
     const restoreBranchTip = (): void => {
       const branch = command.branch
       if (!previousBranchTip || !branch) return
@@ -1078,17 +983,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
     
     try {
-      // eslint-disable-next-line prefer-const
-      let sessionId: string
-
-      // Compute host session ID for metadata persistence only (not session parenting)
       const hostSessionId = command.hostSessionId ?? ctx.sourceSessionId
 
       if (!deps.sandboxManager) {
         deps.logger.log('handleStartLoop: sandbox manager not initialized; running in worktree-only mode')
       }
 
-      // Create builtin worktree workspace (single call — no separate worktree.create)
       if (command.branch && command.baseRef && git.branchExists(ctx.directory, command.branch)) {
         const tip = git.revParse(ctx.directory, `refs/heads/${command.branch}`)
         if (tip.ok) {
@@ -1127,13 +1027,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return fail('internal_error', 500, 'Failed to resolve loop base commit')
       }
 
-      // Build permissions
       const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager) && command.sandbox?.enabled !== false
       sandboxEnabledForLoop = sandboxEnabled
 
       const permissionRuleset = buildLoopPermissionRuleset(resolveLoopPermissionOptions(deps.config))
 
-      // Create single code session
       const createResult = await createLoopSessionWithWorkspace({
         client: deps.client,
         title: sessionTitle,
@@ -1151,14 +1049,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return fail('internal_error', 500, 'Failed to create loop session')
       }
 
-      sessionId = createResult.sessionId
+      const sessionId = createResult.sessionId
       createdSessionId = sessionId
 
       if (createResult.bindFailed) {
         deps.logger.log(`handleStartLoop: workspace ${workspaceId} created but initial bind failed; will retry on next session`)
       }
 
-      // Start sandbox if enabled
       if (sandboxEnabled && deps.sandboxManager) {
         const existingSandbox = deps.sandboxManager.getActive(uniqueLoopName)
         if (existingSandbox) {
@@ -1180,7 +1077,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      // Call attachLoopToSession with the final state
       const attachResult = await attachLoopToSession(deps, ctx, {
         sessionId,
         workspaceId: createdWorkspaceId,
@@ -1206,13 +1102,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
 
       if (!attachResult.ok) {
-        // Provider-limit failures already terminate the loop row via
-        // attachLoopToSession; rolling back would delete the restartable
-        // errored row and workspace, defeating loop-status restart=true.
         if (attachResult.code !== 'provider_limit') {
           await rollbackLoopStart()
         }
-        return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
+        return fail(executionCodeForAttachFailure(attachResult.code), 503, attachResult.message)
       }
 
       const parsedExec = parseModelString(resolvedExecutionModel)
@@ -1266,12 +1159,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       states = [...active, ...recent]
     }
     
-    // Apply selector filtering
     if (command.selector?.kind === 'exact' || command.selector?.kind === 'partial') {
       const { match, candidates } = findPartialMatch(
         command.selector.name,
         states,
-        (s) => [s.loopName, s.worktreeBranch].filter(Boolean) as string[]
+        (s) => [s.loopName, s.worktreeBranch].filter((value) => value !== null && value !== undefined)
       )
       
       if (!match && candidates.length === 0 && command.selector.kind === 'exact') {
@@ -1289,7 +1181,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
     }
     
-    // Limit results
     const limit = command.limit ?? 20
     if (states.length > limit) {
       states = states.slice(0, limit)
@@ -1301,7 +1192,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return 'completed'
     }
 
-    // Convert to status views
     const loops: LoopStatusView[] = states.map(state => {
       const cap200 = (s: string | null | undefined): string | null =>
         s ? (s.length > 200 ? s.slice(0, 200) : s) : null
@@ -1329,7 +1219,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           })()
         : undefined
       
-      // Fetch cumulative usage from persisted aggregate
       let usage: import('../loop/token-usage').LoopUsageSummary | undefined
       if (deps.loopSessionUsageRepo) {
         const aggregate = deps.loopSessionUsageRepo.getAggregate(deps.projectId, state.loopName)
@@ -1345,7 +1234,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       return {
         loopName: state.loopName,
-        displayName: state.loopName, // Could extract from plan if needed
+        displayName: state.loopName,
         status: statusFromState(state),
         phase: state.phase,
         iteration: state.iteration,
@@ -1395,7 +1284,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     let state: import('../loop/state').LoopState
 
-    // Resolve loop by selector
     if (!command.selector || command.selector.kind === 'only-active') {
       const active = deps.loop.listActive()
       if (active.length === 0) return fail('not_found', 404, 'No active loops.')
@@ -1492,42 +1380,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    // Pre-lock snapshot used as the rollback target only when the loop is
-    // already stopped (no active under-lock state to re-fetch). For active
-    // loops we refresh this from the authoritative under-lock state below,
-    // before any restart-specific mutation, so a rollback never resurrects an
-    // obsolete phase/session from the stale pre-lock snapshot.
     const previousState = { ...stoppedState }
-    // Captured pre-lock as the fallback for inactive loops (no under-lock state
-    // to re-fetch). For active loops we refresh this from the authoritative
-    // under-lock state below, so a session rotation during lock contention
-    // (e.g. a coding session rotating to an auditing session) reports the
-    // post-rotation session — the one we actually aborted and replaced — not
-    // the stale pre-lock snapshot.
     let previousSessionId = stoppedState.sessionId
     let bindFailed = false
 
     type RestartOutcome =
       | { ok: true; newSessionId: string; previousSessionId: string; sandbox: boolean; bindFailed: boolean }
       | { ok: false; error: string }
-      // Provider-limit termination MUST happen after runExclusive releases the
-      // per-loop state lock: deps.loop.terminate -> terminateLoopByName ->
-      // withStateLock is non-reentrant, so calling it inside the runExclusive
-      // callback (which already holds the lock) deadlocks. The callback returns
-      // this marker so the outer flow performs the canonical termination
-      // without any lock held.
       | { ok: false; error: string; providerLimitMessage: string }
 
     const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
-      // Re-read authoritative state under the per-loop lock.
-      //
-      // Race-condition fix: when the pre-lock snapshot was inactive (cancelled or
-      // errored) a second concurrent restart could have already completed by the
-      // time we acquire the lock.  In that case we must reject the second
-      // restart instead of silently overwriting the first.
-      //
-      // For active loops the original code already aborted and updated state here.
-      // We preserve that behavior by checking `stoppedState.active` first.
       const latestState = deps.loop.service.getActiveState(stoppedState.loopName)
       if (command.expectedStartedAt !== undefined) {
         const expectedMs = Date.parse(command.expectedStartedAt)
@@ -1540,12 +1402,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
       if (!latestState && stoppedState.active) {
-        // Active loop vanished under lock — treat as removed.
         return { ok: false, error: `Loop "${stoppedState.loopName}" has been removed.` }
       }
       if (latestState && latestState.active && !stoppedState.active) {
-        // Pre-lock was inactive but authoritative state is now active — a
-        // concurrent restart finished. Reject so we don't silently overwrite it.
         return {
           ok: false,
           error: `Loop "${stoppedState.loopName}" is already active with session ${latestState.sessionId}. Use --force to abort and restart.`,
@@ -1561,8 +1420,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       if (stoppedState.active && latestState) {
-        // The pre-lock snapshot was active — the original code already ran this
-        // block to abort and refresh from latestState.
         try {
           await deps.client.session.abort({ sessionID: latestState.sessionId })
         } catch (err) {
@@ -1573,8 +1430,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         Object.assign(previousState, latestState)
         previousSessionId = latestState.sessionId
       } else {
-        // Inactive loop (or pre-lock was active but latestState is null — loop
-        // vanished, already returned above if active). Use whatever we have.
         if (latestState) {
           Object.assign(stoppedState, latestState)
           Object.assign(previousState, latestState)
@@ -1628,13 +1483,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
         deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
-        // Persist the terminal transition row so the disabled post-action
-        // restart outcome is logged through the same shared path used by the
-        // runtime. The canonical terminateLoop/terminateAll paths are not
-        // invoked here (this loop is already stopped/inactive); we record
-        // directly against the loopService's transition repository. Best-effort:
-        // recordTransition wraps the repo insert in try/catch and never
-        // throws into the restart flow.
         const fromPhase = stoppedState.phase
         const iteration = stoppedState.iteration ?? 0
         const sectionIndex = transitionSectionIndex(stoppedState)
@@ -1652,11 +1500,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const permissionRuleset = buildPermissionRulesetForPhase(stoppedState.phase, permissionOptions)
 
       stoppedState.iteration = 1
-
-      // Create new session for restart
-
-      // eslint-disable-next-line prefer-const
-      let newSessionId: string | undefined
 
       if (stoppedState.worktree) {
         const { createBuiltinWorktreeWorkspace, getForgeWorkspaceEntry } = await import('../workspace/forge-worktree')
@@ -1690,7 +1533,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      // Unified session creation for restart (always a single code session)
       const createResult = await createLoopSessionWithWorkspace({
         client: deps.client,
         title: formatLoopSessionTitle(stoppedState.loopName, {
@@ -1708,13 +1550,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
 
-      newSessionId = createResult.sessionId
+      const newSessionId = createResult.sessionId
       if (createResult.bindFailed) {
         stoppedState.workspaceId = undefined
         bindFailed = true
       }
 
-      // Unified section extraction on restart — preserve existing progress if sections exist.
       if (!stoppedState.totalSections) {
         const planText = stoppedState.prompt ?? ''
         const decomposition = applyPlanDecomposition({
@@ -1732,9 +1573,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           stoppedState.currentSectionIndex = 0
         }
       }
-      // else: existing totalSections preserved as-is
 
-      const effectiveSessionId = newSessionId!
+      const effectiveSessionId = newSessionId
       const restartPhase = stoppedState.phase === 'post_action' ? 'post_action' as const : 'coding' as const
 
       const newState: import('../loop/state').LoopState = {
@@ -1766,7 +1606,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         currentSectionIndex: stoppedState.currentSectionIndex,
         totalSections: stoppedState.totalSections,
       }
-      // Build appropriate prompt based on persisted state
       let promptText: string
       let postActionCfg: ResolvedPostActionConfig | undefined
 
@@ -1774,7 +1613,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         postActionCfg = resolvePostActionConfig(deps.config)
         promptText = deps.loop.service.buildPostActionPrompt(newState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
       } else if (stoppedState.totalSections > 0) {
-        // Use persisted section state to build the correct section prompt
         const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
         if (deps.loop.service.getBlockingBugFindings(stoppedState).length > 0) {
           promptText = deps.loop.service.buildSectionContinuationPrompt(newState, undefined, outstandingBugs)
@@ -1782,7 +1620,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           promptText = deps.loop.service.buildSectionInitialPrompt(newState)
         }
       } else {
-        // Legacy non-sectioned prompt
         promptText = deps.loop.service.buildPlanInitialPrompt(stoppedState.prompt ?? '')
       }
 
@@ -1799,14 +1636,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         : stoppedState.phase === 'post_action'
           ? restartAuditorModel
           : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
-      // When a configured post-action model is used, fall back to the loop's auditor model if it fails.
       const loopFallbackModel = stoppedState.phase === 'post_action' && postActionCfg?.model
         ? restartAuditorModel
         : undefined
-      const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 
-      // Restart sends the persisted phase's prompt as the code agent: the post-action
-      // session must be able to call `loop-complete`, which the auditor agent excludes.
+
       deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
         sessionId: newState.sessionId,
         phase: newState.phase,
@@ -1827,12 +1661,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
       deps.loop.registerSessionReverseIndex(effectiveSessionId, stoppedState.loopName)
 
-      // Record restart phase transition immediately after persisting the new
-      // phase, before sending the restart prompt. A provider-limit or other
-      // prompt send failure may then terminate the loop — the phase row must
-      // already be in place so the transition log shows the real sequence
-      // (phase change → terminal). We skip when persisted phase matches the
-      // restart phase (post_action stays in place).
       const restartPhaseChanged = restartPhase !== stoppedState.phase
       if (restartPhaseChanged) {
         deps.loop.service.recordTransition(stoppedState.loopName, {
@@ -1851,25 +1679,24 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           ? (postActionCfg?.model && model === loopModel ? undefined : restartAuditorChoice.variant)
           : stoppedState.executionVariant
         try {
-          await deps.client.session.promptAsync({
+          const promptParams: SessionPromptAsyncParams = {
             sessionID: effectiveSessionId,
             directory: stoppedState.worktreeDir,
-            parts: [{ type: 'text' as const, text: promptText }],
+            parts: [{ type: 'text', text: promptText }],
             agent: 'code',
-            ...(model ? { model, ...(variant ? { variant } : {}) } : {}),
-            ...workspaceParam,
-          })
+          }
+          if (model) promptParams.model = model
+          if (variant) promptParams.variant = variant
+          if (stoppedState.workspaceId) promptParams.workspace = stoppedState.workspaceId
+          await deps.client.session.promptAsync(promptParams)
           return {}
         } catch (err) {
           return { error: err }
         }
       }
 
-      // Retry the prompt with backoff: a just-created + warped session can briefly
-      // report "Session not found" before it is durably registered. Without this,
-      // a transient race tore the restart down and reverted the loop to terminal.
       const RESTART_PROMPT_MAX_ATTEMPTS = 4
-      let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
+      let promptResult: PromptAttemptResult = { error: new Error('restart prompt not attempted') }
       for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {
         const { result } = await sendLoopPrompt({
           projectId: ctx.projectId,
@@ -1893,20 +1720,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       if (promptResult.error) {
-        // Classify provider-limit errors before generic rollback so that a
-        // capped account terminates the loop with the provider_limit reason
-        // instead of silently reverting to the previous terminal state.
         const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.error))
         if (limitReason) {
           deps.logger.error(`loop-restart: provider limit detected for ${stoppedState.loopName}: ${limitReason}, terminating`)
           clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
           deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
-          // Defer the canonical termination (deps.loop.terminate) to outside
-          // the runExclusive callback: it reacquires the per-loop state lock
-          // via terminateLoopByName, which is non-reentrant, so invoking it
-          // here would deadlock the runExclusive-held lock. The in-memory
-          // cleanup above is lock-free and safe under the held lock. Returning
-          // the marker lets the outer flow terminate after the lock releases.
           return {
             ok: false as const,
             error: `Provider limit on restart prompt: ${limitReason}`,
@@ -1919,26 +1737,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
         }
         deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
-        // Save section plans before rollback (the DB row stays intact in-place;
-        // transition history is preserved because we never delete the loop row).
         const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
         deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
         try {
           let restoreRow: import('../loop/state').LoopState
           if (previousState.active) {
-            // The previous session was already aborted under the lock when we
-            // observed the active loop. Restoring it as active would strand the
-            // loop with a dead session and no watchdog (the aborted session has
-            // no timers and cannot progress). Bake the errored termination into
-            // the restored row so a single in-place UPDATE both restores the
-            // pre-restart fields (phase, section progress, etc.) and marks the
-            // loop errored/restartable. We cannot use `setState` here because
-            // the loop row already exists (created/updated moments earlier by
-            // `loopsRepo.restart`) and `setState` uses a plain INSERT that
-            // raises a primary-key constraint error. `loopsRepo.restore` UPDATEs
-            // in place, preserving child rows (loop_transitions, section_plans)
-            // that an INSERT OR REPLACE or `deleteState` + INSERT would
-            // cascade-delete.
             restoreRow = {
               ...previousState,
               active: false,
@@ -1947,8 +1750,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               completedAt: new Date().toISOString(),
             }
           } else {
-            // Stopped-loop rollback: restore the previous (already-inactive)
-            // row in place so transition history is preserved.
             restoreRow = previousState
           }
           deps.loop.service.restoreState(restoreRow.loopName, restoreRow)
@@ -1956,12 +1757,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           const restartToPhase = previousState.phase ?? 'coding'
           const iteration = previousState.iteration ?? 0
           const sectionIndex = transitionSectionIndex(previousState)
-          // Log the rollback restoration whenever the restart actually changed
-          // the persisted phase, so the transition history stays continuous:
-          //   previousPhase -> restartPhase (pre-prompt 'restart' phase row)
-          //   restartPhase -> previousPhase (this 'rollback' row)
-          // When the restart preserved the phase (post_action stays in place),
-          // there is nothing to roll back phase-wise and no rollback row is emitted.
           if (restartPhaseChanged) {
             deps.loop.service.recordTransition(previousState.loopName, {
               eventType: 'restart_prompt_failed',
@@ -1973,21 +1768,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             })
           }
           if (previousState.active) {
-            // Active-rollback: the loop was running and the aborted session has
-            // no timers/watchdog to drive progress. Route through the shared
-            // `loopService.terminate` path so the row's terminal status is
-            // set through one canonical helper AND the terminate notification
-            // fires (TUI, host side-effects). This avoids a parallel
-            // `loopsRepo.terminate` write that would leave the notification
-            // path uninformed.
             deps.loop.service.terminate(previousState.loopName, {
               status: 'errored',
               reason: 'restart_prompt_failed',
               completedAt: Date.now(),
             })
-            // Terminal transition row for the active-rollback path. Inactive
-            // rollback restores the unchanged inactive row and emits no
-            // terminal row (nothing terminally changed).
             deps.loop.service.recordTerminalTransition(previousState.loopName, {
               reason: { kind: 'restart_prompt_failed' },
               fromPhase: restartToPhase,
@@ -1995,9 +1780,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               sectionIndex,
             })
           }
-          // Section plans were preserved in place (no cascade); nothing to
-          // re-insert. restoreAll is retained as a no-op safety net in case
-          // a future code path deletes the loop row during rollback.
           if (savedPlans.length > 0) {
             deps.sectionPlansRepo?.restoreAll(savedPlans)
           }
@@ -2043,11 +1825,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
     }
 
-    // Provider-limit termination deferred from inside the runExclusive
-    // callback. The callback cannot call deps.loop.terminate itself because
-    // that reacquires the non-reentrant per-loop state lock held by
-    // runExclusive (terminateLoopByName -> withStateLock -> deadlock). Perform
-    // the canonical termination here, after the lock has been released.
     if (!outcome.ok && 'providerLimitMessage' in outcome) {
       await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: outcome.providerLimitMessage })
       if (restartSandbox && deps.sandboxManager) {
@@ -2061,25 +1838,29 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     return restartSucceeded(outcome.newSessionId, outcome.previousSessionId, outcome.bindFailed)
   }
   
-  async function dispatch<C extends ForgeExecutionCommand>(
+  async function dispatch(ctx: ForgeExecutionRequestContext, command: ExecutePlanNewSessionCommand): Promise<ForgeExecutionResponse<PlanExecutionStartedResult>>
+  async function dispatch(ctx: ForgeExecutionRequestContext, command: ExecutePlanHereCommand): Promise<ForgeExecutionResponse<PlanExecutionStartedResult>>
+  async function dispatch(ctx: ForgeExecutionRequestContext, command: StartLoopCommand): Promise<ForgeExecutionResponse<LoopStartedResult>>
+  async function dispatch(ctx: ForgeExecutionRequestContext, command: RestartLoopCommand): Promise<ForgeExecutionResponse<LoopRestartedResult>>
+  async function dispatch(ctx: ForgeExecutionRequestContext, command: CancelLoopCommand): Promise<ForgeExecutionResponse<LoopCancelledResult>>
+  async function dispatch(ctx: ForgeExecutionRequestContext, command: GetLoopStatusCommand): Promise<ForgeExecutionResponse<LoopStatusResult>>
+  async function dispatch(
     ctx: ForgeExecutionRequestContext,
-    command: C,
-  ): Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>> {
+    command: ForgeExecutionCommand,
+  ): Promise<ForgeExecutionResponse<ForgeExecutionResult<ForgeExecutionCommand>>> {
     switch (command.type) {
       case 'plan.execute.newSession':
-        return handlePlanNewSession(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
+        return handlePlanNewSession(ctx, command)
       case 'plan.execute.here':
-        return handlePlanHere(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
+        return handlePlanHere(ctx, command)
       case 'loop.start':
-        return handleStartLoop(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
+        return handleStartLoop(ctx, command)
       case 'loop.status':
-        return handleLoopStatus(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
+        return handleLoopStatus(ctx, command)
       case 'loop.cancel':
-        return handleLoopCancel(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
+        return handleLoopCancel(ctx, command)
       case 'loop.restart':
-        return handleLoopRestart(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
-      default:
-        return fail('bad_request', 400, 'Unknown command type') as ForgeExecutionResponse<ForgeExecutionResult<C>>
+        return handleLoopRestart(ctx, command)
     }
   }
   
@@ -2088,6 +1869,3 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
   }
 }
 
-// ============================================================================
-// Internal Helpers
-// ============================================================================

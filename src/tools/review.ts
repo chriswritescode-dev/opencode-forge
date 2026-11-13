@@ -1,5 +1,6 @@
-import { tool, type ToolDefinition } from './tool'
+import { tool } from './tool'
 import type { ToolContext } from './types'
+import { errorMessage } from '../utils/error-message'
 import { formatFindingDetails } from '../utils/review-format'
 import { auditScope, type LoopState } from '../loop/state'
 import { isFindingInSectionScope } from '../loop/section-scope'
@@ -8,17 +9,10 @@ const z = tool.schema
 
 const ATTEMPT_PAGE_LIMIT_DEFAULT = 20
 
-export function createReviewTools(ctx: ToolContext): Record<string, ToolDefinition> {
+export function createReviewTools(ctx: ToolContext) {
   const { reviewFindingsRepo, projectId, logger } = ctx
   const loop = ctx.loop
 
-  /**
-   * Resolve the loop owning the current tool context using the single canonical
-   * resolver (`resolveActiveLoopForSession`), which follows parent-session hops.
-   * Read, write, and delete MUST share this so a finding written under a loop —
-   * even from a descendant session such as an audit subagent — is always
-   * visible and deletable from that loop. Returns null outside any active loop.
-   */
   async function resolveLoopName(toolCtx?: { sessionID?: string }): Promise<string | null> {
     const sessionId = toolCtx?.sessionID
     if (!sessionId) return null
@@ -28,12 +22,6 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
     return loopName
   }
 
-  /**
-   * Sectioned loops scope review tools to the findings that block the current
-   * section: cross-section findings plus findings attributed to the current
-   * section or a section it depends on; every finding blocks on the last open
-   * section. The treating phase is the audit or its coding retry.
-   */
   function isSectionScopedPhase(state: LoopState): boolean {
     return state.totalSections > 0 && (state.phase === 'auditing' || state.phase === 'coding')
   }
@@ -51,33 +39,21 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
         sectionIndex: z.number().optional().describe('Explicitly set section index. Defaults to current section in a sectioned loop.'),
       },
       execute: async (args, toolCtx) => {
-        const row = {
-          projectId,
-          file: args.file,
-          line: args.line,
-          severity: args.severity,
-          description: args.description,
-          scenario: args.scenario ?? null,
-          loopName: null as string | null,
-          sectionIndex: null as number | null,
-        }
-
-        row.loopName = await resolveLoopName(toolCtx)
-        if (row.loopName) {
-          const loopState = loop.service.getActiveState(row.loopName)
+        const loopName = await resolveLoopName(toolCtx)
+        let sectionIndex: number | null = null
+        if (loopName) {
+          const loopState = loop.service.getActiveState(loopName)
           if (loopState && loopState.totalSections > 0) {
-            row.sectionIndex = loopState.currentSectionIndex
+            sectionIndex = loopState.currentSectionIndex
           }
         }
 
-        // Apply explicit section index or crossSection override
         if (args.crossSection) {
-          row.sectionIndex = null
+          sectionIndex = null
         } else if (args.sectionIndex !== undefined && args.sectionIndex !== null) {
           if (!Number.isInteger(args.sectionIndex)) {
             return `Invalid sectionIndex ${args.sectionIndex}: must be an integer.`
           }
-          const loopName = row.loopName
           if (loopName) {
             const loopState = loop.service.getActiveState(loopName)
             if (loopState && loopState.totalSections > 0) {
@@ -86,7 +62,18 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
               }
             }
           }
-          row.sectionIndex = args.sectionIndex
+          sectionIndex = args.sectionIndex
+        }
+
+        const row = {
+          projectId,
+          file: args.file,
+          line: args.line,
+          severity: args.severity,
+          description: args.description,
+          scenario: args.scenario ?? null,
+          loopName,
+          sectionIndex,
         }
 
         const result = reviewFindingsRepo.write(row)
@@ -123,7 +110,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           if (args.beforeId !== undefined && (!Number.isInteger(args.beforeId) || args.beforeId < 1)) {
             return 'Invalid beforeId: must be a positive integer.'
           }
-          const trimmedLoop = typeof args.loopName === 'string' ? args.loopName.trim() : ''
+          const trimmedLoop = (args.loopName ?? '').trim()
           const explicitLoop = trimmedLoop !== ''
           const loopName = explicitLoop ? trimmedLoop : await resolveLoopName(toolCtx)
           if (!loopName) return JSON.stringify({ attempts: [], nextBeforeId: null })
@@ -142,7 +129,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           })
         }
 
-        const trimmedLoop = typeof args.loopName === 'string' ? args.loopName.trim() : ''
+        const trimmedLoop = (args.loopName ?? '').trim()
         const explicitLoop = trimmedLoop !== ''
         const loopName: string | null = explicitLoop
           ? trimmedLoop
@@ -153,7 +140,6 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           const loopState = loop.service.getActiveState(loopName)
           if (loopState && isSectionScopedPhase(loopState)) {
             if (args.crossSection) {
-              // crossSection: return only cross-section findings (sectionIndex === null)
               findings = findings.filter((f) => f.sectionIndex === null)
             } else {
               const sectionScope = loop.service.getSectionScope(loopState)
@@ -172,8 +158,8 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           let regex: RegExp
           try {
             regex = new RegExp(args.pattern)
-          } catch (e) {
-            return `Invalid regex pattern: ${(e as Error).message}`
+          } catch (cause) {
+            return `Invalid regex pattern: ${errorMessage(cause)}`
           }
 
           const matchedFindings = []

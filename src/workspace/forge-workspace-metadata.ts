@@ -1,6 +1,7 @@
 import { join } from 'path'
 import { readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs'
-import { isRecord } from '../utils/is-record'
+import { z } from 'zod'
+import type { WorkspaceExtra } from '../client/port'
 import { listForgeWorktreeDirs } from './forge-naming'
 
 const FORGE_WORKSPACE_METADATA_DIR = '.forge'
@@ -12,7 +13,7 @@ export interface ForgeWorkspaceMetadata {
   type: string
   branch: string | null
   directory: string
-  extra: Record<string, unknown> | null
+  extra: WorkspaceExtra | null
   projectId: string
   createdAt: number
 }
@@ -26,30 +27,42 @@ export function writeForgeWorkspaceMetadata(dir: string, record: ForgeWorkspaceM
   writeFileSync(metadataPath(dir), `${JSON.stringify(record, null, 2)}\n`, 'utf-8')
 }
 
+const forgeWorkspaceMetadataSchema = z.looseObject({
+  id: z.string().min(1),
+  name: z.string(),
+  type: z.string().min(1),
+  branch: z.string().nullish(),
+  directory: z.string().min(1),
+  extra: z.record(z.string(), z.unknown()).nullish().catch(null),
+  projectId: z.string().min(1),
+  createdAt: z.number().refine((value) => Number.isFinite(value)),
+})
+
 export function readForgeWorkspaceMetadata(dir: string): ForgeWorkspaceMetadata | undefined {
-  let parsed: unknown
+  let text: string
   try {
-    parsed = JSON.parse(readFileSync(metadataPath(dir), 'utf-8'))
+    text = readFileSync(metadataPath(dir), 'utf-8')
   } catch {
     return undefined
   }
-  if (!isRecord(parsed)) return undefined
-  const { id, name, type, branch, directory, extra, projectId, createdAt } = parsed
-  if (typeof id !== 'string' || !id) return undefined
-  if (typeof name !== 'string') return undefined
-  if (typeof type !== 'string' || !type) return undefined
-  if (typeof directory !== 'string' || !directory) return undefined
-  if (typeof projectId !== 'string' || !projectId) return undefined
-  if (typeof createdAt !== 'number' || !Number.isFinite(createdAt)) return undefined
+  let contents: unknown
+  try {
+    contents = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  const parsed = forgeWorkspaceMetadataSchema.safeParse(contents)
+  if (!parsed.success) return undefined
+  const record = parsed.data
   return {
-    id,
-    name,
-    type,
-    branch: typeof branch === 'string' ? branch : null,
-    directory,
-    extra: isRecord(extra) ? extra : null,
-    projectId,
-    createdAt,
+    id: record.id,
+    name: record.name,
+    type: record.type,
+    branch: record.branch ?? null,
+    directory: record.directory,
+    extra: record.extra ?? null,
+    projectId: record.projectId,
+    createdAt: record.createdAt,
   }
 }
 

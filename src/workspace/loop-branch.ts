@@ -19,12 +19,6 @@ function splitPorcelainBlocks(stdout: string): string[][] {
   return blocks
 }
 
-/**
- * Finds the worktree that has `branch` checked out by walking `git worktree list --porcelain`
- * blocks, each a `worktree <path>` line followed by its own `branch <ref>` line. A block carrying
- * a `prunable` line describes a worktree whose directory is gone (deleted without `git worktree
- * prune`), so it never counts as a live holder of the branch, wherever the line appears in it.
- */
 function findWorktreeForBranch(git: GitService, repoDir: string, branch: string): string | null {
   const listed = git.worktreeList(repoDir)
   if (!listed.ok) return null
@@ -38,18 +32,10 @@ function findWorktreeForBranch(git: GitService, repoDir: string, branch: string)
   return null
 }
 
-/**
- * The single wording for a branch that is already checked out in a worktree, shared by request
- * validation and the workspace adapter's create failure path.
- */
 export function describeBranchInUse(branch: string, worktreePath: string): string {
   return `Branch ${branch} is checked out in worktree ${worktreePath}; choose another branch or free it`
 }
 
-/**
- * A branch is reusable when it is absent, equal to `baseRef`, or an ancestor of it. Anything else
- * carries commits the loop's base ref does not contain.
- */
 export function describeBranchReuseConflict(
   git: GitService,
   repoDir: string,

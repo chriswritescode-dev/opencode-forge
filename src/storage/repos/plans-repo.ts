@@ -1,4 +1,29 @@
 import type { Database, Statement } from 'bun:sqlite'
+import { z } from 'zod'
+import { statementChanges } from '../sqlite-open'
+
+const planRowSchema = z.object({
+  project_id: z.string(),
+  loop_name: z.string().nullable(),
+  session_id: z.string().nullable(),
+  content: z.string(),
+  updated_at: z.number(),
+})
+const planRowsSchema = z.array(planRowSchema)
+
+const unexecutedPlanRowSchema = z.object({
+  project_id: z.string(),
+  session_id: z.string(),
+  content: z.string(),
+  updated_at: z.number(),
+})
+const unexecutedPlanRowsSchema = z.array(unexecutedPlanRowSchema)
+
+const loopNameRowSchema = z.object({ loop_name: z.string() })
+const loopNameRowsSchema = z.array(loopNameRowSchema)
+
+const projectCountRowSchema = z.object({ project_id: z.string(), cnt: z.number() })
+const projectCountRowsSchema = z.array(projectCountRowSchema)
 
 export interface PlanRow {
   projectId: string
@@ -26,27 +51,17 @@ export interface PlansRepo {
   getForLoop(projectId: string, loopName: string): PlanRow | null
   getForLoopOrSession(projectId: string, loopName: string, sessionId: string): PlanRow | null
   promote(projectId: string, sessionId: string, loopName: string): boolean
-  /** Delete a session-scoped plan; returns whether a row was deleted. */
   deleteForSession(projectId: string, sessionId: string): boolean
   deleteForLoop(projectId: string, loopName: string): void
   listRecent(projectId: string, opts?: ListRecentPlansOptions): PlanRow[]
   searchRecent(projectId: string, pattern: RegExp, opts?: ListRecentPlansOptions): PlanRow[]
-  /**
-   * Session-scoped plans no loop has executed, newest first. A plan counts as
-   * executed when a loop was launched from its session at or after the plan's last
-   * write, because the launch copies the stored plan into the loop row.
-   */
   listUnexecuted(projectId: string): UnexecutedPlanRow[]
-  /** Count of unexecuted session-scoped plans per project, for discovery and always-populated counts. */
   unexecutedCountsByProject(): Map<string, number>
-  /** Loop names in this project that have a persisted plan row. Session-scoped plans (loop_name IS NULL) are excluded. */
   listLoopNames(projectId: string): string[]
 }
 
 export function createPlansRepo(db: Database): PlansRepo {
-  type RawRow = { project_id: string; loop_name: string | null; session_id: string | null; content: string; updated_at: number }
-
-  function mapRow(row: RawRow): PlanRow {
+  function mapRow(row: z.infer<typeof planRowSchema>): PlanRow {
     return {
       projectId: row.project_id,
       loopName: row.loop_name,
@@ -108,11 +123,6 @@ export function createPlansRepo(db: Database): PlansRepo {
     WHERE project_id = ? AND loop_name IS NOT NULL
   `)
 
-  // "This plan has not been executed": a session-scoped plan row whose session
-  // has no loop launched at or after the plan's last write. Shared by the row and
-  // count queries so the two cannot drift. Prepared on first use because the
-  // queries join `loops`, which a plans-only database (e.g. a focused test) does
-  // not necessarily have.
   const UNEXECUTED_PLAN_PREDICATE = `p.loop_name IS NULL
     AND NOT EXISTS (
       SELECT 1 FROM loops l
@@ -149,13 +159,13 @@ export function createPlansRepo(db: Database): PlansRepo {
   }
 
   function getForSession(projectId: string, sessionId: string): PlanRow | null {
-    const row = stmtGetForSession.get(projectId, sessionId) as RawRow | undefined
+    const row = planRowSchema.nullish().parse(stmtGetForSession.get(projectId, sessionId))
     if (!row) return null
     return mapRow(row)
   }
 
   function getForLoop(projectId: string, loopName: string): PlanRow | null {
-    const row = stmtGetForLoop.get(projectId, loopName) as RawRow | undefined
+    const row = planRowSchema.nullish().parse(stmtGetForLoop.get(projectId, loopName))
     if (!row) return null
     return mapRow(row)
   }
@@ -165,13 +175,11 @@ export function createPlansRepo(db: Database): PlansRepo {
   }
 
   function promote(projectId: string, sessionId: string, loopName: string): boolean {
-    const result = stmtPromote.run(loopName, projectId, sessionId) as unknown as { changes: number }
-    return result.changes > 0
+    return statementChanges(stmtPromote.run(loopName, projectId, sessionId)) > 0
   }
 
   function deleteForSession(projectId: string, sessionId: string): boolean {
-    const result = stmtDeleteForSession.run(projectId, sessionId) as unknown as { changes: number }
-    return result.changes > 0
+    return statementChanges(stmtDeleteForSession.run(projectId, sessionId)) > 0
   }
 
   function deleteForLoop(projectId: string, loopName: string): void {
@@ -185,13 +193,13 @@ export function createPlansRepo(db: Database): PlansRepo {
 
   function listRecent(projectId: string, opts?: ListRecentPlansOptions): PlanRow[] {
     const limit = clampLimit(opts?.limit, 20)
-    return (stmtListRecent.all(projectId, limit) as RawRow[]).map(mapRow)
+    return planRowsSchema.parse(stmtListRecent.all(projectId, limit)).map(mapRow)
   }
 
   function searchRecent(projectId: string, pattern: RegExp, opts?: ListRecentPlansOptions): PlanRow[] {
     const limit = clampLimit(opts?.limit, 20)
     const scanWindow = Math.max(limit * 5, 100)
-    const rows = (stmtListRecent.all(projectId, scanWindow) as RawRow[]).map(mapRow)
+    const rows = planRowsSchema.parse(stmtListRecent.all(projectId, scanWindow)).map(mapRow)
     const results: PlanRow[] = []
     for (const row of rows) {
       pattern.lastIndex = 0
@@ -204,8 +212,7 @@ export function createPlansRepo(db: Database): PlansRepo {
   }
 
   function listUnexecuted(projectId: string): UnexecutedPlanRow[] {
-    type RawUnexecutedRow = { project_id: string; session_id: string; content: string; updated_at: number }
-    const rows = getUnexecutedStatements().rows.all(projectId) as RawUnexecutedRow[]
+    const rows = unexecutedPlanRowsSchema.parse(getUnexecutedStatements().rows.all(projectId))
     return rows.map(row => ({
       projectId: row.project_id,
       sessionId: row.session_id,
@@ -215,12 +222,12 @@ export function createPlansRepo(db: Database): PlansRepo {
   }
 
   function unexecutedCountsByProject(): Map<string, number> {
-    const rows = getUnexecutedStatements().counts.all() as { project_id: string; cnt: number }[]
+    const rows = projectCountRowsSchema.parse(getUnexecutedStatements().counts.all())
     return new Map(rows.map(row => [row.project_id, row.cnt]))
   }
 
   function listLoopNames(projectId: string): string[] {
-    return (stmtListLoopNames.all(projectId) as { loop_name: string }[]).map(r => r.loop_name)
+    return loopNameRowsSchema.parse(stmtListLoopNames.all(projectId)).map(r => r.loop_name)
   }
 
   return {

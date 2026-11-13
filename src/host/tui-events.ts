@@ -1,20 +1,13 @@
 import type { ForgeTuiEvent } from './forge-rpc'
 import { processShared } from '../utils/process-shared'
 
-/** Publishes one host-neutral TUI event; the registry guarantees it never throws into the caller. */
 export type ForgeTuiEventEmitter = (event: ForgeTuiEvent) => void
 
-/**
- * Live emitters per project for the whole process. The host sandbox controller is
- * process-shared and can outlive the instance that created it, so a change callback
- * cannot capture its creator's emitter; it resolves a live one here instead.
- */
 const sharedTuiEventEmitters = processShared(
   'tui-event-emitters.v1',
   () => new Map<string, Set<ForgeTuiEventEmitter>>(),
 )
 
-/** Registers `emit` as a live TUI emitter for `projectId`; returns the deregistration. */
 export function registerTuiEventEmitter(projectId: string, emit: ForgeTuiEventEmitter): () => void {
   let emitters = sharedTuiEventEmitters.get(projectId)
   if (!emitters) {
@@ -28,10 +21,6 @@ export function registerTuiEventEmitter(projectId: string, emit: ForgeTuiEventEm
   }
 }
 
-/**
- * Publishes `event` through one live TUI emitter for `projectId`. The TUI filters by
- * projectId, so a single emitter suffices; with no live emitter the event is dropped.
- */
 export function emitTuiEvent(projectId: string, event: ForgeTuiEvent): void {
   const emit = sharedTuiEventEmitters.get(projectId)?.values().next().value
   if (!emit) return

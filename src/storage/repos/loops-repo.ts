@@ -1,12 +1,16 @@
 import type { Database } from 'bun:sqlite'
+import { z } from 'zod'
 import type { Logger, LoopSandboxSettings } from '../../types'
 import { readLoopSandboxSettings } from '../../sandbox/loop-settings'
+import { statementChanges } from '../sqlite-open'
 import { findPartialMatch } from '../../utils/partial-match'
 import {
-  handoffSchemaForRole,
+  auditorHandoffSchema,
+  coderHandoffSchema,
   LOOP_HANDOFF_PHASES,
   LOOP_HANDOFF_ROLES,
   LOOP_HANDOFF_STATUSES,
+  postActionCompleteSchema,
   type LoopHandoffPhase,
   type LoopHandoffRecord,
   type LoopHandoffRecordFor,
@@ -14,6 +18,82 @@ import {
   type LoopHandoffStatus,
   type LoopHandoffWriteInput,
 } from '../../loop/handoff'
+
+const loopStatusSchema = z.enum(['running', 'completed', 'cancelled', 'errored', 'stalled'])
+const loopPhaseSchema = z.enum(['coding', 'auditing', 'post_action'])
+
+const loopRowSchema = z.object({
+  project_id: z.string(),
+  loop_name: z.string(),
+  status: loopStatusSchema,
+  current_session_id: z.string(),
+  worktree: z.number(),
+  worktree_dir: z.string(),
+  worktree_branch: z.string().nullable(),
+  project_dir: z.string(),
+  max_iterations: z.number(),
+  iteration: z.number(),
+  audit_count: z.number(),
+  error_count: z.number(),
+  phase: loopPhaseSchema,
+  execution_model: z.string().nullable(),
+  auditor_model: z.string().nullable(),
+  model_failed: z.number(),
+  sandbox: z.number(),
+  sandbox_container: z.string().nullable(),
+  started_at: z.number(),
+  completed_at: z.number().nullable(),
+  termination_reason: z.string().nullable(),
+  completion_summary: z.string().nullable(),
+  workspace_id: z.string().nullable(),
+  host_session_id: z.string().nullable(),
+  current_section_index: z.number(),
+  total_sections: z.number(),
+  execution_variant: z.string().nullable(),
+  auditor_variant: z.string().nullable(),
+  auditor_fallback_index: z.number(),
+  sandbox_settings: z.string().nullable(),
+  base_commit: z.string().nullable(),
+  standby_session_id: z.string().nullable(),
+})
+const loopRowsSchema = z.array(loopRowSchema)
+
+const loopLargeFieldsRowSchema = z.object({
+  last_audit_result: z.string().nullable(),
+  post_action_report: z.string().nullable(),
+})
+
+const sidebarRowSchema = z.object({
+  loop_name: z.string(),
+  status: loopStatusSchema,
+  iteration: z.number(),
+  max_iterations: z.number(),
+  started_at: z.number(),
+  phase: loopPhaseSchema,
+  current_section_index: z.number(),
+  total_sections: z.number(),
+  phase_changed_at: z.number().nullable(),
+})
+const sidebarRowsSchema = z.array(sidebarRowSchema)
+
+const loopHandoffRowSchema = z.object({
+  id: z.number(),
+  project_id: z.string(),
+  loop_name: z.string(),
+  session_id: z.string(),
+  role: z.string(),
+  phase: z.string(),
+  section_index: z.number().nullable(),
+  iteration: z.number(),
+  payload: z.string(),
+  status: z.string(),
+  created_at: z.number(),
+  resolved_at: z.number().nullable(),
+})
+const loopHandoffRowsSchema = z.array(loopHandoffRowSchema)
+
+const errorCountRowSchema = z.object({ error_count: z.number() })
+const auditorFallbackIndexRowSchema = z.object({ auditor_fallback_index: z.number() })
 
 export interface LoopRow {
   projectId: string
@@ -40,17 +120,13 @@ export interface LoopRow {
   completionSummary: string | null
   workspaceId: string | null
   hostSessionId: string | null
-  /** Index into the auditor model fallback chain; 0 is the preferred model. */
   auditorFallbackIndex?: number
   currentSectionIndex: number
   totalSections: number
   executionVariant: string | null
   auditorVariant: string | null
-  /** Per-loop sandbox overrides; null when the loop uses config defaults. */
   sandboxSettings?: LoopSandboxSettings | null
-  /** Exact commit sha the loop's worktree branched from; null for legacy rows. */
   baseCommit: string | null
-  /** The other role's session for the current section, kept for reuse on the next same-section phase switch: the coder session while auditing, the audit session while coding. */
   standbySessionId: string | null
 }
 
@@ -66,7 +142,6 @@ export interface LoopSidebarRow {
   maxIterations: number
   startedAt: number
   phase: LoopRow['phase']
-  /** When the current phase began: the latest phase change of this run, else `startedAt`. */
   phaseStartedAt: number
   currentSectionIndex: number
   totalSections: number
@@ -74,7 +149,6 @@ export interface LoopSidebarRow {
 
 export interface LoopsRepo {
   insert(row: LoopRow, large: LoopLargeFields): boolean
-  /** In-place row restore (UPDATE; falls back to INSERT when row is missing). Preserves child rows (loop_transitions, section_plans) that would be cascade-deleted by `deleteState` + `insert`. */
   restore(row: LoopRow, large: LoopLargeFields): void
   get(projectId: string, loopName: string): LoopRow | null
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
@@ -86,12 +160,9 @@ export interface LoopsRepo {
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
   resetError(projectId: string, loopName: string): void
-  /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the row is absent/non-running/index mismatch. */
   advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, toIndex: number): number | null
-  /** Reset the auditor fallback index to 0; returns true when a running row was actually changed, false when it was already 0 / non-running / absent. */
   resetAuditorFallbackIndex(projectId: string, loopName: string): boolean
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
-  /** Record (or clear, with null) the other role's session kept for same-section reuse. */
   setStandbySessionId(projectId: string, loopName: string, sessionId: string | null): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
   clearWorkspaceId(projectId: string, loopName: string): void
@@ -128,7 +199,6 @@ export interface LoopsRepo {
       currentSectionIndex: number
       totalSections: number
       startedAt: number
-      /** Primary auditor model used for the restarted prompt; persisted so later chain resolution agrees. */
       auditorModel: string | null
       auditorVariant?: string | null
       executionModel?: string | null
@@ -149,10 +219,8 @@ export interface LoopsRepo {
   findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] }
   setCurrentSectionIndex(projectId: string, loopName: string, index: number): void
   setTotalSections(projectId: string, loopName: string, total: number): void
-  /** Record the parsed handoff write as the loop's single pending handoff. */
   upsertPendingHandoff(input: LoopHandoffWriteInput & { projectId: string }): { record: LoopHandoffRecord; replaced: boolean }
   getPendingHandoff(projectId: string, loopName: string): LoopHandoffRecord | null
-  /** Mark the session's pending handoff of `role` applied; a pending row for any other role stays pending. */
   applyPendingHandoff<R extends LoopHandoffRole>(
     projectId: string,
     loopName: string,
@@ -163,11 +231,11 @@ export interface LoopsRepo {
   listHandoffs(projectId: string, loopName: string, limit?: number): LoopHandoffRecord[]
 }
 
-function mapRow(row: LoopRowRaw): LoopRow {
+function mapRow(row: z.infer<typeof loopRowSchema>): LoopRow {
   return {
     projectId: row.project_id,
     loopName: row.loop_name,
-    status: row.status as LoopRow['status'],
+    status: row.status,
     currentSessionId: row.current_session_id,
     worktree: row.worktree === 1,
     worktreeDir: row.worktree_dir,
@@ -177,7 +245,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     iteration: row.iteration,
     auditCount: row.audit_count,
     errorCount: row.error_count,
-    phase: row.phase as LoopRow['phase'],
+    phase: row.phase,
     executionModel: row.execution_model,
     auditorModel: row.auditor_model,
     modelFailed: row.model_failed === 1,
@@ -200,7 +268,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
   }
 }
 
-/** Parses a persisted `sandbox_settings` JSON column; malformed or empty values hydrate as null. */
 function parseSandboxSettings(value: string | null): LoopSandboxSettings | null {
   if (!value) return null
   try {
@@ -210,44 +277,8 @@ function parseSandboxSettings(value: string | null): LoopSandboxSettings | null 
   }
 }
 
-/** Serializes sandbox overrides for a `sandbox_settings` JSON column; unset settings store as null. */
 function serializeSandboxSettings(settings: LoopSandboxSettings | null | undefined): string | null {
   return settings ? JSON.stringify(settings) : null
-}
-
-interface LoopRowRaw {
-  project_id: string
-  loop_name: string
-  status: string
-  current_session_id: string
-  worktree: number
-  worktree_dir: string
-  worktree_branch: string | null
-  project_dir: string
-  max_iterations: number
-  iteration: number
-  audit_count: number
-  error_count: number
-  phase: string
-  execution_model: string | null
-  auditor_model: string | null
-  model_failed: number
-  sandbox: number
-  sandbox_container: string | null
-  started_at: number
-  completed_at: number | null
-  termination_reason: string | null
-  completion_summary: string | null
-  workspace_id: string | null
-  host_session_id: string | null
-  current_section_index: number
-  total_sections: number
-  execution_variant: string | null
-  auditor_variant: string | null
-  auditor_fallback_index: number
-  sandbox_settings: string | null
-  base_commit: string | null
-  standby_session_id: string | null
 }
 
 const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
@@ -264,21 +295,6 @@ const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', 
 const HANDOFF_COLUMNS = `id, project_id, loop_name, session_id, role, phase, section_index,
   iteration, payload, status, created_at, resolved_at`
 
-interface LoopHandoffRowRaw {
-  id: number
-  project_id: string
-  loop_name: string
-  session_id: string
-  role: string
-  phase: string
-  section_index: number | null
-  iteration: number
-  payload: string
-  status: string
-  created_at: number
-  resolved_at: number | null
-}
-
 function parseHandoffRole(value: string): LoopHandoffRole | null {
   return LOOP_HANDOFF_ROLES.find((role) => role === value) ?? null
 }
@@ -291,7 +307,7 @@ function parseHandoffStatus(value: string): LoopHandoffStatus | null {
   return LOOP_HANDOFF_STATUSES.find((status) => status === value) ?? null
 }
 
-function mapHandoffRow(raw: LoopHandoffRowRaw, logger?: Logger): LoopHandoffRecord | null {
+function mapHandoffRow(raw: z.infer<typeof loopHandoffRowSchema>, logger?: Logger): LoopHandoffRecord | null {
   const role = parseHandoffRole(raw.role)
   if (!role) {
     logger?.error(`LoopsRepo: invalid handoff role "${raw.role}" for handoff ${String(raw.id)}`)
@@ -326,20 +342,50 @@ function mapHandoffRow(raw: LoopHandoffRowRaw, logger?: Logger): LoopHandoffReco
     createdAt: raw.created_at,
     resolvedAt: raw.resolved_at,
   }
-  const parsed = handoffSchemaForRole(role).safeParse(parsedPayload)
-  if (!parsed.success) {
-    const roleLabel = role === 'post_action' ? 'post-action' : role
-    logger?.error(`LoopsRepo: invalid ${roleLabel} handoff payload for handoff ${String(raw.id)}`, parsed.error)
-    return null
+  const roleLabel = role === 'post_action' ? 'post-action' : role
+  switch (role) {
+    case 'coder': {
+      const parsed = coderHandoffSchema.safeParse(parsedPayload)
+      if (!parsed.success) {
+        logger?.error(`LoopsRepo: invalid ${roleLabel} handoff payload for handoff ${String(raw.id)}`, parsed.error)
+        return null
+      }
+      return { ...base, role, payload: parsed.data }
+    }
+    case 'auditor': {
+      const parsed = auditorHandoffSchema.safeParse(parsedPayload)
+      if (!parsed.success) {
+        logger?.error(`LoopsRepo: invalid ${roleLabel} handoff payload for handoff ${String(raw.id)}`, parsed.error)
+        return null
+      }
+      return { ...base, role, payload: parsed.data }
+    }
+    case 'post_action': {
+      const parsed = postActionCompleteSchema.safeParse(parsedPayload)
+      if (!parsed.success) {
+        logger?.error(`LoopsRepo: invalid ${roleLabel} handoff payload for handoff ${String(raw.id)}`, parsed.error)
+        return null
+      }
+      return { ...base, role, payload: parsed.data }
+    }
   }
-  return { ...base, role, payload: parsed.data } as LoopHandoffRecord
+}
+
+type HandoffRecordNarrowers = {
+  [R in LoopHandoffRole]: (record: LoopHandoffRecord) => LoopHandoffRecordFor<R> | null
+}
+
+const handoffRecordNarrowers: HandoffRecordNarrowers = {
+  coder: (record) => record.role === 'coder' ? record : null,
+  auditor: (record) => record.role === 'auditor' ? record : null,
+  post_action: (record) => record.role === 'post_action' ? record : null,
 }
 
 function handoffRecordForRole<R extends LoopHandoffRole>(
   record: LoopHandoffRecord,
   role: R,
 ): LoopHandoffRecordFor<R> | null {
-  return record.role === role ? record as LoopHandoffRecordFor<R> : null
+  return handoffRecordNarrowers[role](record)
 }
 
 export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
@@ -380,7 +426,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     WHERE project_id = ? AND status IN
   `
 
-  /** Prepared on first use: it reads loop_transitions, which databases opened without migrations may lack. */
   const listSidebarRowsSql = `
     SELECT l.loop_name, l.status, l.iteration, l.max_iterations, l.started_at, l.phase,
            l.current_section_index, l.total_sections,
@@ -535,10 +580,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
-  // In-place row restore: UPDATE all loop columns by primary key. Preserves
-  // child rows (loop_transitions, section_plans) by avoiding deleteState +
-  // insert, which would trigger FK ON DELETE CASCADE. Falls back to INSERT
-  // when no row matches (defensive against concurrent external deletes).
   const restoreStmt = db.prepare(`
     UPDATE loops SET
       status = ?, current_session_id = ?, worktree = ?, worktree_dir = ?, worktree_branch = ?,
@@ -602,11 +643,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     LIMIT ?
   `)
 
-  /**
-   * Positional bind values shared by the INSERT and restore-UPDATE statements
-   * (every loops column except the project_id/loop_name key). Adding a loops
-   * column requires updating only this list plus the two SQL statements.
-   */
   function loopRowValues(row: LoopRow): (string | number | null)[] {
     return [
       row.status,
@@ -645,12 +681,12 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   return {
     insert(row: LoopRow, large: LoopLargeFields): boolean {
       const runInsert = db.transaction(() => {
-        const result = insertStmt.run(
+        const changes = statementChanges(insertStmt.run(
           row.projectId,
           row.loopName,
           ...loopRowValues(row),
-        ) as unknown as { changes: number }
-        if (result.changes === 0) {
+        ))
+        if (changes === 0) {
           return false
         }
         upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null)
@@ -661,14 +697,12 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     restore(row: LoopRow, large: LoopLargeFields): void {
       const runRestore = db.transaction(() => {
-        const result = restoreStmt.run(
+        const changes = statementChanges(restoreStmt.run(
           ...loopRowValues(row),
           row.projectId,
           row.loopName,
-        ) as unknown as { changes: number }
-        if (result.changes === 0) {
-          // Row was concurrently deleted; fall back to INSERT so callers can
-          // restore a loop row even when an external delete raced the rollback.
+        ))
+        if (changes === 0) {
           insertStmt.run(
             row.projectId,
             row.loopName,
@@ -681,12 +715,12 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     get(projectId: string, loopName: string): LoopRow | null {
-      const row = getStmt.get(projectId, loopName) as LoopRowRaw | null
+      const row = loopRowSchema.nullish().parse(getStmt.get(projectId, loopName))
       return row ? mapRow(row) : null
     },
 
     getLarge(projectId: string, loopName: string): LoopLargeFields | null {
-      const row = getLargeStmt.get(projectId, loopName) as { last_audit_result: string | null; post_action_report: string | null } | null
+      const row = loopLargeFieldsRowSchema.nullish().parse(getLargeStmt.get(projectId, loopName))
       if (!row) return null
       return {
         lastAuditResult: row.last_audit_result,
@@ -695,7 +729,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     getBySessionId(projectId: string, sessionId: string): LoopRow | null {
-      const row = getBySessionIdStmt.get(projectId, sessionId) as LoopRowRaw | null
+      const row = loopRowSchema.nullish().parse(getBySessionIdStmt.get(projectId, sessionId))
       return row ? mapRow(row) : null
     },
 
@@ -704,7 +738,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       const placeholders = statuses.map(() => '?').join(',')
       const sql = `${listByStatusBase} (${placeholders}) ORDER BY started_at DESC`
       const stmt = db.prepare(sql)
-      const rows = stmt.all(projectId, ...statuses) as LoopRowRaw[]
+      const rows = loopRowsSchema.parse(stmt.all(projectId, ...statuses))
       return rows.map(mapRow)
     },
 
@@ -715,24 +749,14 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     listSidebarRows(projectId: string, limit: number): LoopSidebarRow[] {
       listSidebarRowsStmt ??= db.prepare(listSidebarRowsSql)
-      const rows = listSidebarRowsStmt.all(projectId, limit) as Array<{
-        loop_name: string
-        status: string
-        iteration: number
-        max_iterations: number
-        started_at: number
-        phase: string
-        current_section_index: number
-        total_sections: number
-        phase_changed_at: number | null
-      }>
+      const rows = sidebarRowsSchema.parse(listSidebarRowsStmt.all(projectId, limit))
       return rows.map((row) => ({
         loopName: row.loop_name,
-        status: row.status as LoopRow['status'],
+        status: row.status,
         iteration: row.iteration,
         maxIterations: row.max_iterations,
         startedAt: row.started_at,
-        phase: row.phase as LoopRow['phase'],
+        phase: row.phase,
         phaseStartedAt: row.phase_changed_at ?? row.started_at,
         currentSectionIndex: row.current_section_index,
         totalSections: row.total_sections,
@@ -748,7 +772,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     incrementError(projectId: string, loopName: string): number {
-      const result = incrementErrorStmt.get(projectId, loopName) as { error_count: number } | null
+      const result = errorCountRowSchema.nullish().parse(incrementErrorStmt.get(projectId, loopName))
       return result?.error_count ?? 0
     },
 
@@ -757,13 +781,13 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, toIndex: number): number | null {
-      const result = advanceAuditorFallbackIndexStmt.get(toIndex, projectId, loopName, fromIndex) as { auditor_fallback_index: number } | null
+      const result = auditorFallbackIndexRowSchema.nullish().parse(advanceAuditorFallbackIndexStmt.get(toIndex, projectId, loopName, fromIndex))
       return result?.auditor_fallback_index ?? null
     },
 
     resetAuditorFallbackIndex(projectId: string, loopName: string): boolean {
-      const result = resetAuditorFallbackIndexStmt.run(projectId, loopName) as unknown as { changes: number }
-      return result.changes > 0
+      const changes = statementChanges(resetAuditorFallbackIndexStmt.run(projectId, loopName))
+      return changes > 0
     },
 
     setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void {
@@ -834,8 +858,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     restart(projectId, loopName, opts) {
       const runTxn = db.transaction(() => {
-        // Clear the stale post-action report alongside completion_summary: a restarted
-        // loop will produce a fresh post-action run (or none at all).
         clearPostActionReportStmt.run(projectId, loopName)
         const setsAuditorVariant = opts.auditorVariant !== undefined ? 1 : 0
         const setsExecutionModel = opts.executionModel !== undefined ? 1 : 0
@@ -904,7 +926,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       const payload = JSON.stringify(input.payload)
       const runUpsert = db.transaction(() => {
         const now = Date.now()
-        const updated = updatePendingHandoffStmt.run(
+        const updated = statementChanges(updatePendingHandoffStmt.run(
           input.sessionId,
           input.role,
           input.phase,
@@ -914,8 +936,8 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           now,
           input.projectId,
           input.loopName,
-        ) as unknown as { changes: number }
-        const replaced = updated.changes > 0
+        ))
+        const replaced = updated > 0
         if (!replaced) {
           insertPendingHandoffStmt.run(
             input.projectId,
@@ -929,7 +951,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
             now,
           )
         }
-        const row = getPendingHandoffStmt.get(input.projectId, input.loopName) as LoopHandoffRowRaw | undefined
+        const row = loopHandoffRowSchema.nullish().parse(getPendingHandoffStmt.get(input.projectId, input.loopName))
         const record = row ? mapHandoffRow(row, logger) : null
         if (!record) {
           throw new Error(`LoopsRepo: failed to read back pending handoff for ${input.loopName}`)
@@ -940,7 +962,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     getPendingHandoff(projectId: string, loopName: string): LoopHandoffRecord | null {
-      const row = getPendingHandoffStmt.get(projectId, loopName) as LoopHandoffRowRaw | undefined
+      const row = loopHandoffRowSchema.nullish().parse(getPendingHandoffStmt.get(projectId, loopName))
       return row ? mapHandoffRow(row, logger) : null
     },
 
@@ -950,7 +972,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       sessionId: string,
       role: R,
     ): LoopHandoffRecordFor<R> | null {
-      const row = applyPendingHandoffStmt.get(Date.now(), projectId, loopName, sessionId, role) as LoopHandoffRowRaw | undefined
+      const row = loopHandoffRowSchema.nullish().parse(applyPendingHandoffStmt.get(Date.now(), projectId, loopName, sessionId, role))
       const record = row ? mapHandoffRow(row, logger) : null
       return record ? handoffRecordForRole(record, role) : null
     },
@@ -960,7 +982,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     listHandoffs(projectId: string, loopName: string, limit?: number): LoopHandoffRecord[] {
-      const rows = listHandoffsStmt.all(projectId, loopName, limit ?? -1) as LoopHandoffRowRaw[]
+      const rows = loopHandoffRowsSchema.parse(listHandoffsStmt.all(projectId, loopName, limit ?? -1))
       const records: LoopHandoffRecord[] = []
       for (const row of rows) {
         const record = mapHandoffRow(row, logger)

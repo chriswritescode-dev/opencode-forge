@@ -4,16 +4,8 @@ import type { Logger } from '../types'
 
 export const SHELL_SHIM_FILENAME = 'forge-shell'
 
-/**
- * Environment variable naming the sandbox container. Set by Forge's shell hook on the shell
- * spawns it routes into a sandbox, together with pointing the spawn at this shim.
- */
 export const SHIM_ENV_CONTAINER = 'FORGE_SANDBOX_CONTAINER'
 
-/**
- * Resolves the host shell baked into the shim's passthrough branch: `$SHELL` when it points at a
- * real shell (and not at a previously installed shim), otherwise a platform default.
- */
 export function resolveHostShell(env: NodeJS.ProcessEnv = process.env): string {
   const candidate = env.SHELL
   if (
@@ -49,11 +41,6 @@ exec "${hostShell}" "$@"
 `
 }
 
-/**
- * Writes the sandbox shell shim into the forge data directory (idempotent; rewrites only when
- * content drifts) and returns its absolute path. Returns null on failure so the caller can
- * degrade to worktree-only mode instead of leaving sandbox loops routed at the host shell.
- */
 export function ensureShellShim(dataDir: string, logger: Logger): string | null {
   const path = join(dataDir, SHELL_SHIM_FILENAME)
   const content = buildShimScript(resolveHostShell())

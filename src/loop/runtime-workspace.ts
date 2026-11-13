@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { ForgeClient } from '../client/port'
 import type { LoopService } from './service'
 import type { LoopState } from './state'
@@ -5,8 +6,9 @@ import type { Logger } from '../types'
 import { publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 
-export function isWorkspaceNotFoundError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err ?? '')
+export function isWorkspaceNotFoundError(cause: unknown): boolean {
+  const text = z.string().safeParse(cause)
+  const msg = cause instanceof Error ? cause.message : text.success ? text.data : JSON.stringify(cause ?? '')
   return /Workspace not found/i.test(msg)
 }
 
@@ -23,7 +25,7 @@ export interface WorkspaceLifecycle {
     state: LoopState,
     sessionId: string,
     contextLabel: string,
-    bindError?: unknown,
+    cause?: unknown,
   ): Promise<{ workspaceId?: string; recovered: boolean }>
   ensureWorkspaceForLoop(
     loopName: string,
@@ -56,13 +58,13 @@ export function createWorkspaceLifecycle(deps: WorkspaceLifecycleDeps): Workspac
     state: LoopState,
     sessionId: string,
     contextLabel: string,
-    bindError?: unknown,
+    cause?: unknown,
   ): Promise<{ workspaceId?: string; recovered: boolean }> {
     if (!state.workspaceId) {
       return { recovered: false }
     }
 
-    if (bindError && !isWorkspaceNotFoundError(bindError)) {
+    if (cause && !isWorkspaceNotFoundError(cause)) {
       logger.log(`Loop: skipping workspace re-provision for ${loopName} because bind error is not "workspace not found"`)
       return { recovered: false }
     }

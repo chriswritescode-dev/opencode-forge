@@ -1,13 +1,11 @@
 import { Database } from 'bun:sqlite'
 import { mkdirSync, existsSync } from 'fs'
+import { z } from 'zod'
 import { openSqliteWithIntegrityGuard } from './sqlite-open'
 import { migrations } from './migrations'
 import { sweepExpiredLoops } from './sweep'
 import { resolveForgeDbPath } from '../utils/opencode-paths'
 
-// Path resolvers live in a sqlite-free module so lightweight consumers (e.g. permission
-// rulesets) can import them without pulling in the storage layer. Re-exported here to keep
-// the historical `storage/database` import surface stable.
 export {
   resolveOpencodeDataDir,
   resolveDataDir,
@@ -23,12 +21,18 @@ export const FORGE_PRAGMAS = [
   'PRAGMA synchronous=NORMAL',
 ]
 
+const tableCountRowSchema = z.object({ cnt: z.number() })
+
 export function hasTable(db: Database, table: string): boolean {
-  const row = db
-    .prepare(
-      "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?",
+  const row = tableCountRowSchema
+    .nullable()
+    .parse(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .get(table),
     )
-    .get(table) as { cnt: number }
   return (row?.cnt ?? 0) > 0
 }
 

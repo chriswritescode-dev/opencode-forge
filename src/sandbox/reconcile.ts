@@ -1,15 +1,3 @@
-/**
- * Sandbox reconciliation module for periodic container lifecycle management.
- * 
- * This module provides a reconciliation function that ensures sandbox containers
- * are started/restored for loops that have sandbox enabled.
- * It is designed to be called periodically from the plugin server.
- * 
- * IMPORTANT: This function only reconciles loops that are registered in the
- * loop registry (i.e., loops started/restarted in the current plugin process).
- * Pre-existing persisted loops from before plugin initialization are NOT reconciled.
- */
-
 import type { SandboxManager } from './manager'
 import type { Loop } from '../loop'
 import type { Logger } from '../types'
@@ -22,31 +10,12 @@ export interface ReconcileSandboxesDeps {
   projectId: string
 }
 
-// Per-deps re-entrancy guard. Using a WeakMap keyed on the deps object ensures
-// independent plugin instances (or independent test contexts) do not block each other.
 const inFlightByDeps = new WeakMap<ReconcileSandboxesDeps, boolean>()
 
-/**
- * Reconciles sandbox containers with loop states.
- * 
- * This function iterates through all active loops and ensures that:
- * 1. Loops with sandbox enabled have an active container
- * 2. Container names are persisted in loop state
- * 3. Stale container references are restored
- * 
- * IMPORTANT: Only loops registered in the current plugin process are reconciled.
- * Pre-existing persisted loops are NOT reconciled to avoid boot-time recovery.
- * 
- * The function includes a re-entrancy guard to prevent concurrent executions.
- * 
- * @param deps - Dependencies including sandbox manager, loop service, and logger
- * @returns Promise that resolves when reconciliation is complete
- */
 export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<void> {
   const { sandboxManager, loop, logger, projectId } = deps
 
   if (inFlightByDeps.get(deps)) {
-    // Another reconciliation is already in progress for this deps, return early
     return
   }
 
@@ -57,12 +26,9 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
     const registeredLoops = loopRegistry.getAll(projectId)
 
     for (const state of activeLoops) {
-      // Only reconcile loops that were started/restarted in the current process.
-      // This prevents boot-time recovery of pre-existing persisted loops.
       if (!registeredLoops.includes(state.loopName)) {
         continue
       }
-      // Only process loops with sandbox enabled, worktree mode, and a worktree directory.
       if (state.sandbox !== true || !state.worktreeDir || !state.loopName) {
         continue
       }
@@ -70,15 +36,11 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
       try {
         const loopName = state.loopName
 
-        // Case 1: Container is already active - verify it's actually running in Docker
-        // This prevents trusting stale in-memory state when Docker reports the container is gone
         if (sandboxManager.isActive(loopName)) {
           const isActuallyRunning = await sandboxManager.isLive(loopName)
           if (!isActuallyRunning) {
-            // Map was stale - Docker says container is not running, fall through to restore/start
             logger.log(`Sandbox reconcile: map entry for ${loopName} was stale (container not in Docker)`)
           } else {
-            // Container is verified running - ensure persisted name matches
             const active = sandboxManager.getActive(loopName)
             if (active && state.sandboxContainer !== active.containerName) {
               loop.service.setSandboxContainer(loopName, active.containerName)
@@ -89,19 +51,16 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
           }
         }
 
-        // Case 2: Container name exists but container is not active - restore
         if (state.sandboxContainer && state.sandboxContainer.length > 0) {
           await sandboxManager.restore(loopName, state.worktreeDir, state.startedAt)
           logger.log(`Sandbox reconcile: restored container for ${loopName}`)
           continue
         }
 
-        // Case 3: No container name - start fresh
         const result = await sandboxManager.start(loopName, state.worktreeDir, state.startedAt)
         loop.service.setSandboxContainer(loopName, result.containerName)
         logger.log(`Sandbox reconcile: started container for ${loopName}`)
       } catch (err) {
-        // Log error but continue processing other loops
         logger.error(`Sandbox reconcile: failed for ${state.loopName}`, err)
       }
     }

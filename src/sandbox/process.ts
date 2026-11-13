@@ -9,26 +9,17 @@ export interface CommandResult {
 
 export interface RunCommandOpts {
   cwd?: string
-  /** Full environment for the child. When provided it replaces the parent environment entirely. */
   env?: Record<string, string>
   timeout?: number
   abort?: AbortSignal
   stdin?: string
   logger: Logger
   logLabel?: string
-  /**
-   * Receives raw stdout/stderr chunks as they arrive, for callers that must show
-   * live progress for a long command. The buffered `CommandResult` is unaffected.
-   */
   onOutput?: (chunk: string) => void
 }
 
 const DEFAULT_TIMEOUT = 120000
 
-/**
- * Exit code reported when `runCommand` itself killed the child (timeout or hard deadline) rather
- * than the command exiting on its own. Callers must treat it as "no answer", never as a result.
- */
 export const COMMAND_TIMEOUT_EXIT_CODE = 124
 
 export function runCommand(command: string, args: string[], opts: RunCommandOpts): Promise<CommandResult> {

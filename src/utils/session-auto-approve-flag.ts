@@ -11,13 +11,6 @@ export interface ResolveSessionAutoApproveFlagInput {
   isInActiveLoop: (sessionID: string) => Promise<boolean>
 }
 
-/**
- * Resolves whether per-session auto-approve is on for `sessionID` or any ancestor, walking the
- * ancestry chain through the shared `findSessionAncestor` helper (which stops on a cycle). The flag
- * lookup runs first — the session itself, then its ancestors — and only a resolved flag owner is
- * checked against the active-loop rule. Any lookup failure answers disabled so callers fail closed;
- * the error is returned for the caller to log.
- */
 export async function resolveSessionAutoApproveFlag(
   input: ResolveSessionAutoApproveFlagInput,
 ): Promise<SessionAutoApproveFlagResult> {

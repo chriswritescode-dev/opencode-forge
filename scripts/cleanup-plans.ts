@@ -1,27 +1,11 @@
 #!/usr/bin/env bun
-/**
- * Delete old plans from forge.db:
- *   - session-scoped plans (`loop_name IS NULL`) last written before
- *     `--older-than` (default 30d), executed or not;
- *   - loop-scoped plans whose loop row no longer exists (orphans left by an
- *     older `cleanup-loop` run that deleted the loop but not its plan).
- *
- * Loop-scoped plans with a live loop row are deleted with their loop by the
- * terminal-loop sweep (`completedLoopTtlMs`), so this script never touches them.
- *
- * Usage:
- *   bun scripts/cleanup-plans.ts [--older-than=30d] [--project=<projectId>] [--dry-run]
- *
- * Examples:
- *   bun scripts/cleanup-plans.ts --dry-run
- *   bun scripts/cleanup-plans.ts --older-than=90d --project=abc123
- */
 
 import Database from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { readFlagValue } from '../src/utils/cli-flags'
 import { loadPluginConfig } from '../src/setup'
 import { resolveForgeDataDir, resolveForgeDbPath } from '../src/utils/opencode-paths'
+import { z } from 'zod'
 
 interface Args {
   olderThanMs: number
@@ -30,21 +14,13 @@ interface Args {
   dryRun: boolean
 }
 
-interface SessionPlanRow {
-  project_id: string
-  session_id: string
-  updated_at: number
-}
-
-interface OrphanPlanRow {
-  project_id: string
-  loop_name: string
-  updated_at: number
-}
-
 const DEFAULT_OLDER_THAN = '30d'
 
-const UNIT_MS: Record<string, number> = {
+interface DurationUnitMilliseconds {
+  [unit: string]: number
+}
+
+const UNIT_MS: DurationUnitMilliseconds = {
   s: 1000,
   m: 60_000,
   h: 3_600_000,
@@ -52,7 +28,18 @@ const UNIT_MS: Record<string, number> = {
   w: 604_800_000,
 }
 
-/** Parse a duration like `30d`, `12h`, `90m`, or `2w` into milliseconds. */
+const sessionPlanRowsSchema = z.array(z.looseObject({
+  project_id: z.string(),
+  session_id: z.string(),
+  updated_at: z.number(),
+}))
+
+const orphanPlanRowsSchema = z.array(z.looseObject({
+  project_id: z.string(),
+  loop_name: z.string(),
+  updated_at: z.number(),
+}))
+
 export function parseDurationMs(raw: string): number | null {
   const match = /^(\d+)([smhdw])$/.exec(raw.trim())
   if (!match) return null
@@ -68,12 +55,13 @@ function parseArgs(): Args {
     process.exit(1)
   }
   const projectId = readFlagValue(rest, 'project')
-  return {
+  const args: Args = {
     olderThanMs,
     olderThanLabel,
-    ...(projectId !== undefined && projectId !== '' ? { projectId } : {}),
     dryRun: rest.includes('--dry-run'),
   }
+  if (projectId !== undefined && projectId !== '') args.projectId = projectId
+  return args
 }
 
 function plural(count: number, noun: string): string {
@@ -104,14 +92,14 @@ function main(): void {
     const sessionParams: (string | number)[] = args.projectId ? [cutoff, args.projectId] : [cutoff]
     const orphanParams: string[] = args.projectId ? [args.projectId] : []
 
-    const sessionPlans = db.prepare(`
+    const sessionPlans = sessionPlanRowsSchema.parse(db.prepare(`
       SELECT project_id, session_id, updated_at
       FROM plans
       WHERE loop_name IS NULL AND updated_at < ?${projectClause}
       ORDER BY updated_at DESC
-    `).all(...sessionParams) as SessionPlanRow[]
+    `).all(...sessionParams))
 
-    const orphanPlans = db.prepare(`
+    const orphanPlans = orphanPlanRowsSchema.parse(db.prepare(`
       SELECT project_id, loop_name, updated_at
       FROM plans
       WHERE loop_name IS NOT NULL
@@ -120,7 +108,7 @@ function main(): void {
           WHERE l.project_id = plans.project_id AND l.loop_name = plans.loop_name
         )${projectClause}
       ORDER BY updated_at DESC
-    `).all(...orphanParams) as OrphanPlanRow[]
+    `).all(...orphanParams))
 
     console.log(`Cleanup plans: ${args.projectId ? `project ${args.projectId}` : 'all projects'}${args.dryRun ? ' [DRY RUN]' : ''}`)
     console.log(`Session plans older than ${args.olderThanLabel} (before ${new Date(cutoff).toISOString()}):\n`)

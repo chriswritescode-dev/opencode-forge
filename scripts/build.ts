@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync, chmodSync, 
 import { join } from 'path'
 import { execSync } from 'child_process'
 import solidPlugin from '@opentui/solid/bun-plugin'
+import { z } from 'zod'
 
 const packageJsonPath = join(__dirname, '..', 'package.json')
 const versionPath = join(__dirname, '..', 'src', 'version.ts')
@@ -10,8 +11,8 @@ const distDir = join(__dirname, '..', 'dist')
 rmSync(distDir, { recursive: true, force: true })
 console.log(`Cleaned ${distDir}`)
 
-const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
-const version = packageJson.version as string
+const packageJson = z.looseObject({ version: z.string() }).parse(JSON.parse(readFileSync(packageJsonPath, 'utf-8')))
+const version = packageJson.version
 
 const versionContent = `export const VERSION = '${version}'\n`
 writeFileSync(versionPath, versionContent, 'utf-8')
@@ -99,8 +100,6 @@ if (!installerResult.success) {
   }
   process.exit(1)
 }
-// Bundle into a single self-contained file so the `bin` runs under both node
-// (npx) and bun (bunx); prepend a node shebang and mark it executable.
 const installerCliPath = join(__dirname, '..', 'dist', 'install', 'cli.js')
 const bundledCli = readFileSync(installerCliPath, 'utf-8')
 if (!bundledCli.startsWith('#!')) {

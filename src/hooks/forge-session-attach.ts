@@ -1,11 +1,12 @@
+import { z } from 'zod'
 import type { Logger } from '../types'
-import type { ForgeClient } from '../client/port'
+import type { ForgeClient, ForgeEvent, WorkspaceExtra } from '../client/port'
 import type { ForgeExecutionServiceDeps, ForgeLoopExtra, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
 import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/context'
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
-import { getForgeWorkspaceLoopName } from '../workspace/forge-worktree'
+import { getForgeWorkspaceForgeLoop, getForgeWorkspaceLoopName, getForgeWorkspaceProjectDirectory, type ForgeWorkspaceEntry } from '../workspace/forge-worktree'
 import { publishToast } from '../utils/toast'
 
 export interface ForgeSessionAttachHookDeps {
@@ -17,22 +18,32 @@ export interface ForgeSessionAttachHookDeps {
   attachLoopToSession?: typeof attachLoopToSession
 }
 
-interface WorkspaceEntry {
-  id: string
-  type: string
-  directory?: string | undefined
-  extra?: Record<string, unknown> | undefined
-}
+const sessionCreatedInfoSchema = z.looseObject({
+  info: z.looseObject({
+    id: z.string().optional(),
+    workspaceID: z.string().optional(),
+    directory: z.string().optional(),
+    projectID: z.string().optional(),
+  }).optional(),
+})
+
+const sessionRecordSchema = z.looseObject({
+  workspaceID: z.string().optional(),
+  directory: z.string().optional(),
+  projectID: z.string().optional(),
+})
 
 export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
-  return async (eventInput: { event: { type: string; properties?: Record<string, unknown> } }) => {
+  return async (eventInput: { event: { type: string; properties?: ForgeEvent['properties'] } }) => {
     if (eventInput.event.type !== 'session.created') return
 
-    const sessionInfo = eventInput.event.properties?.info as Record<string, unknown> | undefined
-    const sessionId = sessionInfo?.id as string | undefined
-    const workspaceId = sessionInfo?.workspaceID as string | undefined
-    const sessionDirectory = sessionInfo?.directory as string | undefined
-    const sessionProjectId = (sessionInfo?.projectID as string | undefined) ?? deps.projectId
+    const parsed = sessionCreatedInfoSchema.safeParse(eventInput.event.properties)
+    if (!parsed.success) return
+    const sessionInfo = parsed.data.info
+    const sessionId = sessionInfo?.id
+    const workspaceId = sessionInfo?.workspaceID
+    const sessionDirectory = sessionInfo?.directory
+    const sessionProjectId = sessionInfo?.projectID ?? deps.projectId
     if (!sessionId || !workspaceId) return
 
     await attachForgeSession(deps, {
@@ -50,18 +61,19 @@ export function createForgeSessionMessageAttachHook(deps: ForgeSessionAttachHook
     const sessionId = input.sessionID
     if (!sessionId) return
 
-    const sessionInfo = await deps.client.session.get({ sessionID: sessionId }).then(
-      (data) => data as Record<string, unknown> | null,
-      () => null,
+    const fetched = await deps.client.session.get({ sessionID: sessionId }).then(
+      (data) => sessionRecordSchema.safeParse(data),
+      () => undefined,
     )
-    const workspaceId = sessionInfo?.workspaceID as string | undefined
+    if (!fetched?.success) return
+    const workspaceId = fetched.data.workspaceID
     if (!workspaceId) return
 
     await attachForgeSession(deps, {
       sessionId,
       workspaceId,
-      sessionDirectory: sessionInfo?.directory as string | undefined,
-      sessionProjectId: (sessionInfo?.projectID as string | undefined) ?? deps.projectId,
+      sessionDirectory: fetched.data.directory,
+      sessionProjectId: fetched.data.projectID ?? deps.projectId,
       sendInitialPrompt: false,
     })
   }
@@ -112,27 +124,20 @@ async function attachForgeSession(
       return
     }
 
-    const cfg = (ws.extra ?? {}).forgeLoop as
-      | (Partial<ForgeLoopExtra> & { maxIterations?: number })
-      | undefined
+    const cfg = getForgeWorkspaceForgeLoop(ws)
 
     if (cfg?.initialPromptOwner === 'tui' && sendInitialPrompt) {
       deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=tui-owned-initial-prompt`)
       return
     }
 
-    // Build a synthetic entry for classification. If extra.projectDirectory is missing,
-    // synthesize it from ws.directory so the classifier can still check the loop row.
-    // This ensures the attach hook handles workspaces created by older code paths that
-    // didn't stamp extra.projectDirectory.
-    const ws_extra_proj = (ws.extra ?? {}).projectDirectory as string | undefined
-    const projectDirectory = ws_extra_proj ?? ws.directory ?? deps.directory
-    const classifyEntry = {
+    const wsExtra: WorkspaceExtra = ws.extra ?? {}
+    const wsExtraProjectDirectory = getForgeWorkspaceProjectDirectory(ws)
+    const projectDirectory = wsExtraProjectDirectory ?? ws.directory ?? deps.directory
+    const classifyEntry: ForgeWorkspaceEntry = {
       id: workspaceId,
       type: ws.type,
-      extra: ws_extra_proj
-        ? (ws.extra ?? {})
-        : { ...(ws.extra ?? {}), projectDirectory },
+      extra: wsExtraProjectDirectory ? wsExtra : { ...wsExtra, projectDirectory },
     }
     const action = classifyForgeWorkspace(
       classifyEntry,
@@ -141,13 +146,6 @@ async function attachForgeSession(
       projectDirectory,
     )
 
-    // A fresh TUI-owned launch (remote or local) whose name collides with a
-    // terminal loop row classifies as keep/pending-start (the classifier must
-    // keep restart-in-flight workspaces). Silently skipping here would leave a
-    // zombie session that runs the first prompt but never loops. Proceed to
-    // attachLoopToSession instead so its conflict handling fails loudly
-    // (toast + workspace removal). Restart-created workspaces carry no
-    // forgeLoop config and still skip below.
     const isTerminalNameConflict =
       action.action === 'keep' &&
       action.reason === 'pending-start' &&
@@ -155,7 +153,6 @@ async function attachForgeSession(
       isPendingAttachWorkspace(classifyEntry)
 
     if (action.action === 'keep' && action.reason !== 'running' && action.reason !== 'pending-attach' && !isTerminalNameConflict) {
-      // bad config or wrong-project — toast and bail, do not attach
       deps.logger.log(
         `[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} reason=${action.reason}`,
       )
@@ -163,7 +160,6 @@ async function attachForgeSession(
     }
 
     if ((action.action === 'remove-fully' && action.reason === 'missing-row') || (action.action === 'keep' && action.reason === 'pending-attach') || isTerminalNameConflict) {
-      // Fresh attach (no loop row yet) - proceed to attach
       if (!cfg) {
         if (action.action === 'remove-fully') {
           await removeForgeWorkspaceWithContext(
@@ -197,12 +193,9 @@ async function attachForgeSession(
       }
       deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${loopName} projectId=${sessionProjectId} proceeding (fresh-attach)`)
     } else if (action.action === 'keep' && action.reason === 'running') {
-      // Running loop but no in-memory state: this is the plugin-reload recovery case
-      // However, the loop is already running, so we should NOT re-attach
       deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=already-running`)
       return
     } else if (action.action === 'remove-fully' && action.reason === 'completed') {
-      // Completed loop: remove workspace + toast
       await removeForgeWorkspaceWithContext(
         { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
         { workspaceId, loopName, action: 'remove-fully' },
@@ -215,7 +208,6 @@ async function attachForgeSession(
       )
       return
     } else if (action.action === 'remove-registration-only') {
-      // Restartable (cancelled/errored/stalled): remove registration, preserve worktree for manual restart
       await removeForgeWorkspaceWithContext(
         { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
         { workspaceId, loopName, action: 'remove-registration-only' },
@@ -228,7 +220,6 @@ async function attachForgeSession(
       )
       return
     } else {
-      // Fallback: should not reach here
       deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=unexpected-classification`)
       return
     }
@@ -329,14 +320,10 @@ async function attachForgeSession(
 
 async function resolveAttachSandbox(
   deps: ForgeSessionAttachHookDeps,
-  cfg: { sandboxEnabled?: boolean; sandboxContainer?: string } | undefined,
+  cfg: Pick<ForgeLoopExtra, 'sandboxEnabled' | 'sandboxContainer'> | undefined,
   loopName: string,
   worktreeDir: string | undefined,
 ): Promise<{ enabled: boolean; containerName?: string }> {
-  // Worktree-only when the loop opted out, or when the sandbox isn't actually usable
-  // (sandbox disabled via config, or no msb manager). Without a manager a sandbox
-  // container cannot exist, so the workspace's stale `sandboxEnabled` flag must not be
-  // trusted — degrade to host worktree execution so `bash` stays allowed.
   if (cfg?.sandboxEnabled === false) return { enabled: false }
   if (!isSandboxEnabled(deps.execDeps.config, deps.execDeps.sandboxManager)) return { enabled: false }
 
@@ -379,11 +366,9 @@ async function findWorkspaceById(
   deps: ForgeSessionAttachHookDeps,
   workspaceId: string,
   directory?: string,
-): Promise<WorkspaceEntry | null> {
+): Promise<ForgeWorkspaceEntry | null> {
   try {
-    const entries = (await deps.client.workspace.list(
-      directory ? { directory } : undefined,
-    ) ?? []) as WorkspaceEntry[]
+    const entries = await deps.client.workspace.list(directory ? { directory } : undefined)
     return entries.find((e) => e.id === workspaceId) ?? null
   } catch {
     return null

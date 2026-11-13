@@ -1,37 +1,47 @@
-/**
- * Shape of the JSON Schema subset Forge's RPC contracts are written in:
- * `type`, `enum`, `properties`, `required`, `additionalProperties`, `items`,
- * `minimum`, and `minLength`.
- */
-export interface JsonSchemaShape {
+import { z } from 'zod'
+
+export interface JsonObject {
+  [key: string]: JsonValue
+}
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject
+
+export interface JsonSchemaDefinition {
   type?: 'object' | 'array' | 'string' | 'number' | 'integer' | 'boolean'
-  enum?: ReadonlyArray<unknown>
-  properties?: Record<string, JsonSchemaShape>
+  enum?: ReadonlyArray<JsonValue>
+  properties?: Record<string, JsonSchemaDefinition>
   required?: ReadonlyArray<string>
-  additionalProperties?: boolean | JsonSchemaShape
-  items?: JsonSchemaShape
+  additionalProperties?: boolean | JsonSchemaDefinition
+  items?: JsonSchemaDefinition
   minimum?: number
   minLength?: number
 }
 
-/** The first place a value departs from its schema: where it is and what was expected. */
 export interface JsonSchemaMismatch {
   path: string
   message: string
 }
 
-/** Options for {@link findJsonSchemaMismatch}. */
 export interface JsonSchemaValidationOptions {
-  /**
-   * Ignore `additionalProperties: false` so a payload from a newer peer that adds
-   * fields still validates. Defaults to `false`, which enforces the schema strictly.
-   */
   allowAdditionalProperties?: boolean
 }
 
+export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(z.string(), jsonValueSchema),
+  ]),
+)
+
+const jsonObjectSchema = z.record(z.string(), jsonValueSchema)
+
 function findMismatch(
-  schema: JsonSchemaShape,
-  value: unknown,
+  schema: JsonSchemaDefinition,
+  value: JsonValue,
   path: string,
   options: JsonSchemaValidationOptions,
 ): JsonSchemaMismatch | null {
@@ -41,14 +51,14 @@ function findMismatch(
 
   switch (schema.type) {
     case 'object': {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      const record = jsonObjectSchema.safeParse(value)
+      if (!record.success) {
         return { path, message: 'expected an object' }
       }
-      const record = value as Record<string, unknown>
       for (const key of schema.required ?? []) {
-        if (!(key in record)) return { path: `${path}.${key}`, message: 'required property is missing' }
+        if (!(key in record.data)) return { path: `${path}.${key}`, message: 'required property is missing' }
       }
-      for (const [key, entry] of Object.entries(record)) {
+      for (const [key, entry] of Object.entries(record.data)) {
         const childPath = `${path}.${key}`
         const child = schema.properties?.[key]
         if (child) {
@@ -58,7 +68,7 @@ function findMismatch(
           if (options.allowAdditionalProperties !== true) {
             return { path: childPath, message: 'additional property is not allowed' }
           }
-        } else if (typeof schema.additionalProperties === 'object') {
+        } else if (schema.additionalProperties !== undefined && schema.additionalProperties !== true) {
           const mismatch = findMismatch(schema.additionalProperties, entry, childPath, options)
           if (mismatch) return mismatch
         }
@@ -66,33 +76,37 @@ function findMismatch(
       return null
     }
     case 'array': {
-      if (!Array.isArray(value)) return { path, message: 'expected an array' }
+      const entries = z.array(jsonValueSchema).safeParse(value)
+      if (!entries.success) return { path, message: 'expected an array' }
       if (!schema.items) return null
-      for (const [index, entry] of value.entries()) {
+      for (const [index, entry] of entries.data.entries()) {
         const mismatch = findMismatch(schema.items, entry, `${path}[${index}]`, options)
         if (mismatch) return mismatch
       }
       return null
     }
     case 'string': {
-      if (typeof value !== 'string') return { path, message: 'expected a string' }
-      if (schema.minLength !== undefined && value.length < schema.minLength) {
+      const text = z.string().safeParse(value)
+      if (!text.success) return { path, message: 'expected a string' }
+      if (schema.minLength !== undefined && text.data.length < schema.minLength) {
         return { path, message: `expected at least ${schema.minLength} characters` }
       }
       return null
     }
     case 'integer': {
-      if (typeof value !== 'number' || !Number.isInteger(value)) return { path, message: 'expected an integer' }
-      if (schema.minimum !== undefined && value < schema.minimum) return { path, message: `expected >= ${schema.minimum}` }
+      const integer = z.number().int().safeParse(value)
+      if (!integer.success) return { path, message: 'expected an integer' }
+      if (schema.minimum !== undefined && integer.data < schema.minimum) return { path, message: `expected >= ${schema.minimum}` }
       return null
     }
     case 'number': {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return { path, message: 'expected a number' }
-      if (schema.minimum !== undefined && value < schema.minimum) return { path, message: `expected >= ${schema.minimum}` }
+      const number = z.number().safeParse(value)
+      if (!number.success) return { path, message: 'expected a number' }
+      if (schema.minimum !== undefined && number.data < schema.minimum) return { path, message: `expected >= ${schema.minimum}` }
       return null
     }
     case 'boolean': {
-      if (typeof value !== 'boolean') return { path, message: 'expected a boolean' }
+      if (!z.boolean().safeParse(value).success) return { path, message: 'expected a boolean' }
       return null
     }
     default:
@@ -100,15 +114,9 @@ function findMismatch(
   }
 }
 
-/**
- * Validates `value` against the JSON Schema subset Forge's RPC contracts use and
- * returns the first mismatch (its path from `$` and what was expected), or `null`
- * when the value conforms. Never throws, so callers can turn a mismatch into their
- * own error envelope.
- */
 export function findJsonSchemaMismatch(
-  schema: JsonSchemaShape,
-  value: unknown,
+  schema: JsonSchemaDefinition,
+  value: JsonValue,
   options: JsonSchemaValidationOptions = {},
 ): JsonSchemaMismatch | null {
   return findMismatch(schema, value, '$', options)

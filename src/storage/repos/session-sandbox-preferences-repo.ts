@@ -1,52 +1,26 @@
 import type { Database } from 'bun:sqlite'
-import type { SandboxOverrides } from '../../types'
-import { readSandboxOverrides } from '../../sandbox/loop-settings'
+import { z } from 'zod'
+import {
+  appliedStateSchema,
+  controllerStateSchema,
+  desiredStateSchema,
+  type SessionSandboxAppliedState,
+  type SessionSandboxControllerState,
+  type SessionSandboxDesiredState,
+} from '../session-sandbox-state'
 import { runImmediateTransaction } from '../sqlite-open'
+
+export type { SessionSandboxAppliedState, SessionSandboxControllerState, SessionSandboxDesiredState }
 
 export const SESSION_SANDBOX_DESIRED_KEY = 'session-sandbox.desired'
 export const SESSION_SANDBOX_APPLIED_KEY = 'session-sandbox.applied'
 export const SESSION_SANDBOX_CONTROLLER_KEY = 'session-sandbox.controller'
 
-export interface SessionSandboxDesiredState {
-  version: 1
-  revision: string
-  enabled: boolean
-  sessionId: string | null
-  requestedAt: number
-  /** Project-level overrides for the host sandbox (CPUs, memory, LAN access); unset uses config. */
-  overrides?: SandboxOverrides
-}
-
-export interface SessionSandboxAppliedState {
-  version: 1
-  revision: string
-  enabled: boolean
-  sessionId: string | null
-  error: string | null
-  appliedAt: number
-  /** The desired overrides this acknowledgement applied. */
-  overrides?: SandboxOverrides
-}
-
-function withOverrides<T extends object>(state: T, raw: unknown): T & { overrides?: SandboxOverrides } {
-  const overrides = readSandboxOverrides(raw)
-  return overrides ? { ...state, overrides } : state
-}
-
-export interface SessionSandboxControllerState {
-  version: 1
-  phase: 'loading' | 'ready' | 'failed'
-  revision: string | null
-  sessionId: string | null
-}
+const preferenceRowSchema = z.object({ data: z.string() })
 
 export interface SessionSandboxPreferencesRepo {
   getDesired(projectId: string): SessionSandboxDesiredState | null
   setDesired(projectId: string, state: SessionSandboxDesiredState): void
-  /**
-   * Replaces the desired row with `build(current)` in one write transaction, so a merge of the
-   * current row (e.g. keeping its overrides across an on/off toggle) cannot lose a concurrent write.
-   */
   updateDesired(
     projectId: string,
     build: (current: SessionSandboxDesiredState | null) => SessionSandboxDesiredState,
@@ -62,61 +36,6 @@ export interface SessionSandboxPreferencePair {
   desired: SessionSandboxDesiredState | null
   applied: SessionSandboxAppliedState | null
   controller: SessionSandboxControllerState | null
-}
-
-function parseDesired(data: unknown): SessionSandboxDesiredState | null {
-  if (typeof data !== 'object' || data === null) return null
-  const o = data as Record<string, unknown>
-  if (o.version !== 1) return null
-  if (typeof o.revision !== 'string' || o.revision.trim() === '') return null
-  if (typeof o.enabled !== 'boolean') return null
-  if (o.sessionId !== null && (typeof o.sessionId !== 'string' || o.sessionId.trim() === '')) return null
-  if (typeof o.requestedAt !== 'number' || !Number.isFinite(o.requestedAt)) return null
-  return withOverrides({
-    version: 1 as const,
-    revision: o.revision,
-    enabled: o.enabled,
-    sessionId: o.sessionId as string | null,
-    requestedAt: o.requestedAt,
-  }, o.overrides)
-}
-
-function parseApplied(data: unknown): SessionSandboxAppliedState | null {
-  if (typeof data !== 'object' || data === null) return null
-  const o = data as Record<string, unknown>
-  if (o.version !== 1) return null
-  if (typeof o.revision !== 'string' || o.revision.trim() === '') return null
-  if (typeof o.enabled !== 'boolean') return null
-  if (o.sessionId !== null && (typeof o.sessionId !== 'string' || o.sessionId.trim() === '')) return null
-  if (o.error !== null && typeof o.error !== 'string') return null
-  if (typeof o.appliedAt !== 'number' || !Number.isFinite(o.appliedAt)) return null
-  return withOverrides({
-    version: 1 as const,
-    revision: o.revision,
-    enabled: o.enabled,
-    sessionId: o.sessionId as string | null,
-    error: o.error as string | null,
-    appliedAt: o.appliedAt,
-  }, o.overrides)
-}
-
-function parseControllerState(data: unknown): SessionSandboxControllerState | null {
-  if (typeof data !== 'object' || data === null) return null
-  const o = data as Record<string, unknown>
-  if (o.version !== 1) return null
-  if (o.phase !== 'loading' && o.phase !== 'ready' && o.phase !== 'failed') return null
-  if (o.revision !== null && (typeof o.revision !== 'string' || o.revision.trim() === '')) return null
-  if (o.sessionId !== null && (typeof o.sessionId !== 'string' || o.sessionId.trim() === '')) return null
-  return {
-    version: 1,
-    phase: o.phase,
-    revision: o.revision as string | null,
-    sessionId: o.sessionId as string | null,
-  }
-}
-
-interface PreferenceRow {
-  data: string
 }
 
 export function createSessionSandboxPreferencesRepo(db: Database): SessionSandboxPreferencesRepo {
@@ -136,26 +55,31 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
 
   const now = () => Date.now()
 
-  function readState<T>(projectId: string, key: string, parse: (value: unknown) => T | null): T | null {
-    const row = getStmt.get(projectId, key) as PreferenceRow | null
+  function readState<TSchema extends z.ZodType>(
+    projectId: string,
+    key: string,
+    schema: TSchema,
+  ): z.output<TSchema> | null {
+    const row = preferenceRowSchema.nullish().parse(getStmt.get(projectId, key))
     if (!row) return null
     try {
-      return parse(JSON.parse(row.data))
+      const parsed = schema.safeParse(JSON.parse(row.data))
+      return parsed.success ? parsed.data : null
     } catch {
       return null
     }
   }
 
   function readDesired(projectId: string): SessionSandboxDesiredState | null {
-    return readState(projectId, SESSION_SANDBOX_DESIRED_KEY, parseDesired)
+    return readState(projectId, SESSION_SANDBOX_DESIRED_KEY, desiredStateSchema)
   }
 
   function readApplied(projectId: string): SessionSandboxAppliedState | null {
-    return readState(projectId, SESSION_SANDBOX_APPLIED_KEY, parseApplied)
+    return readState(projectId, SESSION_SANDBOX_APPLIED_KEY, appliedStateSchema)
   }
 
   function readControllerState(projectId: string): SessionSandboxControllerState | null {
-    return readState(projectId, SESSION_SANDBOX_CONTROLLER_KEY, parseControllerState)
+    return readState(projectId, SESSION_SANDBOX_CONTROLLER_KEY, controllerStateSchema)
   }
 
   return {
@@ -189,10 +113,6 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
     },
 
     getPair(projectId: string): SessionSandboxPreferencePair {
-      // Reads run inside one transaction so they observe a single SQLite
-      // snapshot. Without this, a concurrent desired write between the two
-      // autocommit reads could assemble revisions from different snapshots and
-      // briefly trust a superseded ON state.
       return db.transaction(() => {
         return { desired: readDesired(projectId), applied: readApplied(projectId), controller: readControllerState(projectId) }
       })()

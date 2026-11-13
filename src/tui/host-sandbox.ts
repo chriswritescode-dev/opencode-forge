@@ -23,22 +23,14 @@ export interface HostSandboxToggleDeps {
 }
 
 export interface HostSandboxToggle {
-  /** Latest desired/applied preference pair, or null when sandboxing is disabled by config. */
   preference: Accessor<SessionSandboxPreference | null>
-  /** Re-read the current state; coalesced with any in-flight read. */
   refresh(): void
-  /** Turns the sandbox on or off for the current session, replacing the overrides when given. */
   toggle(overrides?: SandboxOverrides): Promise<void>
-  /**
-   * Replaces the project's host sandbox overrides (`{}` resets them) without changing whether the
-   * sandbox is on. A running sandbox is restarted or recreated to apply them.
-   */
   setOverrides(overrides: SandboxOverrides): Promise<void>
   dispose(): void
 }
 
 const TOGGLE_ACK_TIMEOUT_MS = 15_000
-/** A settings change can restart or recreate the sandbox, which takes longer than a toggle. */
 const OVERRIDES_ACK_TIMEOUT_MS = 120_000
 
 function preferencesEqual(a: SessionSandboxPreference | null, b: SessionSandboxPreference | null): boolean {
@@ -48,11 +40,6 @@ function preferencesEqual(a: SessionSandboxPreference | null, b: SessionSandboxP
     === JSON.stringify([b.desired, b.applied, b.controller, b.activeLoopSandboxes])
 }
 
-/**
- * Maps the server's host sandbox state to the TUI preference shape. A config-disabled
- * server returns null so the sidebar hides the indicator; a read error becomes an
- * unavailable preference so the toggle refuses with the reason.
- */
 function preferenceFrom(state: ForgeRpcError): SessionSandboxPreference
 function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPreference | null
 function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPreference | null {
@@ -60,12 +47,13 @@ function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPrefe
     return { desired: null, applied: null, unavailable: true, unavailableReason: state.error }
   }
   if (!state.configEnabled) return null
-  return {
+  const preference: SessionSandboxPreference = {
     desired: state.desired,
     applied: state.applied,
     controller: state.controller,
-    ...(state.activeLoopSandboxes ? { activeLoopSandboxes: state.activeLoopSandboxes } : {}),
   }
+  if (state.activeLoopSandboxes) preference.activeLoopSandboxes = state.activeLoopSandboxes
+  return preference
 }
 
 interface SandboxWaiter {
@@ -76,10 +64,15 @@ interface SandboxWaiter {
   cancel(): void
 }
 
+interface SandboxWaiterHandle {
+  waiter: SandboxWaiter
+  promise: Promise<SessionSandboxAppliedState>
+}
+
 function createSandboxWaiter(
   revision: string,
   options: { timeoutMs: number; signal: AbortSignal },
-): { waiter: SandboxWaiter; promise: Promise<SessionSandboxAppliedState> } {
+): SandboxWaiterHandle {
   let settled = false
   let resolvePromise: (applied: SessionSandboxAppliedState) => void = () => {}
   let rejectPromise: (error: Error) => void = () => {}
@@ -115,12 +108,6 @@ function createSandboxWaiter(
   return { promise, waiter }
 }
 
-/**
- * The TUI side of the host session sandbox: reads the desired/applied pair for the
- * current session through the Forge server RPC and follows the server's push events.
- * A toggle registers a deadline waiter, triggers a refetch, and resolves when an
- * event-triggered refetch reports the matching applied revision.
- */
 export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandboxToggle {
   const [preference, setPreference] = createSignal<SessionSandboxPreference | null>(null, { equals: preferencesEqual })
   const lifecycle = new AbortController()
@@ -154,7 +141,6 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
   coordinator.trigger()
 
   interface HostSandboxRequest {
-    /** Builds the change from the current state, or returns null when there is nothing to send. */
     build(current: SessionSandboxPreference, sessionId: string): Omit<ForgeHostSandboxSetInput, 'sessionId'> | null
     label: string
     timeoutMs: number
@@ -162,11 +148,6 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     guidance(): string
   }
 
-  /**
-   * The single request path for every host sandbox change: re-reads the state, refuses when
-   * sandboxing is unavailable, writes the change, and waits for the server's acknowledgement of
-   * that exact revision before reporting the outcome.
-   */
   const request = async (spec: HostSandboxRequest): Promise<void> => {
     const sessionId = deps.currentSessionId()
     if (!sessionId) {
@@ -226,7 +207,9 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
       timeoutMs: overrides ? OVERRIDES_ACK_TIMEOUT_MS : TOGGLE_ACK_TIMEOUT_MS,
       build: (current, sessionId) => {
         enabling = !(current.desired?.enabled === true && current.desired.sessionId === sessionId)
-        return { enabled: enabling, ...(overrides ? { overrides } : {}) }
+        const input: Omit<ForgeHostSandboxSetInput, 'sessionId'> = { enabled: enabling }
+        if (overrides) input.overrides = overrides
+        return input
       },
       success: (applied) => applied.enabled
         ? 'Host sandbox enabled for this session. Agent shell, glob, and grep calls run in the sandbox; commands you run yourself stay on the host.'

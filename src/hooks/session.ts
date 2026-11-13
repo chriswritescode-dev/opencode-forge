@@ -1,22 +1,29 @@
 import type { Logger, CompactionConfig } from '../types'
+import type { ForgeEvent } from '../client/port'
+
+export interface ChatMessageOutput {
+  messageID?: string
+  parts?: ReadonlyArray<{ type: string; text?: string }>
+  message?: ForgeEvent['properties']
+}
 
 export interface SessionHooks {
-  onMessage: (input: unknown, output: unknown) => Promise<void>
-  onEvent: (input: { event: { type: string; properties?: Record<string, unknown> } }) => Promise<void>
+  onMessage: (input: ChatMessageInput, output: ChatMessageOutput) => Promise<void>
+  onEvent: (input: EventInput) => Promise<void>
   onCompacting: (
-    input: { sessionID: string },
-    output: { context: string[]; prompt?: string }
+    input: CompactingInput,
+    output: CompactingOutput
   ) => Promise<void>
 }
 
-interface ChatMessageInput {
+export interface ChatMessageInput {
   sessionID?: string
 }
 
 interface EventInput {
   event: {
     type: string
-    properties?: Record<string, unknown>
+    properties?: ForgeEvent['properties']
   }
 }
 
@@ -31,7 +38,7 @@ interface CompactingOutput {
 
 const LOGGED_EVENTS = new Set(['session.status', 'session.created'])
 
-function formatEventProperties(props?: Record<string, unknown>): string {
+function formatEventProperties(props?: ForgeEvent['properties']): string {
   if (!props) return ''
   try {
     return ' ' + JSON.stringify(props)
@@ -84,8 +91,7 @@ export function createSessionHooks(
 
   return {
     async onMessage(input, _output) {
-      const chatInput = input as ChatMessageInput
-      const sessionId = chatInput.sessionID
+      const sessionId = input.sessionID
       if (!sessionId) return
       if (!initializedSessions.has(sessionId)) {
         logger.log(`Session initialized: ${sessionId} (project ${projectId})`)

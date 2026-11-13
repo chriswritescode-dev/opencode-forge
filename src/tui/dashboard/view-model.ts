@@ -9,6 +9,7 @@ import type {
 } from '../../host/forge-rpc'
 import { computeElapsedSeconds, formatDuration } from '../../utils/duration'
 import { phaseLabel } from '../../utils/phase-label'
+import type { JsonObject, JsonValue } from '../../utils/json-schema'
 
 export type LoopTab = 'overview' | 'timeline' | 'sections' | 'findings' | 'plan' | 'usage'
 
@@ -21,77 +22,68 @@ export interface CappedList<T> {
   capped: boolean
 }
 
-/**
- * Single capping path for every unbounded list render. `showAll` bypasses the
- * cap so a user can always reach the full set; filtering and search remain the
- * intended narrowing tools. The input array is returned by reference when
- * uncapped.
- */
 export function capList<T>(items: T[], max: number, showAll: boolean): CappedList<T> {
   if (showAll || items.length <= max) return { rows: items, total: items.length, capped: false }
   return { rows: items.slice(0, max), total: items.length, capped: true }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function isArrayValue<T>(value: T): value is T & unknown[] {
+  return Array.isArray(value)
 }
 
-/**
- * Structural sharing for a fresh RPC JSON result: returns `previous` (or the
- * previous child) wherever `next` is deeply equal, and new containers that
- * reuse unchanged children otherwise. Both inputs are plain JSON values and are
- * never mutated; the walk is O(size).
- */
+function isObjectValue<T>(value: T): value is T & JsonObject {
+  if (!(value instanceof Object)) return false
+  if (Array.isArray(value)) return false
+  return !(value instanceof Function)
+}
+
 export function shareUnchanged<T>(previous: T | null | undefined, next: T): T {
-  return shareValue(previous, next) as T
+  return shareValue(previous, next)
 }
 
-function shareValue(previous: unknown, next: unknown): unknown {
-  if (Object.is(previous, next)) return previous
-  if (Array.isArray(next)) return Array.isArray(previous) ? shareArray(previous, next) : next
-  if (!isRecord(next)) return next
-  return isRecord(previous) ? shareRecord(previous, next) : next
+function shareValue<T>(previous: T | null | undefined, next: T): T {
+  if (previous !== null && previous !== undefined && Object.is(previous, next)) return previous
+  if (isArrayValue(next)) return shareArray(previous, next)
+  if (isObjectValue(next)) return shareRecord(previous, next)
+  return next
 }
 
-function shareArray(previous: unknown[], next: unknown[]): unknown[] {
-  const shared: unknown[] = new Array(next.length)
-  let unchanged = previous.length === next.length
+function shareArray<T>(previous: T | null | undefined, next: T & unknown[]): T {
+  if (!Array.isArray(previous)) return next
+  const previousArray: unknown[] = previous
+  const shared = Object.assign([], next)
+  let unchanged = previousArray.length === next.length
   for (let index = 0; index < next.length; index++) {
-    const child = shareValue(previous[index], next[index])
-    if (!Object.is(child, previous[index])) unchanged = false
-    shared[index] = child
+    const child = shareValue(previousArray[index], next[index])
+    if (!Object.is(child, previousArray[index])) unchanged = false
+    Object.assign(shared, { [index]: child })
   }
   return unchanged ? previous : shared
 }
 
-function shareRecord(
-  previous: Record<string, unknown>,
-  next: Record<string, unknown>,
-): Record<string, unknown> {
+function shareRecord<T>(previous: T | null | undefined, next: T & JsonObject): T {
+  if (!isObjectValue(previous)) return next
   const keys = Object.keys(next)
-  const shared: Record<string, unknown> = {}
+  const shared = { ...next }
   let unchanged = keys.length === Object.keys(previous).length
   for (const key of keys) {
     const known = Object.hasOwn(previous, key)
-    const child = shareValue(known ? previous[key] : undefined, next[key])
+    const child: JsonValue = shareValue(known ? previous[key] : undefined, next[key])
     if (!known || !Object.is(child, previous[key])) unchanged = false
-    shared[key] = child
+    Object.assign(shared, { [key]: child })
   }
   return unchanged ? previous : shared
 }
 
-/** The path a project is keyed by in the label map built by `buildRepoLabels`. */
 export function repoRawPath(proj: ForgeDashboardProjectSummary): string {
   return proj.projectDir || proj.projectId
 }
 
-/** Lookup contract for `buildRepoLabels`: the raw path is the fallback label. */
 export function repoLabel(labels: Map<string, string>, proj: ForgeDashboardProjectSummary): string {
   const rawPath = repoRawPath(proj)
   return labels.get(rawPath) ?? rawPath
 }
 
-/** Shortest unique label per project path, falling back to more path segments on collisions. */
 export function buildRepoLabels(paths: string[]): Map<string, string> {
   const segsByPath = new Map<string, string[]>()
   for (const p of paths) {
@@ -154,13 +146,11 @@ export const SORT_MODES = ['recent', 'cost', 'duration', 'findings'] as const
 
 export type SortMode = (typeof SORT_MODES)[number]
 
-/** Next sort mode in display order, wrapping at the end. */
 export function nextSortMode(current: SortMode): SortMode {
   const index = SORT_MODES.indexOf(current)
   return SORT_MODES[(index + 1) % SORT_MODES.length]
 }
 
-/** Orders loop summary rows by the active sort mode; `recent` keeps the server order. */
 export function sortLoops(loops: ForgeDashboardLoopSummary[], mode: SortMode): ForgeDashboardLoopSummary[] {
   if (mode === 'recent') return [...loops]
   const sorted = [...loops]
@@ -189,13 +179,11 @@ export const LOOP_STATUS_FILTERS = ['all', 'running', 'completed', 'cancelled', 
 
 export type LoopStatusFilter = (typeof LOOP_STATUS_FILTERS)[number]
 
-/** Next status filter in display order, wrapping at the end. */
 export function nextStatusFilter(current: LoopStatusFilter): LoopStatusFilter {
   const index = LOOP_STATUS_FILTERS.indexOf(current)
   return LOOP_STATUS_FILTERS[(index + 1) % LOOP_STATUS_FILTERS.length]
 }
 
-/** The status half of the loops-table filtering; `all` keeps every row. */
 export function filterLoopsByStatus(
   loops: ForgeDashboardLoopSummary[],
   filter: LoopStatusFilter,
@@ -204,9 +192,17 @@ export function filterLoopsByStatus(
   return loops.filter((loop) => loop.status === filter)
 }
 
-/** Row counts per status filter, including the unfiltered total under `all`. */
-export function statusCounts(loops: ForgeDashboardLoopSummary[]): Record<LoopStatusFilter, number> {
-  const counts: Record<LoopStatusFilter, number> = {
+export interface LoopStatusCounts {
+  all: number
+  running: number
+  completed: number
+  cancelled: number
+  errored: number
+  stalled: number
+}
+
+export function statusCounts(loops: ForgeDashboardLoopSummary[]): LoopStatusCounts {
+  const counts: LoopStatusCounts = {
     all: loops.length,
     running: 0,
     completed: 0,
@@ -228,13 +224,6 @@ function filterRows<T>(rows: T[], keep: (row: T) => boolean): T[] {
   return kept.length === rows.length ? rows : kept
 }
 
-/**
- * Client-side search over a loaded dashboard summary. A project is kept when
- * its directory or label matches, in which case every row stays; otherwise only
- * the loops and unexecuted plans whose searchable fields match are kept.
- * Rows and projects that survive unchanged keep their identity, and an empty
- * query returns the same summary object.
- */
 export function filterDashboardProjects(summary: ForgeDashboardSummary, query: string): ForgeDashboardSummary {
   if (query === '') return summary
   const needle = query.toLowerCase()
@@ -266,10 +255,6 @@ export function filterDashboardProjects(summary: ForgeDashboardSummary, query: s
   return changed ? { ...summary, projects } : summary
 }
 
-/**
- * Block-character progress bar. `fraction` is clamped to 0–1 and rounded to
- * the bar width; a non-positive width yields an empty string.
- */
 export function textBar(fraction: number, width: number): string {
   if (!Number.isFinite(width) || width <= 0) return ''
   const clamped = Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0
@@ -277,9 +262,12 @@ export function textBar(fraction: number, width: number): string {
   return '█'.repeat(filled) + '░'.repeat(width - filled)
 }
 
-export function splitFindings(
-  findings: ForgeReviewFinding[],
-): { bugs: ForgeReviewFinding[]; warnings: ForgeReviewFinding[] } {
+export interface SplitFindings {
+  bugs: ForgeReviewFinding[]
+  warnings: ForgeReviewFinding[]
+}
+
+export function splitFindings(findings: ForgeReviewFinding[]): SplitFindings {
   const bugs: ForgeReviewFinding[] = []
   const warnings: ForgeReviewFinding[] = []
   for (const finding of findings) {
@@ -289,17 +277,12 @@ export function splitFindings(
   return { bugs, warnings }
 }
 
-/** Classifies split findings into the severity tier used for badge styling. */
-export function findingsLevel(split: {
-  bugs: ForgeReviewFinding[]
-  warnings: ForgeReviewFinding[]
-}): 'bug' | 'warn' | 'clean' {
+export function findingsLevel(split: SplitFindings): 'bug' | 'warn' | 'clean' {
   if (split.bugs.length > 0) return 'bug'
   if (split.warnings.length > 0) return 'warn'
   return 'clean'
 }
 
-/** Pluralizes a count, e.g. (1, 'bug') -> '1 bug', (2, 'bug') -> '2 bugs'. */
 export function formatCount(count: number, noun: string): string {
   return count + ' ' + noun + (count === 1 ? '' : 's')
 }
@@ -308,11 +291,12 @@ export function formatSectionNumber(index: number): string {
   return String(index + 1)
 }
 
-/**
- * 1-based section position for a 0-based stored index, capped at the section
- * total so the meter label and its fill always show the same position.
- */
-export function sectionProgress(index: number, total: number): { current: number; total: number } {
+export interface SectionProgress {
+  current: number
+  total: number
+}
+
+export function sectionProgress(index: number, total: number): SectionProgress {
   if (total <= 0) return { current: 0, total: 0 }
   return { current: Math.max(0, Math.min(index + 1, total)), total }
 }
@@ -331,7 +315,6 @@ export interface FindingSectionGroup {
   rows: ForgeReviewFinding[]
 }
 
-/** Findings grouped by section index ascending, cross-section findings last. */
 export function groupFindingsBySection(findings: ForgeReviewFinding[]): FindingSectionGroup[] {
   const order: (number | null)[] = []
   const map = new Map<number | null, ForgeReviewFinding[]>()
@@ -356,7 +339,6 @@ export function groupFindingsBySection(findings: ForgeReviewFinding[]): FindingS
   }))
 }
 
-/** Compact token count: 12,345 → "12.3k", 3,400,000 → "3.4M". */
 export function formatTokenCount(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0'
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
@@ -364,7 +346,6 @@ export function formatTokenCount(n: number): string {
   return String(n)
 }
 
-/** Cost label: small values keep more precision ($0.1234), larger round to cents ($12.34). */
 export function formatUsageCost(cost: number): string {
   if (!Number.isFinite(cost) || cost <= 0) return '$0'
   return '$' + (cost >= 1 ? cost.toFixed(2) : cost.toFixed(4))
@@ -376,10 +357,6 @@ export interface UsageSegment {
   pct: number
 }
 
-/**
- * Token-type breakdown for a stacked composition bar. Percentages are of the
- * summed positive token counts; an all-zero usage yields zero-width segments.
- */
 export function tokenBreakdownSegments(u: ForgeLoopUsage): UsageSegment[] {
   const raw: Omit<UsageSegment, 'pct'>[] = [
     { label: 'Input', value: u.totalInputTokens },
@@ -416,22 +393,12 @@ type UsageRole = keyof ForgeLoopUsage['byRole']
 
 const USAGE_ROLE_ORDER: readonly UsageRole[] = ['code', 'auditor', 'unknown']
 
-/**
- * Display label per persisted role. `code` is surfaced as "execution" to match
- * the `executionModel` label used elsewhere in the UI, and `unknown` as "other".
- */
-const ROLE_BAR_LABELS: Record<UsageRole, RoleUsageBar['role']> = {
+const ROLE_BAR_LABELS = {
   code: 'execution',
   auditor: 'auditor',
   unknown: 'other',
-}
+} satisfies Record<UsageRole, RoleUsageBar['role']>
 
-/**
- * Cost/message split by loop role, in role order. Attributed roles always get a
- * bar so the split is comparable across loops; the unattributed "other" bar
- * appears only when usage landed there, and then the bars still reconcile with
- * totalCost.
- */
 export function roleUsageBars(u: ForgeLoopUsage): RoleUsageBar[] {
   const all = USAGE_ROLE_ORDER.map((role) => {
     const bar: RoleUsageBar = { role: ROLE_BAR_LABELS[role], cost: 0, messageCount: 0, tokens: 0, pct: 0 }
@@ -463,10 +430,6 @@ export function modelUsageBars(u: ForgeLoopUsage): ModelUsageBar[] {
     }))
 }
 
-/**
- * Section duration label ("14m 58s"). Uses live elapsed time for an in-progress
- * section (started, not yet completed) and empty string for pending sections.
- */
 export function formatSectionDuration(
   startedAt: number | null | undefined,
   completedAt: number | null | undefined,
@@ -494,7 +457,6 @@ export function fmtTime(ts: number | null | undefined): string {
   return month + '-' + day + '-' + year + ' ' + hours + ':' + pad(d.getMinutes()) + ' ' + ampm
 }
 
-/** Relative-time label like "2m ago", "3h ago", "2d ago", or an absolute stamp past 30 days. */
 export function formatRelativeTime(ts: number | null | undefined): string {
   if (!ts || ts === 0) return ''
   const diff = Date.now() - ts
@@ -527,11 +489,11 @@ export interface PhaseSpan {
   open: boolean
 }
 
-/**
- * Phase spans of a loop's current run. `windowCapped` says the transition fetch
- * hit its row limit; only then can a first transition well after `startedAt`
- * mean older rows were cut off, and the leading span is marked unknown.
- */
+export interface PhaseSpans {
+  spans: PhaseSpan[]
+  truncated: boolean
+}
+
 export function computePhaseSpans(
   transitions: ForgeLoopTransition[],
   startedAt: number,
@@ -539,7 +501,7 @@ export function computePhaseSpans(
   now: number,
   initialPhase: string = 'coding',
   windowCapped: boolean = false,
-): { spans: PhaseSpan[]; truncated: boolean } {
+): PhaseSpans {
   const spans: PhaseSpan[] = []
   const firstCurrentIdx = transitions.findIndex((t) => t.createdAt >= startedAt)
   let currentTransitions = firstCurrentIdx === -1 ? [] : transitions.slice(firstCurrentIdx)
@@ -609,8 +571,12 @@ export function computePhaseSpans(
   return { spans, truncated }
 }
 
-export function summarizePhaseTotals(spans: PhaseSpan[]): Record<string, number> {
-  const out: Record<string, number> = {}
+export interface PhaseTotals {
+  [phase: string]: number
+}
+
+export function summarizePhaseTotals(spans: PhaseSpan[]): PhaseTotals {
+  const out: PhaseTotals = {}
   for (const s of spans) {
     if (!s.phase) continue
     out[s.phase] = (out[s.phase] ?? 0) + s.durationMs
@@ -625,7 +591,6 @@ export interface PhaseLegendRow {
   pct: number
 }
 
-/** Legend rows for the non-empty phases of a span set, longest first. */
 export function phaseLegendRows(spans: PhaseSpan[]): PhaseLegendRow[] {
   const totals = summarizePhaseTotals(spans)
   const rows: PhaseLegendRow[] = Object.keys(totals).map((phase) => ({
@@ -696,12 +661,6 @@ export interface AmendmentSummary {
   lastSection: number | null
 }
 
-/**
- * Count and newest-amendment stamp for a loop's amendment set. Rows arrive
- * ordered by id, so the newest row is not necessarily the last array element
- * when `createdAt` values interleave; equal timestamps tie-break toward the
- * higher id (insertion order).
- */
 export function summarizeAmendments(amendments: ForgePlanAmendment[]): AmendmentSummary {
   if (amendments.length === 0) return { count: 0, lastAt: null, lastSection: null }
   let newest = amendments[0]
@@ -717,7 +676,6 @@ export function summarizeAmendments(amendments: ForgePlanAmendment[]): Amendment
   }
 }
 
-/** Distinct section indexes amended at least once, in first-seen order. */
 export function amendedSectionIndexes(amendments: ForgePlanAmendment[]): Set<number> {
   const out = new Set<number>()
   for (const a of amendments) out.add(a.appliedAtSection)
@@ -728,12 +686,6 @@ export type TimelineEntry =
   | { kind: 'transition'; transition: ForgeLoopTransition; elapsedMs: number | null }
   | { kind: 'amendment'; amendment: ForgePlanAmendment; elapsedMs: null }
 
-/**
- * One newest-first timeline combining loop transitions and plan amendments.
- * Transition elapsed math is delegated to `computeTimelineEvents`; amendments
- * carry no elapsed measurement. Equal timestamps order transition-before-
- * amendment so an adjustment reads after the transition it triggered.
- */
 export function mergeTimelineEntries(
   transitions: ForgeLoopTransition[],
   amendments: ForgePlanAmendment[],
@@ -766,7 +718,6 @@ export interface TransitionHistoryRow {
   time: string
 }
 
-/** Newest-first history rows: event type, flow target, and a relative timestamp. */
 export function recentTransitionRows(
   transitions: readonly ForgeLoopTransition[],
   limit = 20,

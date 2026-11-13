@@ -21,7 +21,7 @@ export class ConcurrentPromptError extends Error {
   }
 }
 
-interface InFlightEntry {
+export interface InFlightEntry {
   sessionId: string
   agent: PromptAgent
   startedAt: number
@@ -101,7 +101,6 @@ export async function withInFlightGuard<T>(
   }
 }
 
-// Test-only: clear all state.
 export function __resetInFlightGuard(): void {
   inFlight.clear()
 }

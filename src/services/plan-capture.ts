@@ -24,7 +24,6 @@ type CaptureLatestPlanResult =
   | { status: 'invalid'; reason: string }
   | { status: 'read-failed'; error: unknown }
 
-/** The only two outcomes a direct write can produce. */
 type WriteSessionPlanResult = Extract<CaptureLatestPlanResult, { status: 'captured' | 'already-current' }>
 
 type ReadRecentMessagesResult =
@@ -39,13 +38,6 @@ interface CaptureMarkedPlanTextDeps {
   logger: Logger
 }
 
-/**
- * The single write path into a session-scoped `plans` row. Sanitizes
- * project-dir prefixes from the plan text and no-ops when the sanitized
- * content already matches the stored row. All session-scoped plan writes —
- * marked-plan capture, latest-plan capture, and the `plan-write` tool — go
- * through here so sanitization and dedupe cannot diverge.
- */
 export function writeSessionPlanContent(
   deps: CaptureMarkedPlanTextDeps,
   sessionID: string,
@@ -86,11 +78,6 @@ export function captureMarkedPlanTextForSession(
   return writeSessionPlanContent(deps, sessionID, extraction.planText, messageId)
 }
 
-/**
- * Maps an `inspectLatestMarkedPlan` outcome onto a capture result, persisting
- * the plan when one was found. Shared by both message-scanning capture paths so
- * their logging and status mapping cannot diverge.
- */
 function resultForInspection(
   deps: CaptureMarkedPlanTextDeps,
   sessionID: string,
@@ -121,24 +108,16 @@ async function readRecentMessages(
     })
 
     if (messages && messages.length > 0) {
-      return { status: 'found', messages: messages as unknown as PlanCaptureMessage[] }
+      return { status: 'found', messages }
     }
 
     return { status: 'missing' }
-  } catch (error) {
-    deps.logger.error(`plan-capture: failed to read messages for ${sessionID}`, error as Error)
-    return { status: 'read-failed', error }
+  } catch (cause) {
+    deps.logger.error(`plan-capture: failed to read messages for ${sessionID}`, cause)
+    return { status: 'read-failed', error: cause }
   }
 }
 
-/**
- * Legacy latest-message capture. Scans recent assistant messages for the
- * newest marked plan and persists it regardless of which message currently
- * completing. Used only when no session-scoped `plans` row exists yet (e.g.
- * `execute-plan` with no inline plan and no prior `plan-write`). Storage is the
- * plan of record; new writes go through marked-plan streaming capture or
- * `plan-write` so this path must not be invoked after a row exists.
- */
 export async function captureLatestPlanForSession(
   deps: CaptureLatestPlanDeps,
   sessionID: string
@@ -150,12 +129,6 @@ export async function captureLatestPlanForSession(
     return { status: 'not-found' }
   }
 
-  // Storage revalidation: the caller invokes this legacy path only when no
-  // row existed at check time, but `session.messages` is awaited above and a
-  // concurrent `plan-write` (or completion hook) may have authored a newer
-  // session row during that await. Storage is the plan of record, so never
-  // replay an older marked assistant message over it. Return `already-current`
-  // so the caller still proceeds against the stored row.
   const existing = deps.plansRepo.getForSession(deps.projectId, sessionID)
   if (existing) {
     deps.logger.log(
@@ -167,17 +140,6 @@ export async function captureLatestPlanForSession(
   return resultForInspection(deps, sessionID, inspectLatestMarkedPlan(read.messages))
 }
 
-/**
- * Resolves the plan of record for a session: the stored `plans` row when one
- * exists, else a legacy marked-message capture. The single implementation of
- * "storage wins, chat is the fallback" for every server-side consumer, so the
- * precedence rule and its post-await race handling live in one place.
- *
- * Checking the row before reading messages also skips the `session.messages`
- * round trip entirely in the common `plan-write` case. The second check covers
- * a read failure, where `captureLatestPlanForSession` returns before its own
- * revalidation.
- */
 export async function resolveSessionPlanOfRecord(
   deps: CaptureLatestPlanDeps,
   sessionID: string

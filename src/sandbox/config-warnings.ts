@@ -1,28 +1,45 @@
-import { isRecord } from '../utils/is-record'
+import { z } from 'zod'
 
-/**
- * Return one message per legacy `sandbox` config key that msb can no longer
- * express, so a stale `forge-config.jsonc` reports exactly which keys stopped
- * mattering. Operates on the raw parsed JSONC value because these keys no
- * longer exist on `SandboxConfig`. Non-object input returns an empty list.
- */
-export function collectLegacySandboxConfigWarnings(rawSandbox: unknown): string[] {
-  if (!isRecord(rawSandbox)) return []
+export interface LegacySandboxConfigInput {
+  mode?: unknown
+  projectMountPath?: unknown
+  resources?: unknown
+  network?: unknown
+  mounts?: unknown
+}
+
+const legacySandboxConfigSchema = z.looseObject({
+  mode: z.string().optional().catch(undefined),
+  projectMountPath: z.unknown().optional(),
+  resources: z.looseObject({
+    shmSize: z.unknown().optional(),
+    memorySwap: z.unknown().optional(),
+  }).optional().catch(undefined),
+  network: z.looseObject({
+    hostGateway: z.unknown().optional(),
+  }).optional().catch(undefined),
+  mounts: z.array(z.looseObject({ container: z.unknown().optional() }).catch({})).optional().catch(undefined),
+})
+
+export function collectLegacySandboxConfigWarnings(rawSandbox: LegacySandboxConfigInput | undefined): string[] {
+  const parsed = legacySandboxConfigSchema.safeParse(rawSandbox)
+  if (!parsed.success) return []
+  const sandboxConfig = parsed.data
 
   const warnings: string[] = []
 
-  const mode = rawSandbox.mode
+  const mode = sandboxConfig.mode
   if (mode === 'docker') {
     warnings.push("sandbox.mode 'docker' is ignored: the msb migration replaces the Docker driver; use mode 'msb'")
-  } else if (typeof mode === 'string' && mode !== 'msb') {
+  } else if (mode !== undefined && mode !== 'msb') {
     warnings.push(`sandbox.mode ${JSON.stringify(mode)} is replaced: the msb driver is the only supported sandbox mode; use mode 'msb'`)
   }
-  if ('projectMountPath' in rawSandbox) {
+  if ('projectMountPath' in sandboxConfig) {
     warnings.push('sandbox.projectMountPath is ignored: msb mounts the source project read-only at its own host path')
   }
 
-  const resources = rawSandbox.resources
-  if (isRecord(resources)) {
+  const resources = sandboxConfig.resources
+  if (resources) {
     if ('shmSize' in resources) {
       warnings.push('sandbox.resources.shmSize is ignored: msb does not support a shared-memory flag; remove it')
     }
@@ -31,13 +48,13 @@ export function collectLegacySandboxConfigWarnings(rawSandbox: unknown): string[
     }
   }
 
-  const network = rawSandbox.network
-  if (isRecord(network) && 'hostGateway' in network) {
+  const network = sandboxConfig.network
+  if (network && 'hostGateway' in network) {
     warnings.push('sandbox.network.hostGateway is ignored: msb blocks host loopback — use sandbox.network.allow')
   }
 
-  const mounts = rawSandbox.mounts
-  if (Array.isArray(mounts) && mounts.some((m) => isRecord(m) && 'container' in m)) {
+  const mounts = sandboxConfig.mounts
+  if (mounts?.some((mount) => 'container' in mount)) {
     warnings.push('sandbox.mounts[].container is ignored: msb mounts every workspace at its identical host path')
   }
 

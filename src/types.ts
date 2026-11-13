@@ -1,336 +1,152 @@
-/**
- * Configuration for plugin logging.
- */
+import type { JsonObject } from './utils/json-schema'
+
 export interface LoggingConfig {
-  /** Enable file logging. */
   enabled: boolean
-  /** Path to the log file. */
   file: string
-  /** Enable verbose debug logging. */
   debug?: boolean
 }
-
-/**
- * Logger interface for plugin-wide logging.
- */
 export interface Logger {
   log: (message: string, ...args: unknown[]) => void
   error: (message: string, ...args: unknown[]) => void
   debug: (message: string, ...args: unknown[]) => void
 }
 
-/**
- * Configuration for worktree loop completion logging.
- */
 export interface WorktreeLoggingConfig {
-  /** Enable worktree loop completion logging. Defaults to false. */
   enabled?: boolean
-  /** Directory to write completion logs. Defaults to platform data dir. */
   directory?: string
 }
 
-/** Post-completion action run inside the worktree before teardown (review, audit, doc-gen, etc.). */
 export interface PostActionConfig {
-  /** Enable the post-completion action phase. Defaults to false. */
   enabled?: boolean
-  /** Name of a skill to load via the Skill tool at action time (e.g. "pr-review"). Must be installed host-side. */
   skill?: string
-  /** Optional extra instruction text appended to the action prompt. Used standalone when no skill is set. */
   prompt?: string
-  /** Override the model used for the post-action prompt (format: "provider/model"). Defaults to the auditor model chain. */
   model?: string
 }
 
-/** Forge code-graph integration (`codegraph`). */
 export interface CodeGraphConfig {
-  /** Install `codegraph` into the sandbox template image when it is built. Default: true. */
   install?: boolean
-  /**
-   * Run code-graph snapshots in sandboxed loops and deny the `codegraph_*` MCP tools in loop
-   * sessions. Unset means on whenever `codegraph` is available in the sandbox; `false` turns both off.
-   */
   enabled?: boolean
 }
 
-/**
- * Session reuse on same-section retries: a retained standby session is resumed
- * across a phase switch. When its last assistant turn reached the role's
- * percentage of the model's context window, the session is compacted before its
- * next turn instead of being replaced.
- */
 export interface LoopSessionReuseConfig {
-  /** Compact the reused coder session before its next turn once its last turn used at least this percent of the model's context window. 0 disables coder reuse. Default 50. */
   coderContextPercent?: number
-  /** Same for the audit session. 0 disables auditor reuse. Default 50. */
   auditorContextPercent?: number
 }
 
-/** A single user-supplied loop permission rule: a bare tool name (shorthand for pattern `*`),
- *  or an explicit `{ permission, pattern }` object. */
 export type LoopPermissionRuleConfig = string | { permission: string; pattern?: string }
 
-/** User-configured permission rules layered over Forge's structural denies for loop, audit, and
- *  post-action sessions. Only `deny` entries are supported: an `allow` entry can never grant
- *  anything the blanket allow-all does not already grant, so it would be dead config. */
 export interface LoopPermissionsConfig {
-  /** Rules denied to the session, layered before Forge's structural denies (which always win). */
   deny?: LoopPermissionRuleConfig[]
 }
 
-/**
- * Configuration for autonomous loop behavior.
- */
 export interface LoopConfig {
-  /** Enable autonomous loop execution. Defaults to true. */
   enabled?: boolean
-  /** Default maximum iterations per loop. */
   defaultMaxIterations?: number
-  /** Clean up worktrees when loops complete. */
   cleanupWorktree?: boolean
-  /** Timeout in ms before considering a loop stalled. */
   stallTimeoutMs?: number
-  /** Worktree loop completion logging configuration. */
   worktreeLogging?: WorktreeLoggingConfig
-  /** Optional post-completion action (skill and/or prompt) run in-worktree before teardown. */
   postAction?: PostActionConfig
-  /** Maximum consecutive stalls before loop is terminated. 0 = disabled (default: 5). */
   maxConsecutiveStalls?: number
-  /** Time in ms a loop session may stay busy with no tool activity before the watchdog aborts the wedged message and sends a continue prompt. 0 = disabled (default: 900000). */
   busyStallTimeoutMs?: number
-  /** Session reuse on same-section retries. */
   sessionReuse?: LoopSessionReuseConfig
-  /**
-   * Absolute directory paths bind-mounted read-only into loop sandboxes (e.g. an Obsidian vault),
-   * so in-container `bash`/`glob`/`grep` resolve the same tree host `read` does. The sandbox mounts
-   * are the file-tool boundary, so these are the external directories a sandboxed loop can read.
-   * Always an absolute host path: msb mounts every workspace at its identical host path, so the
-   * same value is correct on both sides. Use `sandbox.mounts` for read-write container access.
-   */
   allowExternalDirectories?: string[]
-  /**
-   * Inline opencode config object written as `opencode.jsonc` at the root of each freshly created
-   * loop worktree, enabling per-loop opencode customization (primarily MCP servers). The
-   * `{{FORGE_SANDBOX_CONTAINER}}` token is replaced in string values for sandboxed loops; MCP
-   * entries containing it are omitted when no sandbox exists. Existing project configs are never
-   * overwritten, and the generated file is excluded from loop commits. An empty object or
-   * omission disables the behavior.
-   */
-  worktreeOpencodeConfig?: Record<string, unknown>
-  /**
-   * Extra `deny` rules layered over Forge's structural denies for loop, audit, and post-action
-   * sessions. Entries are applied before Forge's structural denies, so a user rule for a permission
-   * that Forge manages is rejected, as is a blanket (`*`) deny of a permission the loop requires;
-   * scoped denies remain honored. `external_directory` is Forge-managed: loops allow it and rely on
-   * the sandbox mounts as the boundary (extend them with `allowExternalDirectories`).
-   */
+  worktreeOpencodeConfig?: JsonObject
   permissions?: LoopPermissionsConfig
 }
 
-/**
- * A host-held credential bound to a sandbox at create time. The real value stays on the host:
- * msb keeps a source reference to the environment variable, exposes a `$MSB_<env>` placeholder
- * inside the sandbox, and substitutes the real value only for the listed hosts at the network
- * boundary — the value never enters the guest.
- */
 export interface SandboxSecretConfig {
-  /** Host environment variable name that holds the secret value. */
   env: string
-  /** Hostnames allowed to receive the real value at the network boundary. */
   hosts: string[]
 }
 
-/**
- * Network access configuration for the sandbox.
- * Controls egress allow-listing and credential delivery.
- */
 export interface SandboxNetworkConfig {
-  /** Environment variable names to pass through from the host process into the sandbox at
-   *  create time. Only names that are set in the host process are injected, as plain guest
-   *  environment variables (msb resolves a bare name from its own environment, so values
-   *  never appear on forge's command line). */
   env?: string[]
-  /** Hostnames to allow through msb's per-sandbox egress proxy via `--net-rule allow@<host>`. */
   allow?: string[]
-  /** Host-held credentials exposed to the sandbox only as `$MSB_<env>` placeholders. The real
-   *  value never enters the guest: msb substitutes it only for the listed hosts at the network
-   *  boundary. */
   secrets?: SandboxSecretConfig[]
-  /** Allow egress to private (LAN) address ranges, which msb blocks by default. Applied when a
-   *  sandbox is created; per-sandbox overrides can change it. Default: false. */
   allowLan?: boolean
 }
 
-/**
- * Resource limits for the sandbox. Maps directly to `msb create` flags.
- * msb defaults are often too tight for many real projects — `pnpm install`
- * gets OOM-killed (exit 137) and shell commands run slowly.
- */
 export interface SandboxResources {
-  /** Memory the sandbox gets, e.g. '8g', '1024m'. Maps to `msb create -m`. */
   memory?: string
-  /** Number of CPUs the sandbox gets. `msb create -c` is integer-only. */
   cpus?: string
-  /** Size of the dedicated disk backing the sandbox's Docker Engine data dir (`/var/lib/docker`),
-   *  e.g. '16g'. Maps to the `--mount-named ...:kind=disk,size=<size>` volume. Defaults to '16g'. */
   dockerDisk?: string
-  /** Size of the dedicated disk backing `/opt/forge/cache` (the pnpm store, npm/uv/pip caches,
-   *  uv-managed Pythons, cargo registry/git, Go modules), e.g. '16g'. Maps to the
-   *  `--mount-named ...:kind=disk,size=<size>` volume. Defaults to '16g'. */
   cacheDisk?: string
 }
 
-/**
- * Per-sandbox overrides of the `sandbox` config, shared by loop sandboxes and the host session
- * sandbox. Unset fields fall back to the config.
- */
 export interface SandboxOverrides {
-  /** Resource overrides for this sandbox. */
   resources?: SandboxResources
-  /** Overrides `sandbox.network.allowLan` for this sandbox. */
   allowLan?: boolean
 }
 
-/**
- * Per-loop sandbox overrides chosen at launch and persisted on the loop row. Unset fields fall
- * back to the `sandbox` config, so a loop launched without overrides behaves exactly as before.
- */
 export interface LoopSandboxSettings extends SandboxOverrides {
-  /** `false` runs this loop worktree-only even though the sandbox is enabled in config. */
   enabled?: boolean
 }
 
-/**
- * A single custom mount for the msb sandbox. `msb` always mounts a workspace
- * at its identical host path, so only the host path is specified.
- */
 export interface SandboxMountConfig {
-  /** Absolute host directory (or file) path mounted into the sandbox. */
   host: string
-  /** Mount read-only. Defaults to true (read-only); set false for read-write access. */
   readonly?: boolean
 }
 
-/**
- * Configuration for the sandbox execution environment (msb).
- */
 export interface SandboxConfig {
-  /** Sandbox mode. Currently only 'msb' is supported. Reserved for future modes. */
   mode?: 'msb'
-  /** Enable sandboxed execution. When false, loops run in worktree-only mode even if msb is available. Default: true. */
   enabled?: boolean
-  /** msb image reference (tag) to use for sandboxed execution. */
   image?: string
-  /** Resource limits. Defaults to memory=8g, cpus=4. */
   resources?: SandboxResources
-  /** Mount the source project directory read-only. Defaults to true. */
   mountProjectReadonly?: boolean
-  /** Additional host directories to mount into the msb sandbox. */
   mounts?: SandboxMountConfig[]
-  /** Network access configuration (egress allow-list, env passthrough, host-held secrets). */
   network?: SandboxNetworkConfig
-  /** Resolve permission prompts to allow or deny, using the auto-approve policy, for sessions whose shell runs in a sandbox. Does not affect per-session auto-approve. Default: true. */
   autoApprovePermissions?: boolean
 }
 
-/** An extra deny rule applied only while auto-approve is on, using OpenCode permission action/resource wildcard syntax. */
 export interface AutoApproveDenyRule {
   action: string
   resource: string
 }
 
-/** Policy applied while auto-approve is on for a session. Requests are only ever allowed or denied, never prompted. */
 export interface AutoApproveConfig {
-  /** Extra rules denied during auto-approval, using OpenCode permission action/resource wildcard syntax. Other OpenCode `ask` requests are allowed; existing `deny` decisions are unchanged. */
   deny?: AutoApproveDenyRule[]
 }
 
-/**
- * Configuration for session compaction behavior.
- */
 export interface CompactionConfig {
-  /** Use a custom compaction prompt. */
   customPrompt?: boolean
-  /** Maximum context tokens for compaction. Currently unused by Forge's compaction hook, which reads only `customPrompt`. */
   maxContextTokens?: number
 }
 
-/**
- * Configuration for the architect reminder appended to the last user message of an interactive
- * architect session.
- */
 export interface MessagesTransformConfig {
-  /** Enable the architect reminder. Defaults to true; `false` suppresses it. */
   enabled?: boolean
-  /** Enable debug logging. Currently unused: no production reader. */
   debug?: boolean
 }
 
-/**
- * Configuration for TUI display options.
- */
 export interface TuiConfig {
-  /** Show sidebar. */
   sidebar?: boolean
-  /** Show version information. */
   showVersion?: boolean
-  /** Keyboard shortcut overrides for Forge commands. */
   keybinds?: Record<string, string>
 }
 
-/**
- * Per-agent configuration overrides.
- */
 export interface AgentOverrideConfig {
-  /** Override default model temperature. */
   temperature?: number
 }
 
-/**
- * A fallback auditor model entry with its own reasoning/thinking variant.
- * Used when a fallback needs a different variant than the primary auditor model,
- * which never inherits its variant to fallbacks.
- */
 export interface AuditorFallbackModel {
-  /** Model in "provider/model" format. */
   model: string
-  /** Reasoning/thinking variant applied when this fallback is selected. */
   variant?: string
 }
 
-/**
- * Complete plugin configuration for opencode-forge.
- */
 export interface PluginConfig {
-  /** Custom data directory for plugin storage. Defaults to platform data dir. */
   dataDir?: string
-  /** Logging configuration. */
   logging?: LoggingConfig
-  /** Compaction behavior configuration. */
   compaction?: CompactionConfig
-  /** Message transformation for architect agent. */
   messagesTransform?: MessagesTransformConfig
-  /** Model to use for code execution. */
   executionModel?: string
-  /** Model to use for code auditing. */
   auditorModel?: string
-  /** Default reasoning/thinking variant for the execution model. */
   executionVariant?: string
-  /** Default reasoning/thinking variant for the auditor model. */
   auditorVariant?: string
-  /** Ordered entries tried, in order, when the current auditor model hits a provider usage/auth limit mid-loop. Use a `"provider/model"` string, or `{ model, variant }` to pin a variant to that fallback; the primary `auditorVariant` is **not** inherited by fallback entries. */
   auditorFallbackModels?: Array<string | AuditorFallbackModel>
-  /** Loop behavior configuration. */
   loop?: LoopConfig
-  /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
   completedLoopTtlMs?: number
-  /** TUI display configuration. */
   tui?: TuiConfig
-  /** Per-agent configuration overrides. */
   agents?: Record<string, AgentOverrideConfig>
-  /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
-  /** Code-graph (`codegraph`) installation and loop integration. */
   codeGraph?: CodeGraphConfig
-  /** Policy applied while auto-approve is on for a session. */
   autoApprove?: AutoApproveConfig
 }

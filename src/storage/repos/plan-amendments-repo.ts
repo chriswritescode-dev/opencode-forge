@@ -1,5 +1,19 @@
 import type { Database } from 'bun:sqlite'
+import { z } from 'zod'
 import type { Logger } from '../../types'
+
+const planAmendmentRowSchema = z.object({
+  id: z.number(),
+  project_id: z.string(),
+  loop_name: z.string(),
+  source: z.string(),
+  rationale: z.string(),
+  applied_at_section: z.number(),
+  sections_before: z.string(),
+  sections_after: z.string(),
+  created_at: z.number(),
+})
+const planAmendmentRowsSchema = z.array(planAmendmentRowSchema)
 
 export interface PlanAmendmentRow {
   id: number
@@ -40,17 +54,17 @@ export function createPlanAmendmentsRepo(db: Database, _logger?: Logger): PlanAm
     WHERE project_id = ? AND loop_name = ? AND id = ?
   `)
 
-  function mapRow(row: Record<string, unknown>): PlanAmendmentRow {
+  function mapRow(row: z.infer<typeof planAmendmentRowSchema>): PlanAmendmentRow {
     return {
-      id: row.id as number,
-      projectId: row.project_id as string,
-      loopName: row.loop_name as string,
-      source: row.source as string,
-      rationale: row.rationale as string,
-      appliedAtSection: row.applied_at_section as number,
-      sectionsBefore: row.sections_before as string,
-      sectionsAfter: row.sections_after as string,
-      createdAt: row.created_at as number,
+      id: row.id,
+      projectId: row.project_id,
+      loopName: row.loop_name,
+      source: row.source,
+      rationale: row.rationale,
+      appliedAtSection: row.applied_at_section,
+      sectionsBefore: row.sections_before,
+      sectionsAfter: row.sections_after,
+      createdAt: row.created_at,
     }
   }
 
@@ -69,12 +83,12 @@ export function createPlanAmendmentsRepo(db: Database, _logger?: Logger): PlanAm
     },
 
     listForLoop(projectId, loopName) {
-      const rows = stmtList.all(projectId, loopName) as Array<Record<string, unknown>>
+      const rows = planAmendmentRowsSchema.parse(stmtList.all(projectId, loopName))
       return rows.map(mapRow)
     },
 
     get(projectId, loopName, id) {
-      const row = stmtGet.get(projectId, loopName, id) as Record<string, unknown> | null
+      const row = planAmendmentRowSchema.nullish().parse(stmtGet.get(projectId, loopName, id))
       return row ? mapRow(row) : null
     },
   }

@@ -1,13 +1,7 @@
-/**
- * Builds the sandbox template image with Docker and loads it into the `msb` image store.
- * Docker still produces the image, but `msb` needs it in its own image store, so the
- * palette command becomes build -> save -> load. Both steps live here so there is a
- * single point of truth for the sequence and its failure messages.
- */
 import { rmSync } from 'fs'
 import { join } from 'path'
 import type { Logger, PluginConfig } from '../types'
-import { runCommand, type CommandResult } from './process'
+import { runCommand, type CommandResult, type RunCommandOpts } from './process'
 
 const BUILD_TIMEOUT = 600000
 const SAVE_TIMEOUT = 600000
@@ -18,9 +12,7 @@ export type SandboxBuildStage = 'build' | 'save' | 'load'
 
 export interface SandboxBuildProgress {
   stage: SandboxBuildStage
-  /** One line of command output, or a synthetic status line for stages that produce none. */
   line: string
-  /** Present only for `docker build` lines that announce a numbered step. */
   step?: { current: number; total: number; description: string }
 }
 
@@ -29,29 +21,14 @@ export interface BuildTemplateDeps {
   loadTemplate: (tar: string, ref: string) => Promise<void>
   logger: Logger
   tmpDir: string
-  /**
-   * Live progress sink. The build can run for ten minutes with no other signal,
-   * so callers that own a UI surface use this to prove the build is alive.
-   */
   onProgress?: (progress: SandboxBuildProgress) => void
-  /** Extra `docker build` arguments, from `resolveTemplateBuildArgs`. */
   buildArgs?: string[]
 }
 
-/**
- * The single mapping from plugin configuration to sandbox template build
- * arguments. The image installs codegraph by default, so only an explicit
- * `codeGraph.install: false` adds a build argument, which skips it.
- */
 export function resolveTemplateBuildArgs(config: PluginConfig | undefined): string[] {
   return config?.codeGraph?.install === false ? ['--build-arg', 'INSTALL_CODEGRAPH=false'] : []
 }
 
-/**
- * `#12 [builder 4/22] RUN ...` and `#5 [ 1/8] FROM ...` both carry the step
- * counter that makes the build determinate. Lines without one (`[internal] load
- * build context`, per-step log output) return null and are reported as plain text.
- */
 const DOCKER_BUILD_STEP_RE = /^#\d+\s+\[\s*(?:.+\s+)?(\d+)\/(\d+)\]\s*(.*)$/
 
 export function parseDockerBuildStep(line: string): SandboxBuildProgress['step'] | null {
@@ -64,10 +41,6 @@ export function parseDockerBuildStep(line: string): SandboxBuildProgress['step']
   return { current, total, description: match[3].trim() }
 }
 
-/**
- * Adapts chunked child-process output to whole lines. Chunks split mid-line, so
- * the remainder is carried into the next chunk instead of being reported as a line.
- */
 function reportLines(stage: SandboxBuildStage, onProgress: (progress: SandboxBuildProgress) => void): (chunk: string) => void {
   let carry = ''
   return (chunk: string) => {
@@ -104,20 +77,8 @@ function dockerStageError(stage: 'build' | 'save', result: CommandResult): Error
 
 export const CONCURRENT_BUILD_MESSAGE = 'A sandbox template build is already running in this process.'
 
-/**
- * One build at a time per process. `tarPath` is keyed by pid, so two concurrent
- * runs share it: the second `docker save` overwrites the first run's tar, and
- * whichever finishes first deletes it out from under the other, producing a
- * corrupt or missing load. Guarding here rather than in the UI keeps every
- * caller — the palette dialog today, anything else later — on one rule.
- */
 let activeBuild: Promise<void> | null = null
 
-/**
- * Builds `<tag>` from `contextDir` with Docker, saves it to a temp tar, loads that tar
- * into the msb image store, and removes the tar on both the success and failure paths.
- * Rejects immediately if a build is already in flight.
- */
 export function buildAndLoadSandboxTemplate(
   contextDir: string,
   tag: string,
@@ -139,25 +100,24 @@ async function runBuildAndLoad(
   const tarPath = join(deps.tmpDir, `forge-sandbox-template-${process.pid}.tar`)
   const onProgress = deps.onProgress
   try {
-    // `--progress=plain` is only added to the real invocation, not to
-    // `formatTemplateBuildCommands`: it makes output line-oriented and parseable
-    // here, but is noise in the copy-paste hint shown to a human.
     const buildArgs = deps.buildArgs ?? []
-    const build = await deps.runCommand('docker', ['build', '--progress=plain', ...buildArgs, '-t', tag, contextDir], {
+    const buildOpts: RunCommandOpts = {
       logger: deps.logger,
       logLabel: 'docker',
       timeout: BUILD_TIMEOUT,
-      ...(onProgress ? { onOutput: reportLines('build', onProgress) } : {}),
-    })
+    }
+    if (onProgress) buildOpts.onOutput = reportLines('build', onProgress)
+    const build = await deps.runCommand('docker', ['build', '--progress=plain', ...buildArgs, '-t', tag, contextDir], buildOpts)
     if (build.exitCode !== 0) throw dockerStageError('build', build)
 
     onProgress?.({ stage: 'save', line: `Saving ${tag} to a temporary tar...` })
-    const save = await deps.runCommand('docker', ['save', tag, '-o', tarPath], {
+    const saveOpts: RunCommandOpts = {
       logger: deps.logger,
       logLabel: 'docker',
       timeout: SAVE_TIMEOUT,
-      ...(onProgress ? { onOutput: reportLines('save', onProgress) } : {}),
-    })
+    }
+    if (onProgress) saveOpts.onOutput = reportLines('save', onProgress)
+    const save = await deps.runCommand('docker', ['save', tag, '-o', tarPath], saveOpts)
     if (save.exitCode !== 0) throw dockerStageError('save', save)
 
     onProgress?.({ stage: 'load', line: `Loading ${tag} into the msb image store...` })

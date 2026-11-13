@@ -1,3 +1,4 @@
+import type { ForgeEvent } from '../client/port'
 import type { ToolContext } from '../tools/types'
 import { captureMarkedPlanTextForSession } from '../services/plan-capture'
 import { PLAN_END_MARKER, PLAN_START_MARKER } from '../utils/marked-plan-parser'
@@ -9,7 +10,7 @@ interface MessagePartUpdatedEvent {
   properties?: { sessionID?: string; part?: { type?: string; text?: string; messageID?: string; id?: string } }
 }
 
-type PlanCaptureEvent = MessagePartUpdatedEvent | { type: string; properties?: Record<string, unknown> }
+type PlanCaptureEvent = MessagePartUpdatedEvent | { type: string; properties?: ForgeEvent['properties'] }
 
 function isMessagePartUpdatedEvent(event: PlanCaptureEvent): event is MessagePartUpdatedEvent {
   return event.type === MESSAGE_PART_UPDATED_EVENT
@@ -18,8 +19,8 @@ function isMessagePartUpdatedEvent(event: PlanCaptureEvent): event is MessagePar
 export function createPlanCaptureEventHook(ctx: ToolContext) {
   const { logger, plansRepo, projectId, directory } = ctx
 
-  function logCaptureError(sessionID: string, error: unknown) {
-    logger.error(`plan-capture: hook failed for session ${sessionID}`, error as Error)
+  function logCaptureError(sessionID: string, cause: unknown) {
+    logger.error(`plan-capture: hook failed for session ${sessionID}`, cause)
   }
 
   async function handleStreamingPart(event: MessagePartUpdatedEvent) {

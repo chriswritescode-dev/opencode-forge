@@ -3,7 +3,6 @@ import type { LoopSandboxSettings, SandboxResources } from '../types'
 import { isSandboxCpuCount, isSandboxSize, readLoopSandboxSettings, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
 import type { ForgeTuiHost, ForgeTuiSelectOption } from './host'
 
-/** Loop-mode overrides chosen in the execution dialog; unset fields use the server defaults. */
 export interface LoopLaunchSettings {
   maxIterations?: number
   sandbox?: LoopSandboxSettings
@@ -25,15 +24,10 @@ export const RESOURCE_FIELDS: ReadonlyArray<ResourceField> = [
 
 export const DEFAULT_SUFFIX = ' (default)'
 
-/** Settings-menu label for a LAN access value. */
 export function formatLanAccess(allowLan: boolean): string {
   return allowLan ? 'allowed' : 'blocked'
 }
 
-/**
- * Prompts for one resource override. Returns the edited overrides (an empty entry removes the
- * override), or the unchanged ones when the prompt is dismissed or the value is invalid.
- */
 export async function promptResourceOverride(
   host: ForgeTuiHost,
   resources: SandboxResources,
@@ -74,7 +68,6 @@ function withSandbox(settings: LoopLaunchSettings, sandbox: LoopSandboxSettings)
   return normalized ? { ...rest, sandbox: normalized } : rest
 }
 
-/** One-line summary shown on the execution dialog's Loop settings row. */
 export function formatLoopSettingsSummary(settings: LoopLaunchSettings, defaults: ForgeLoopDefaults | null): string {
   const iterations = settings.maxIterations ?? defaults?.maxIterations
   const parts = [iterations === undefined ? 'default iterations' : `${formatIterations(iterations)} iterations`]
@@ -89,26 +82,26 @@ export function formatLoopSettingsSummary(settings: LoopLaunchSettings, defaults
   return parts.join(' · ')
 }
 
-/**
- * The loop-launch request fields for the chosen settings. Sandbox overrides are sent only when the
- * server has a usable sandbox, and resources only while the sandbox is on for this loop.
- */
+export interface LoopLaunchRequest {
+  maxIterations?: number
+  sandbox?: LoopSandboxSettings
+}
+
 export function toLoopLaunchRequest(
   settings: LoopLaunchSettings,
   defaults: ForgeLoopDefaults | null,
-): { maxIterations?: number; sandbox?: LoopSandboxSettings } {
+): LoopLaunchRequest {
   const sandbox = !defaults?.sandbox.available
     ? undefined
     : settings.sandbox?.enabled === false
       ? { enabled: false }
       : readLoopSandboxSettings({ resources: settings.sandbox?.resources, allowLan: settings.sandbox?.allowLan })
-  return {
-    ...(settings.maxIterations !== undefined ? { maxIterations: settings.maxIterations } : {}),
-    ...(sandbox ? { sandbox } : {}),
-  }
+  const request: LoopLaunchRequest = {}
+  if (settings.maxIterations !== undefined) request.maxIterations = settings.maxIterations
+  if (sandbox) request.sandbox = sandbox
+  return request
 }
 
-/** Options for the Loop settings submenu, reflecting the current overrides over the server defaults. */
 export function buildLoopSettingsOptions(settings: LoopLaunchSettings, defaults: ForgeLoopDefaults | null): ForgeTuiSelectOption<string>[] {
   const options: ForgeTuiSelectOption<string>[] = [{
     title: `Max iterations: ${formatIterations(settings.maxIterations ?? defaults?.maxIterations)}${settings.maxIterations === undefined ? DEFAULT_SUFFIX : ''}`,
@@ -179,7 +172,6 @@ function effectiveAllowLan(settings: LoopLaunchSettings, defaults: ForgeLoopDefa
   return resolveSandboxAllowLan(defaults?.sandbox.allowLan, settings.sandbox)
 }
 
-/** Flips LAN access, dropping the override when the new value is the config default. */
 function toggleLoopAllowLan(settings: LoopLaunchSettings, defaults: ForgeLoopDefaults | null): LoopLaunchSettings {
   const next = !effectiveAllowLan(settings, defaults)
   const { allowLan: _previous, ...sandbox } = settings.sandbox ?? {}
@@ -203,10 +195,6 @@ async function applyLoopSettingsChoice(
   return field ? promptResource(host, settings, defaults, field) : settings
 }
 
-/**
- * Runs the Loop settings submenu until the user picks Done or dismisses it, returning the edited
- * overrides. Each edit reopens the submenu with the edited row selected.
- */
 export async function editLoopSettings(
   host: ForgeTuiHost,
   initial: LoopLaunchSettings,

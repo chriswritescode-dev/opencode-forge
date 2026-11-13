@@ -1,17 +1,26 @@
 import { mkdir } from 'fs/promises'
+import { z } from 'zod'
 import { existsSync, readFileSync, appendFileSync, realpathSync } from 'fs'
 import type { Logger, LoopSandboxSettings } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
 import { LOOP_SANDBOX_EXTRA_KEY, readLoopSandboxSettings } from '../sandbox/loop-settings'
-import { getForgeWorkspaceBaseRef, getForgeWorkspaceBranch } from './forge-worktree'
+import type { WorkspaceExtra } from '../client/port'
+import { getForgeWorkspaceBaseRef, getForgeWorkspaceBranch, getForgeWorkspaceForgeLoop, getForgeWorkspaceLoopName, getForgeWorkspaceProjectDirectory } from './forge-worktree'
 import { describeBranchInUse, describeBranchReuseConflict } from './loop-branch'
 import { forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot, resolveLoopBranchName } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
-import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
+import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME, type WorktreeOpencodeConfig } from './worktree-opencode-config'
 import { commitWorktreeChanges } from './worktree-commit'
 import { sandboxContainerName } from '../sandbox/msb'
 import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
+
+const jsonObjectSchema = z.record(z.string(), z.json())
+type JsonBlock = z.infer<typeof jsonObjectSchema>
+
+function isJsonBlock(value: WorkspaceExtra['forgeLoop']): value is JsonBlock {
+  return jsonObjectSchema.safeParse(value).success
+}
 
 export interface ForgeWorkspaceInfo {
   id: string
@@ -19,7 +28,7 @@ export interface ForgeWorkspaceInfo {
   name: string
   branch: string | null
   directory: string | null
-  extra: unknown | null
+  extra: WorkspaceExtra | null
   projectID: string
 }
 
@@ -29,18 +38,8 @@ export interface ForgeWorkspaceAdapter {
   remove(info: ForgeWorkspaceInfo): Promise<void>
 }
 
-/**
- * Runtime context for a forge workspace teardown: whether the adapter commits
- * pending changes and whether it removes the worktree directory. Populated by
- * the caller (loop termination side-effects, etc.) before
- * `client.workspace.remove` is invoked.
- *
- * When no context is registered (orphan sweep, TUI delete without an active
- * loop), the adapter falls back to sensible defaults.
- */
 export interface TeardownContext {
   doCommit: boolean
-  /** When false the worktree directory stays in place for restart. */
   doRemoveWorktree: boolean
 }
 
@@ -50,20 +49,9 @@ export interface ForgeAdapterDeps {
   dataDir: string
   logger: Logger
   sandboxManager?: Pick<SandboxManager, 'start' | 'stop'> | null
-  /**
-   * Lookup runtime teardown context (doCommit, doRemoveWorktree) for a loop.
-   * Optional: when absent or returning undefined, the adapter uses defaults.
-   */
   getTeardownContext?: TeardownContextProvider
-  /** Inject a custom GitService (defaults to real git if omitted). */
   gitService?: GitService
-  /** Inline opencode config written as opencode.jsonc into each worktree (skip-if-exists). */
-  worktreeOpencodeConfig?: Record<string, unknown>
-  /**
-   * Whether the code-graph integration is on (`isCodeGraphEnabled(config)`). A provisioned sandbox
-   * links `CODE_GRAPH_LINK_NAME` into the worktree, so it is excluded from git only when this is not
-   * `false`. Unset means on.
-   */
+  worktreeOpencodeConfig?: WorktreeOpencodeConfig
   codeGraphEnabled?: boolean
 }
 
@@ -94,11 +82,6 @@ function isSameDirectory(a: string, b: string): boolean {
   }
 }
 
-/**
- * Builds the `worktree add` failure error. A branch already held by a different worktree maps to
- * the wording `validateLoopBranchRequest` uses; every other failure, and a holder that is this
- * workspace's own directory (handled by the orphan reuse/cleanup path), keeps the raw git stderr.
- */
 function worktreeAddFailure(branch: string, directory: string, stderr: string): Error {
   const holder = parseBranchInUsePath(stderr)
   if (holder !== null && !isSameDirectory(holder, directory)) {
@@ -112,39 +95,24 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
   const git = gitServiceOpt ?? defaultGitService
 
   function deriveLoopName(info: ForgeWorkspaceInfo): string {
-    const extra = (info.extra ?? {}) as { loopName?: unknown }
-    const raw = typeof extra.loopName === 'string' ? extra.loopName : ''
+    const raw = getForgeWorkspaceLoopName(info)
     if (!raw) throw new Error('forge workspace adapter: extra.loopName is required')
     return forgeWorktreeSlug(raw)
   }
 
   function deriveProjectDirectory(info: ForgeWorkspaceInfo): string {
-    const extra = (info.extra ?? {}) as { projectDirectory?: unknown }
-    const dir = typeof extra.projectDirectory === 'string' ? extra.projectDirectory : ''
+    const dir = getForgeWorkspaceProjectDirectory(info)
     if (!dir) throw new Error('forge workspace adapter: extra.projectDirectory is required')
     return dir
   }
 
-  /**
-   * Reads this workspace's per-loop sandbox settings from `extra.loopSandbox`, validating the
-   * untrusted payload through the shared reader. Returns undefined when nothing valid is present.
-   */
   function readLoopSandbox(info: ForgeWorkspaceInfo): LoopSandboxSettings | undefined {
-    const extra = (info.extra ?? {}) as Record<string, unknown>
-    return readLoopSandboxSettings(extra[LOOP_SANDBOX_EXTRA_KEY])
+    return readLoopSandboxSettings(info.extra?.[LOOP_SANDBOX_EXTRA_KEY])
   }
 
-  /**
-   * Whether this workspace's loop explicitly opted out of the sandbox, via the per-loop settings
-   * (`extra.loopSandbox.enabled === false`) or the legacy flag (`extra.forgeLoop.sandboxEnabled
-   * === false`). Provisioning must honor the per-loop flag even when the config has the sandbox
-   * enabled.
-   */
   function isLoopSandboxOptedOut(info: ForgeWorkspaceInfo): boolean {
     if (readLoopSandbox(info)?.enabled === false) return true
-    const forgeLoop = ((info.extra ?? {}) as { forgeLoop?: unknown }).forgeLoop
-    if (typeof forgeLoop !== 'object' || forgeLoop === null) return false
-    return (forgeLoop as { sandboxEnabled?: unknown }).sandboxEnabled === false
+    return getForgeWorkspaceForgeLoop(info)?.sandboxEnabled === false
   }
 
   function addToGitExclude(directory: string, patterns: string[]): void {
@@ -200,23 +168,13 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
     })
   }
 
-  /**
-   * Stamps the attach timestamps with the creation time. `configure` runs
-   * exactly once at creation, so it is the single normalization point for the
-   * attach/pending-start grace windows evaluated in classify-stale.ts.
-   */
-  function restampAttachTimestamps(extra: unknown): unknown {
-    if (typeof extra !== 'object' || extra === null) return extra
+  function restampAttachTimestamps(extra: WorkspaceExtra | null): WorkspaceExtra | null {
+    if (extra === null) return null
     const now = Date.now()
-    const record = extra as Record<string, unknown>
-    const result: Record<string, unknown> = { ...record, workspaceCreatedAt: now }
-    const forgeLoop = record.forgeLoop
-    if (
-      typeof forgeLoop === 'object' &&
-      forgeLoop !== null &&
-      typeof (forgeLoop as Record<string, unknown>).pendingAttachStartedAt === 'number'
-    ) {
-      result.forgeLoop = { ...(forgeLoop as Record<string, unknown>), pendingAttachStartedAt: now }
+    const result: WorkspaceExtra = { ...extra, workspaceCreatedAt: now }
+    const forgeLoop = extra.forgeLoop
+    if (isJsonBlock(forgeLoop) && getForgeWorkspaceForgeLoop({ extra })?.pendingAttachStartedAt !== undefined) {
+      result.forgeLoop = { ...forgeLoop, pendingAttachStartedAt: now }
     }
     return result
   }
@@ -257,11 +215,9 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
         throw new Error(`forge workspace adapter: projectDirectory ${projectDir} is not a git work tree`)
       }
 
-      // Detect orphan state from a prior failed run: branch may exist without a live worktree.
       const branchExists = git.branchExists(projectDir, info.branch)
       const baseRef = getForgeWorkspaceBaseRef(info)
 
-      // Prune dead worktree records first so `git worktree add` can re-use an orphaned branch.
       git.worktreePrune(projectDir)
 
       if (baseRef) {
@@ -337,9 +293,6 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
         logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch}${branchExists ? ' (reused existing branch)' : ''}${reusedOrphan ? ' (after orphan cleanup)' : ''}`)
       }
 
-      // Idempotently add .forge/ (overflow/scratch), the sandbox code-graph link,
-      // and any forge-written opencode config to git exclude so they never enter
-      // loop commits.
       const excludePatterns = ['.forge/']
       const sandboxProvisioned = Boolean(sandboxManager) && !isLoopSandboxOptedOut(info)
       if (sandboxProvisioned && codeGraphEnabled !== false) {
@@ -385,18 +338,12 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
       const loopName = resolveLoopName(info)
       const ctx = getTeardownContext?.(loopName) ?? DEFAULT_TEARDOWN_CONTEXT
 
-      // Always commit changes so work isn't lost — skip only when the worktree
-      // directory itself is already gone.
       await stepCommitChanges(info.directory, info.branch ?? '<branch>', ctx)
 
-      // Stop sandbox container if running.
       await stepStopSandbox(sandboxManager, info.name)
 
-      // Remove the worktree directory and prune dead records.
-      // Skip on error/stall/abort so restart can reuse it.
       await stepRemoveWorktree(info.directory, ctx)
 
-      // Branches are never deleted — `forge/*` scratch branches stay in place for potential restart.
     },
   }
 }

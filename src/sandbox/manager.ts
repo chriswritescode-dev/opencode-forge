@@ -12,43 +12,14 @@ import { formatTemplateBuildCommands } from './template'
 export interface SandboxManagerConfig {
   image: string
   resources?: SandboxResources
-  /**
-   * Looks up a sandbox's persisted overrides by manager key: a loop row's settings, or the host
-   * session sandbox's desired row. Used whenever a sandbox is (re)created without an explicit
-   * override (e.g. from `ensureRunning`/`restore`), so persisted overrides survive restarts, and by
-   * `applyOverrides` to converge an existing sandbox.
-   */
   resolveOverrides?: (worktreeName: string) => SandboxOverrides | undefined
   sourceProjectDir?: string
   mountProjectReadonly?: boolean
   customMounts?: SandboxMountConfig[]
   buildContextDir?: string
-  /**
-   * Extra `docker build` arguments for the image-missing hint, so the printed
-   * command reproduces the configured build (for example the opt-in codegraph
-   * install).
-   */
   templateBuildArgs?: string[]
-  /**
-   * Host path of opencode's tool-output (truncation) directory. When set and present, it is
-   * bind-mounted read-only at the identical container path so the agent's in-container tools
-   * (`sh`, `glob`, `grep`) can read overflow files that opencode references by absolute host path.
-   */
   toolOutputDir?: string
-  /**
-   * Host path of the shared loop scratch/temp directory. When set, it is created if missing and
-   * bind-mounted read-WRITE at the identical container path, so absolute temp paths resolve
-   * unchanged inside the container and match the host (worktree-only) view.
-   */
   tmpDir?: string
-  /**
-   * Network policy for the msb sandbox. `env` lists host environment variable names to inject
-   * into the guest at create time (bare `-e <NAME>`, so values stay off the command line).
-   * `secrets` lists host-held credentials that never enter the guest (msb substitutes them only
-   * for the listed hosts at the network boundary). `allow` opts into egress restriction: when it
-   * is empty msb's own allow-public default applies, and configuring any host switches the
-   * sandbox to deny-by-default with one allow rule per validated host.
-   */
   network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[]; allowLan?: boolean }
 }
 
@@ -76,14 +47,6 @@ function isStrictDescendantPath(path: string, prefix: string): boolean {
   return resolved !== base && resolved.startsWith(base + '/')
 }
 
-/**
- * Whether a new workspace cannot coexist with an already-accepted one on an overlapping path.
- * msb accepts nested workspace mounts, but a read-only mount applies to its whole subtree, so
- * flags cannot differ across a nesting boundary: a read-only ancestor silently makes a
- * read-write descendant read-only, and a read-write descendant of a read-only mount never takes
- * effect. The one safe flag mismatch is a read-only mount strictly inside a read-write mount,
- * which merely restricts that subtree. Matching flags always coexist.
- */
 function mountConflictsWith(next: SandboxMount, accepted: SandboxMount): boolean {
   if (!containerPathsOverlap(next.hostDir, accepted.hostDir)) return false
   const nextReadOnly = next.readOnly === true
@@ -95,7 +58,6 @@ function mountConflictsWith(next: SandboxMount, accepted: SandboxMount): boolean
   return true
 }
 
-/** Whether an accepted mount with the same access already covers `next`, making it redundant. */
 function mountAlreadyCovered(next: SandboxMount, accepted: SandboxMount): boolean {
   if ((next.readOnly === true) !== (accepted.readOnly === true)) return false
   return isSameOrDescendantPath(
@@ -141,18 +103,19 @@ export function resolveCustomMounts(
 const DOCKER_AVAILABLE_TTL = 30_000
 const LIVENESS_CHECK_TTL = 2_000
 
+export interface SandboxMountPlan {
+  mounts: SandboxMount[]
+}
+
 export interface ActiveSandbox {
   containerName: string
   projectDir: string
   startedAt: string
   mounts: SandboxMount[]
-  /** Changes whenever the sandbox is created anew, so observers can tell a recreation from a restart. */
   instanceId: string
-  /** Last known CPUs, memory, and LAN access; undefined until created here or read back from msb. */
   settings?: SandboxRuntimeSettings
 }
 
-/** How {@link SandboxManager.applyOverrides} converged a sandbox. */
 export type ApplyOverridesOutcome = 'unchanged' | 'resized' | 'recreated'
 
 export interface SandboxManager {
@@ -165,12 +128,6 @@ export interface SandboxManager {
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
-  /**
-   * Converges an existing sandbox to its effective settings (persisted overrides over config).
-   * A CPU or memory change restarts the sandbox in place, keeping its disks; a LAN access change
-   * recreates it, because msb fixes network policy at create time. Rejects when the current
-   * settings cannot be read, so a LAN restriction is never assumed to hold.
-   */
   applyOverrides(worktreeName: string, projectDir: string): Promise<ApplyOverridesOutcome>
 }
 
@@ -189,18 +146,6 @@ function dropConflictingMounts(mounts: SandboxMount[], logger: Logger): SandboxM
   return kept
 }
 
-/**
- * Maps the resolved mount plan to `msb create` workspaces. msb accepts nested workspace
- * mounts, so overlapping read-write mounts (worktree + git dirs) coexist; a mount is dropped
- * only when its read-only flag conflicts with an accepted mount's (see `mountConflictsWith`).
- * Callers must still pass mounts in priority order (worktree → git dirs → read-only project →
- * tool-output → temp → custom) so the first-accepted flag wins when a conflict is unavoidable.
- *
- * Host paths are canonicalized here because msb refuses to mount a host path that traverses a
- * symlink, failing the entire sandbox with `ENOTDIR`. On macOS that breaks every `os.tmpdir()`
- * mount, since `/var` is a symlink to `private/var`. The container path is deliberately left
- * uncanonicalized so absolute paths handed to the agent resolve identically inside the sandbox.
- */
 export function buildSandboxWorkspaces(mounts: SandboxMount[], logger: Logger): SandboxWorkspace[] {
   return dropConflictingMounts(mounts, logger).map((mount) => ({
     hostDir: canonicalizePath(mount.hostDir),
@@ -236,11 +181,6 @@ export function createSandboxManager(
       return
     }
     const result = await runtime.checkAvailable()
-    // An inconclusive probe says nothing about availability: the probe can exhaust its query
-    // bound under startup load (every worktree probes independently), so a timeout or throw is
-    // not evidence the runtime is unusable. Failing on it would block loop launches under
-    // exactly the concurrency forge exists to provide, and caching it would extend one slow probe
-    // into a window of refusals. Proceed instead and let the real operation report authoritatively.
     if (!result.available && result.reason === 'unknown') {
       logger.log(`Sandbox: could not determine daemon availability (${result.detail ?? 'no detail'}); continuing`)
       return
@@ -255,8 +195,6 @@ export function createSandboxManager(
     if (imageReady) return
     const exists = await runtime.templateExists(config.image)
     if (!exists) {
-      // A runtime that cannot answer `msb images` is indistinguishable from a missing template,
-      // so confirm it is really reachable before telling the user to rebuild the image.
       const availability = await runtime.checkAvailable()
       if (!availability.available) {
         if (availability.reason === 'unknown') return
@@ -275,15 +213,11 @@ export function createSandboxManager(
     imageReady = true
   }
 
-  function buildMountPlan(projectDir: string): { mounts: SandboxMount[] } {
+  function buildMountPlan(projectDir: string): SandboxMountPlan {
     const absolute = resolve(projectDir)
-    // `msb` mounts every workspace at its identical host path (there is no separate
-    // `/workspace` container path), so the primary worktree mount is hostDir == containerDir.
     const worktreeMount: SandboxMount = { hostDir: absolute, containerDir: absolute }
 
     const gitMounts = detectGitMount(absolute)
-    // Outer/common dir first so it survives the overlap drop and keeps the whole git metadata
-    // region writable (the nested worktree git dir is swallowed by its common dir).
     const orderedGitMounts = [...gitMounts].sort((a, b) => a.hostDir.length - b.hostDir.length)
 
     const sourceProjectDir = config.sourceProjectDir
@@ -305,14 +239,6 @@ export function createSandboxManager(
     if (tmpMount) reserved.add(tmpMount.containerDir)
     const customMounts = resolveCustomMounts(config.customMounts, reserved, logger)
 
-    // Priority order is load-bearing: worktree first, then git dirs (outer/common dir first so
-    // it survives any conflict and keeps the whole git metadata region writable), then the
-    // read-only project mount, then tool-output/temp/custom. msb accepts nested workspaces, so
-    // read-write mounts (worktree + git dirs) all mount even when one nests inside another; the
-    // read-only project workspace is dropped because it is an ancestor of the writable git
-    // workspaces and a read-only ancestor silently makes them read-only inside the sandbox.
-    // Never resolve that conflict by making the project workspace read-write — that would let a
-    // sandboxed agent modify the user's main checkout.
     const candidates: SandboxMount[] = [
       worktreeMount,
       ...orderedGitMounts,
@@ -378,11 +304,6 @@ export function createSandboxManager(
 
     const result: SandboxMount[] = [...paths].map((hostDir) => ({ hostDir, containerDir: hostDir, readOnly: false }))
 
-    // The git metadata region is mounted read-write so in-sandbox git works, which would also let
-    // the sandbox plant a hook that runs on the host under the user's account. Forge's own git
-    // disables hooksPath (see `git-service`), but the user's git in the same repository does not,
-    // so the hooks directory is re-mounted read-only inside the writable region. `msb` workspaces
-    // are directories only, so the repo-local config file cannot be protected the same way.
     const hooksDir = join(resolvedCommonDir, 'hooks')
     if (existsSync(hooksDir)) {
       result.push({ hostDir: hooksDir, containerDir: hooksDir, readOnly: true })
@@ -392,13 +313,6 @@ export function createSandboxManager(
     return result
   }
 
-  /**
-   * Single point that records a usable sandbox in the active map, shared by the create and
-   * adopt paths in `start` and by `resolveUsableSandbox`. An existing entry's `startedAt` wins
-   * so adopting a sandbox never resets the time it actually came up. A precomputed mount plan
-   * is reused when provided so the create path does not run it twice. Re-registering the same
-   * container keeps its instance id and known settings; a create passes `created` to reset both.
-   */
   function registerActiveSandbox(
     worktreeName: string,
     containerName: string,
@@ -410,21 +324,17 @@ export function createSandboxManager(
     const active = activeSandboxes.get(worktreeName)
     const same = !created && active?.containerName === containerName ? active : undefined
     const settings = created ? created.settings : same?.settings
-    activeSandboxes.set(worktreeName, {
+    const applied: ActiveSandbox = {
       containerName,
       projectDir: resolve(projectDir),
       startedAt: active?.startedAt ?? startedAt ?? new Date().toISOString(),
       mounts: mounts ?? buildMountPlan(projectDir).mounts,
       instanceId: same?.instanceId ?? randomUUID(),
-      ...(settings ? { settings } : {}),
-    })
+    }
+    if (settings) applied.settings = settings
+    activeSandboxes.set(worktreeName, applied)
   }
 
-  /**
-   * Reads an adopted sandbox's settings back from msb once per instance, so the agent's sandbox
-   * note can report them. Best-effort: an unreadable sandbox keeps unknown settings and is not
-   * re-queried on every liveness recheck.
-   */
   async function learnSettings(worktreeName: string): Promise<void> {
     const active = activeSandboxes.get(worktreeName)
     if (!active || active.settings || settingsLookups.has(active.instanceId)) return
@@ -434,7 +344,6 @@ export function createSandboxManager(
     if (settings && current?.containerName === active.containerName) current.settings = settings
   }
 
-  /** The settings a sandbox should have: persisted overrides over config over defaults. */
   function resolveTargetSettings(worktreeName: string, override?: SandboxOverrides) {
     const overrides = override ?? config.resolveOverrides?.(worktreeName)
     const resources = resolveSandboxResources(config.resources, overrides?.resources)
@@ -447,11 +356,6 @@ export function createSandboxManager(
     return { overrides, resources, cpus, memoryMib, allowLan, settings }
   }
 
-  /**
-   * Resolves the configured env passthrough against the live host environment. msb fails the
-   * create when a bare `-e NAME` references an unset host variable, so only defined values are
-   * forwarded and the omission is logged.
-   */
   function resolvePassthroughEnv(): string[] {
     return (config.network?.env ?? []).filter((name) => {
       if (process.env[name] === undefined) {
@@ -462,11 +366,6 @@ export function createSandboxManager(
     })
   }
 
-  /**
-   * Resolves the configured secrets against the live host environment. Entries without an env
-   * name or allowed hosts are misconfigurations, and msb refuses a secret whose host variable is
-   * unset at create, so each skipped entry is logged with its reason.
-   */
   function resolveSandboxSecrets(): SandboxSecretConfig[] {
     const resolved: SandboxSecretConfig[] = []
     for (const raw of config.network?.secrets ?? []) {
@@ -492,14 +391,6 @@ export function createSandboxManager(
     return resolved
   }
 
-  /**
-   * Rotates the configured host-held secrets on a sandbox forge is adopting. Create-time
-   * bindings are captured once, but adoption reuses a long-lived container across plugin
-   * restarts, so a rotated host token would otherwise stay stale for the life of the sandbox.
-   * Runs only on adopt paths: the fresh-create path already bound the same filtered list.
-   * Returns false (without marking the container converged) when the rotation fails, so the
-   * caller fails the adoption and a later attempt can retry.
-   */
   async function refreshSecrets(containerName: string): Promise<boolean> {
     if (convergedSecrets.has(containerName)) return true
     const secrets = resolveSandboxSecrets()
@@ -549,9 +440,6 @@ export function createSandboxManager(
 
     const absoluteProjectDir = resolve(projectDir)
     const state = await runtime.getSandboxState(containerName)
-    // `unknown` means the state query failed and says nothing about the sandbox: adopting
-    // could register a non-existent container as usable, and creating could collide with a
-    // live one. Fail closed and let the caller surface the indeterminate state.
     if (state === 'unknown') {
       throw new Error(
         `Could not determine whether sandbox ${containerName} exists (state query failed); refusing to start`,
@@ -571,8 +459,6 @@ export function createSandboxManager(
     const { mounts } = buildMountPlan(absoluteProjectDir)
     const workspaces = buildSandboxWorkspaces(mounts, logger)
     const target = resolveTargetSettings(worktreeName, overrides)
-    // Secret destinations are unioned into the egress allow-list: msb's proxy is deny-by-default
-    // at the sandbox level, so a secrets-only configuration would otherwise never reach its hosts.
     const secrets = resolveSandboxSecrets()
     logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${target.resources.memory} cpus=${target.resources.cpus} lan=${target.allowLan} workspaces=${workspaces.length})`)
     await runtime.createSandbox(containerName, workspaces, {
@@ -597,14 +483,6 @@ export function createSandboxManager(
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName || runtime.sandboxContainerName(worktreeName)
 
-    // Fail-closed on the five-state contract: `unknown` means the state query failed and says
-    // nothing about the sandbox, so removal could destroy a live container that a concurrent or
-    // indeterminate query cannot see. Preserve the active-map entry (if any) so callers can
-    // observe the indeterminate state, and refuse to touch the sandbox. `missing` is a confirmed
-    // absence of the container, but the named volumes are reclaimed only through the shared
-    // `removeSandbox` removal path, which tolerates a missing sandbox and missing volumes, so the
-    // removal still runs to reclaim them; a removal failure is logged but not rethrown because
-    // the sandbox itself is genuinely gone.
     const state = await runtime.getSandboxState(containerName)
     if (state === 'unknown') {
       const err = new Error(
@@ -628,10 +506,7 @@ export function createSandboxManager(
       return
     }
 
-    // Cleanup (in-memory map entry) always runs; the removal failure is rethrown so
-    // callers that own the container lifecycle (e.g. the session-sandbox controller) can observe
-    // that the container may still be live instead of recording a successful stop.
-    let removalError: unknown = null
+    let removalError: unknown
     try {
       await runtime.removeSandbox(containerName)
       logger.log(`Sandbox ${containerName} removed`)
@@ -640,8 +515,6 @@ export function createSandboxManager(
       const errMsg = err instanceof Error ? err.message : String(err)
       logger.log(`Sandbox ${containerName} removal: ${errMsg}`)
     } finally {
-      // Cleanup of the in-memory map entry must never be skipped: a stale entry would leave the
-      // manager believing a removed container is live, blocking recreation.
       activeSandboxes.delete(worktreeName)
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
@@ -658,11 +531,6 @@ export function createSandboxManager(
     return activeSandboxes.has(worktreeName)
   }
 
-  /**
-   * A `stopped` sandbox is live: msb suspends idle microVMs and `msb exec` resumes them in
-   * place. Only a confirmed-`missing` sandbox invalidates the map entry — `unknown` means the
-   * status query failed and is not evidence the sandbox is gone.
-   */
   async function isLive(worktreeName: string): Promise<boolean> {
     const active = activeSandboxes.get(worktreeName)
     if (!active) {
@@ -727,14 +595,6 @@ export function createSandboxManager(
     await ensureRunning(worktreeName, projectDir, startedAt)
   }
 
-  /**
-   * Single decision point for "is this worktree's sandbox usable?", shared by the mapped and
-   * unmapped paths. `running` and `stopped` are both usable — msb suspends idle microVMs to
-   * `stopped` and `msb exec` resumes them in place, so recreating one would needlessly destroy
-   * container-local state. `unknown` means the status query failed and says nothing about the
-   * sandbox, so an existing entry is kept as-is (without refreshing the liveness timestamp, so
-   * the next call re-checks) and only a confirmed-`missing` sandbox is created.
-   */
   async function resolveUsableSandbox(worktreeName: string, projectDir: string, startedAt?: string): Promise<string> {
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName ?? runtime.sandboxContainerName(worktreeName)
@@ -770,8 +630,6 @@ export function createSandboxManager(
       return active.containerName
     }
 
-    // Single-flight per worktree: concurrent callers would otherwise each run the create path and
-    // race one another, with the loser's create rejected while the winner's is still in flight.
     const inFlight = ensureRunningInFlight.get(worktreeName)
     if (inFlight) return inFlight
 
@@ -810,10 +668,6 @@ export function createSandboxManager(
     return 'resized'
   }
 
-  /**
-   * Shares the per-sandbox single-flight slot with `ensureRunning`, so a tool call arriving while
-   * the sandbox is recreated waits for the new sandbox instead of creating a second one.
-   */
   async function applyOverrides(worktreeName: string, projectDir: string): Promise<ApplyOverridesOutcome> {
     for (let inFlight = ensureRunningInFlight.get(worktreeName); inFlight; inFlight = ensureRunningInFlight.get(worktreeName)) {
       await inFlight.catch(() => undefined)

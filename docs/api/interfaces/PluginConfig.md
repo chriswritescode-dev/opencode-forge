@@ -6,9 +6,7 @@
 
 # Interface: PluginConfig
 
-Defined in: [types.ts:303](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L303)
-
-Complete plugin configuration for opencode-forge.
+Defined in: [types.ts:135](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L135)
 
 ## Properties
 
@@ -16,9 +14,7 @@ Complete plugin configuration for opencode-forge.
 
 > `optional` **agents?**: `Record`\<`string`, `AgentOverrideConfig`\>
 
-Defined in: [types.ts:329](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L329)
-
-Per-agent configuration overrides.
+Defined in: [types.ts:148](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L148)
 
 ***
 
@@ -26,9 +22,7 @@ Per-agent configuration overrides.
 
 > `optional` **auditorFallbackModels?**: (`string` \| `AuditorFallbackModel`)[]
 
-Defined in: [types.ts:321](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L321)
-
-Ordered entries tried, in order, when the current auditor model hits a provider usage/auth limit mid-loop. Use a `"provider/model"` string, or `{ model, variant }` to pin a variant to that fallback; the primary `auditorVariant` is **not** inherited by fallback entries.
+Defined in: [types.ts:144](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L144)
 
 ***
 
@@ -36,9 +30,7 @@ Ordered entries tried, in order, when the current auditor model hits a provider 
 
 > `optional` **auditorModel?**: `string`
 
-Defined in: [types.ts:315](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L315)
-
-Model to use for code auditing.
+Defined in: [types.ts:141](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L141)
 
 ***
 
@@ -46,9 +38,7 @@ Model to use for code auditing.
 
 > `optional` **auditorVariant?**: `string`
 
-Defined in: [types.ts:319](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L319)
-
-Default reasoning/thinking variant for the auditor model.
+Defined in: [types.ts:143](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L143)
 
 ***
 
@@ -56,9 +46,7 @@ Default reasoning/thinking variant for the auditor model.
 
 > `optional` **autoApprove?**: `AutoApproveConfig`
 
-Defined in: [types.ts:335](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L335)
-
-Policy applied while auto-approve is on for a session.
+Defined in: [types.ts:151](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L151)
 
 ***
 
@@ -66,9 +54,7 @@ Policy applied while auto-approve is on for a session.
 
 > `optional` **codeGraph?**: `CodeGraphConfig`
 
-Defined in: [types.ts:333](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L333)
-
-Code-graph (`codegraph`) installation and loop integration.
+Defined in: [types.ts:150](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L150)
 
 ***
 
@@ -76,9 +62,7 @@ Code-graph (`codegraph`) installation and loop integration.
 
 > `optional` **compaction?**: [`CompactionConfig`](CompactionConfig.md)
 
-Defined in: [types.ts:309](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L309)
-
-Compaction behavior configuration.
+Defined in: [types.ts:138](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L138)
 
 ***
 
@@ -86,9 +70,7 @@ Compaction behavior configuration.
 
 > `optional` **completedLoopTtlMs?**: `number`
 
-Defined in: [types.ts:325](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L325)
-
-TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days.
+Defined in: [types.ts:146](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L146)
 
 ***
 
@@ -96,9 +78,7 @@ TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days.
 
 > `optional` **dataDir?**: `string`
 
-Defined in: [types.ts:305](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L305)
-
-Custom data directory for plugin storage. Defaults to platform data dir.
+Defined in: [types.ts:136](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L136)
 
 ***
 
@@ -106,9 +86,7 @@ Custom data directory for plugin storage. Defaults to platform data dir.
 
 > `optional` **executionModel?**: `string`
 
-Defined in: [types.ts:313](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L313)
-
-Model to use for code execution.
+Defined in: [types.ts:140](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L140)
 
 ***
 
@@ -116,9 +94,7 @@ Model to use for code execution.
 
 > `optional` **executionVariant?**: `string`
 
-Defined in: [types.ts:317](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L317)
-
-Default reasoning/thinking variant for the execution model.
+Defined in: [types.ts:142](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L142)
 
 ***
 
@@ -126,9 +102,7 @@ Default reasoning/thinking variant for the execution model.
 
 > `optional` **logging?**: `LoggingConfig`
 
-Defined in: [types.ts:307](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L307)
-
-Logging configuration.
+Defined in: [types.ts:137](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L137)
 
 ***
 
@@ -136,9 +110,7 @@ Logging configuration.
 
 > `optional` **loop?**: `LoopConfig`
 
-Defined in: [types.ts:323](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L323)
-
-Loop behavior configuration.
+Defined in: [types.ts:145](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L145)
 
 ***
 
@@ -146,9 +118,7 @@ Loop behavior configuration.
 
 > `optional` **messagesTransform?**: `MessagesTransformConfig`
 
-Defined in: [types.ts:311](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L311)
-
-Message transformation for architect agent.
+Defined in: [types.ts:139](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L139)
 
 ***
 
@@ -156,9 +126,7 @@ Message transformation for architect agent.
 
 > `optional` **sandbox?**: `SandboxConfig`
 
-Defined in: [types.ts:331](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L331)
-
-Sandbox execution configuration.
+Defined in: [types.ts:149](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L149)
 
 ***
 
@@ -166,6 +134,4 @@ Sandbox execution configuration.
 
 > `optional` **tui?**: `TuiConfig`
 
-Defined in: [types.ts:327](https://github.com/chriswritescode-dev/opencode-forge/blob/07959e64b8b733aeb18c2f2896113b0d053d13f2/src/types.ts#L327)
-
-TUI display configuration.
+Defined in: [types.ts:147](https://github.com/chriswritescode-dev/opencode-forge/blob/32dbaf30ad58e54053f28f4c8d0419c4a62cb42c/src/types.ts#L147)

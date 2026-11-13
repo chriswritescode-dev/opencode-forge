@@ -1,74 +1,48 @@
-// Public interface — kept even if unused internally
-/**
- * Available agent roles in the plugin.
- */
 export type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'minion'
 
-/**
- * Definition of an agent's capabilities and configuration.
- */
-export interface AgentDefinition {
-  /** The role this agent fulfills. */
-  role: AgentRole
-  /** Unique identifier for the agent. */
-  id: string
-  /** Display name shown in UI. */
-  displayName: string
-  /** Human-readable description of the agent. */
-  description?: string
-  /** Default model to use if not overridden. */
-  defaultModel?: string
-  /** System prompt that replaces OpenCode's default system prompt. */
-  systemPrompt?: string
-  /** Prompt appended after OpenCode's default system prompt instead of replacing it. Skipped when the user configures their own system prompt for the agent. */
-  systemAddendum?: string
-  /** Operating mode of the agent. */
-  mode?: 'primary' | 'subagent' | 'all'
-  /** Hide this agent from UI. */
-  hidden?: boolean
-  /** UI color for this agent. */
-  color?: string
-  /** Tool access configuration. */
-  tools?: {
-    /** List of tools to include. */
-    include?: string[]
-    /** List of tools to exclude. */
-    exclude?: string[]
-  }
-  /** Agent variant identifier. */
-  variant?: string
-  /** Model temperature override. */
-  temperature?: number
-  /** Maximum steps before requiring re-planning. */
-  steps?: number
-  /** Permission configuration for the agent. */
-  permission?: Record<string, unknown>
+export type PermissionEffect = 'allow' | 'deny' | 'ask'
+
+export interface PermissionResourceMap {
+  [resource: string]: string
 }
 
-/**
- * Runtime configuration for an agent instance.
- */
-export interface AgentConfig {
-  /** Description of this agent configuration. */
+export type PermissionValue = string | PermissionResourceMap
+
+export interface AgentPermissionMap {
+  [permission: string]: PermissionValue
+}
+
+export interface AgentDefinition {
+  role: AgentRole
+  id: string
+  displayName: string
   description?: string
-  /** Model identifier to use. */
-  model: string
-  /** Prompt override for this instance. */
-  prompt?: string
-  /** Operating mode override. */
+  defaultModel?: string
+  systemPrompt?: string
+  systemAddendum?: string
   mode?: 'primary' | 'subagent' | 'all'
-  /** Tool availability map. */
-  tools?: Record<string, boolean>
-  /** Agent variant identifier. */
-  variant?: string
-  /** Model temperature override. */
-  temperature?: number
-  /** Maximum steps override. */
-  steps?: number
-  /** Hide from UI. */
   hidden?: boolean
-  /** UI color override. */
   color?: string
-  /** Permission override. */
-  permission?: Record<string, unknown>
+  tools?: {
+    include?: string[]
+    exclude?: string[]
+  }
+  variant?: string
+  temperature?: number
+  steps?: number
+  permission?: AgentPermissionMap
+}
+
+export interface AgentConfig {
+  description?: string
+  model: string
+  prompt?: string
+  mode?: 'primary' | 'subagent' | 'all'
+  tools?: Record<string, boolean>
+  variant?: string
+  temperature?: number
+  steps?: number
+  hidden?: boolean
+  color?: string
+  permission?: AgentPermissionMap
 }

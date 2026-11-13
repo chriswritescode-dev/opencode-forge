@@ -1,9 +1,38 @@
 import { Database } from 'bun:sqlite'
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { z } from 'zod'
 import { resolveShippedRoot } from '../../utils/shipped-paths'
 
 const migrationsDir = join(resolveShippedRoot(import.meta.url), 'storage', 'migrations')
+
+const tableInfoRowSchema = z.object({
+  name: z.string(),
+  notnull: z.number(),
+  pk: z.number(),
+})
+const tableInfoRowsSchema = z.array(tableInfoRowSchema)
+
+const sqliteSqlRowSchema = z.object({ sql: z.string().nullable() })
+
+const phaseRowSchema = z.object({ phase: z.string() })
+const phaseRowsSchema = z.array(phaseRowSchema)
+
+const loopKeyRowSchema = z.object({ project_id: z.string(), loop_name: z.string() })
+const loopKeyRowsSchema = z.array(loopKeyRowSchema)
+
+const sqliteNameRowSchema = z.object({ name: z.string() })
+const sqliteNameRowsSchema = z.array(sqliteNameRowSchema)
+
+function tableInfo(db: Database, table: string): z.infer<typeof tableInfoRowSchema>[] {
+  return tableInfoRowsSchema.parse(db.prepare(`PRAGMA table_info(${table})`).all())
+}
+
+function sqliteTableNames(db: Database, name: string): z.infer<typeof sqliteNameRowSchema>[] {
+  return sqliteNameRowsSchema.parse(
+    db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").all(name),
+  )
+}
 
 interface Migration {
   id: string
@@ -24,7 +53,7 @@ function createLoopAttemptsTable(db: Database): void {
 function addColumnIfMissing(db: Database, table: string, column: string, filename: string): void {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").all(table)
   if (tables.length === 0) return
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  const cols = tableInfo(db, table)
   if (cols.some((c) => c.name === column)) return
   db.run(loadSql(filename))
 }
@@ -76,9 +105,7 @@ export const migrations: Migration[] = [
     id: '107',
     description: 'Add workspace_id column to loops table for workspace-backed worktree switching',
     apply: (db: Database) => {
-      // Guard against test databases or legacy environments where the column
-      // was added out-of-band. SQLite does not support `ADD COLUMN IF NOT EXISTS`.
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'workspace_id')) return
       db.run(loadSql('107_add_workspace_id_to_loops.sql'))
     },
@@ -87,7 +114,7 @@ export const migrations: Migration[] = [
     id: '108',
     description: 'Add host_session_id column to loops table for post-completion redirect',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'host_session_id')) return
       db.run(loadSql('108_add_host_session_id_to_loops.sql'))
     },
@@ -96,7 +123,7 @@ export const migrations: Migration[] = [
     id: '110',
     description: 'Drop completion_signal column from loops table (dead mechanism removal)',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (!cols.some((c) => c.name === 'completion_signal')) return
       db.run(loadSql('110_drop_completion_signal_from_loops.sql'))
     },
@@ -112,7 +139,7 @@ export const migrations: Migration[] = [
     id: '112',
     description: 'Drop audit column from loops table (dead flag removal)',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (!cols.some((c) => c.name === 'audit')) return
       db.run(loadSql('112_drop_audit_from_loops.sql'))
     },
@@ -121,7 +148,7 @@ export const migrations: Migration[] = [
     id: '113',
     description: 'Add audit_session_id column to loops table for audit session isolation',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'audit_session_id')) return
       db.run(loadSql('113_add_audit_session_id_to_loops.sql'))
     },
@@ -130,7 +157,7 @@ export const migrations: Migration[] = [
     id: '114',
     description: 'Ensure scenario column is nullable in review_findings table',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; notnull: number }>
+      const cols = tableInfo(db, 'review_findings')
       const scenario = cols.find((c) => c.name === 'scenario')
       if (!scenario || scenario.notnull === 0) return
       db.run(`
@@ -170,8 +197,7 @@ export const migrations: Migration[] = [
     id: '117',
     description: 'Add branch to primary key for review_findings table (branch-scoped findings)',
     apply: (db: Database) => {
-      // Guard: check if branch is already in primary key
-      const pkInfo = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; pk: number }>
+      const pkInfo = tableInfo(db, 'review_findings')
       const hasBranchInPk = pkInfo.some((c) => c.name === 'branch' && c.pk > 0)
       if (hasBranchInPk) return
 
@@ -182,7 +208,7 @@ export const migrations: Migration[] = [
     id: '118',
     description: 'Drop audit_session_id column from loops table (single-session loop model)',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (!cols.some((c) => c.name === 'audit_session_id')) return
       db.run(loadSql('118_drop_audit_session_id_from_loops.sql'))
     },
@@ -191,7 +217,7 @@ export const migrations: Migration[] = [
     id: '119',
     description: 'Add loop_name scope to review_findings; drop legacy branch-only rows',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'review_findings')
       if (cols.some((c) => c.name === 'loop_name') && !cols.some((c) => c.name === 'branch')) return
       db.run(loadSql('119_loop_scope_review_findings.sql'))
     },
@@ -200,8 +226,8 @@ export const migrations: Migration[] = [
     id: '120',
     description: 'Drop branch scope from review_findings table',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string }>
-      const pkInfo = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; pk: number }>
+      const cols = tableInfo(db, 'review_findings')
+      const pkInfo = tableInfo(db, 'review_findings')
       const hasBranch = cols.some((c) => c.name === 'branch')
       const hasLoopOnlyPk =
         pkInfo.find((c) => c.name === 'project_id')?.pk === 1 &&
@@ -225,7 +251,7 @@ export const migrations: Migration[] = [
     id: '122',
     description: 'Add decomposition state columns to loops table',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'decomposition_status')) return
       db.run(loadSql('122_add_decomposition_state_to_loops.sql'))
     },
@@ -234,7 +260,7 @@ export const migrations: Migration[] = [
     id: '123',
     description: 'Add section_index column to review_findings table',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'review_findings')
       if (cols.some((c) => c.name === 'section_index')) return
       db.run(loadSql('123_add_section_index_to_review_findings.sql'))
     },
@@ -243,7 +269,7 @@ export const migrations: Migration[] = [
     id: '124',
     description: 'Extend loops phase CHECK to include decomposing and final_auditing',
     apply: (db: Database) => {
-      const phases = db.prepare("SELECT DISTINCT phase FROM loops").all() as Array<{ phase: string }>
+      const phases = phaseRowsSchema.parse(db.prepare("SELECT DISTINCT phase FROM loops").all())
       const hasNewPhases = phases.some(p => p.phase === 'decomposing' || p.phase === 'final_auditing')
       if (hasNewPhases) return
       db.run(loadSql('124_extend_loops_phase_check.sql'))
@@ -253,7 +279,7 @@ export const migrations: Migration[] = [
     id: '125',
     description: 'Rebuild review_findings with section_index in primary key for section-scoped deduplication',
     apply: (db: Database) => {
-      const pkInfo = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; pk: number }>
+      const pkInfo = tableInfo(db, 'review_findings')
       if (pkInfo.some(c => c.name === 'section_index' && c.pk > 0)) return
       db.run(loadSql('125_add_section_index_to_review_findings_pk.sql'))
     },
@@ -262,7 +288,7 @@ export const migrations: Migration[] = [
     id: '126',
     description: 'Drop final_audit_attempts column from loops table',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (!cols.some((c) => c.name === 'final_audit_attempts')) return
       db.run(loadSql('126_drop_final_audit_attempts_from_loops.sql'))
     },
@@ -271,9 +297,8 @@ export const migrations: Migration[] = [
     id: '127',
     description: 'Consolidate loop plan storage: backfill prompt into plans, remove prompt column from loop_large_fields',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loop_large_fields')
       if (!cols.some((c) => c.name === 'prompt')) {
-        // prompt already removed, just ensure index exists
         db.run("CREATE INDEX IF NOT EXISTS idx_plans_project_updated_at ON plans(project_id, updated_at DESC)")
         return
       }
@@ -305,7 +330,7 @@ export const migrations: Migration[] = [
     id: '131',
     description: 'Add execution and auditor model variant columns to loops table',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'execution_variant')) return
       db.run(loadSql('131_add_loop_model_variants.sql'))
     },
@@ -314,7 +339,7 @@ export const migrations: Migration[] = [
     id: '132',
     description: 'Extend loops phase CHECK to include post_action',
     apply: (db: Database) => {
-      const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string } | null
+      const row = sqliteSqlRowSchema.nullish().parse(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get())
       if (row?.sql?.includes("'post_action'")) return
       db.run(loadSql('132_extend_loops_phase_check_post_action.sql'))
     },
@@ -330,7 +355,7 @@ export const migrations: Migration[] = [
     id: '134',
     description: 'Add post_action_report column to loop_large_fields',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loop_large_fields')
       if (cols.some((c) => c.name === 'post_action_report')) return
       db.run(loadSql('134_add_post_action_report.sql'))
     },
@@ -338,15 +363,12 @@ export const migrations: Migration[] = [
   {
     id: '135',
     description: 'Add loop_kind discriminator to loops and goal text to loop_large_fields',
-    // Guard each ALTER independently so partial legacy schemas (one column
-    // present, the other absent) repair correctly. The migration runner wraps
-    // apply() in a transaction, so both ALTERs that do run land atomically.
     apply: (db: Database) => {
-      const loopsCols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const loopsCols = tableInfo(db, 'loops')
       if (!loopsCols.some((c) => c.name === 'loop_kind')) {
         db.run('ALTER TABLE loops ADD COLUMN loop_kind TEXT NOT NULL DEFAULT \'plan\'')
       }
-      const largeCols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+      const largeCols = tableInfo(db, 'loop_large_fields')
       if (!largeCols.some((c) => c.name === 'goal')) {
         db.run('ALTER TABLE loop_large_fields ADD COLUMN goal TEXT')
       }
@@ -356,7 +378,7 @@ export const migrations: Migration[] = [
     id: '136',
     description: 'Add executor_session_id column to loops for goal-loop executor binding',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'executor_session_id')) return
       db.run('ALTER TABLE loops ADD COLUMN executor_session_id TEXT')
     },
@@ -365,9 +387,9 @@ export const migrations: Migration[] = [
     id: '137',
     description: 'Replace idx_loops_session with partial unique index on running rows; add executor participant lookup index',
     apply: (db: Database) => {
-      const idxRow = db.prepare(
+      const idxRow = sqliteSqlRowSchema.nullish().parse(db.prepare(
         "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_session'"
-      ).get() as { sql: string | null } | null
+      ).get())
 
       if (!idxRow || !idxRow.sql || !idxRow.sql.includes("status = 'running'")) {
         db.run('DROP INDEX IF EXISTS idx_loops_session')
@@ -381,14 +403,11 @@ export const migrations: Migration[] = [
       )
     },
   },
-  // 138-140 are reserved by the loop-metrics migrations (feat/loop-metrics);
-  // this branch starts at 141 so the two ranges never collide regardless of
-  // merge order (the runner skips any id already recorded).
   {
     id: '141',
     description: "Extend loops phase CHECK to include 'final_audit_fix'",
     apply: (db: Database) => {
-      const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string } | null
+      const row = sqliteSqlRowSchema.nullish().parse(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get())
       if (row?.sql?.includes("'final_audit_fix'")) return
       db.run(loadSql('141_extend_loops_phase_check_final_audit_fix.sql'))
     },
@@ -415,7 +434,7 @@ export const migrations: Migration[] = [
     id: '144',
     description: 'Add auditor_fallback_index to loops for the auditor model fallback chain',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'auditor_fallback_index')) return
       db.run('ALTER TABLE loops ADD COLUMN auditor_fallback_index INTEGER NOT NULL DEFAULT 0')
     },
@@ -434,7 +453,7 @@ export const migrations: Migration[] = [
     id: '149',
     description: 'Add sandbox_settings column to loops for per-loop sandbox overrides',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'sandbox_settings')) return
       db.run('ALTER TABLE loops ADD COLUMN sandbox_settings TEXT')
     },
@@ -443,15 +462,13 @@ export const migrations: Migration[] = [
     id: '150',
     description: 'Remove goal loops: delete goal-kind rows and drop loop_kind, executor_session_id, and loop_large_fields.goal',
     apply: (db: Database) => {
-      const tableExists = (name: string): boolean =>
-        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").all(name) as unknown[]).length > 0
+      const tableExists = (name: string): boolean => sqliteTableNames(db, name).length > 0
 
-      const loopsCols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const loopsCols = tableInfo(db, 'loops')
       if (loopsCols.some((c) => c.name === 'loop_kind')) {
-        const goalLoops = db.prepare("SELECT project_id, loop_name FROM loops WHERE loop_kind = 'goal'").all() as Array<{
-          project_id: string
-          loop_name: string
-        }>
+        const goalLoops = loopKeyRowsSchema.parse(
+          db.prepare("SELECT project_id, loop_name FROM loops WHERE loop_kind = 'goal'").all(),
+        )
         const perLoopTables = [
           'loop_large_fields',
           'section_plans',
@@ -485,7 +502,7 @@ export const migrations: Migration[] = [
         db.run('ALTER TABLE loops DROP COLUMN loop_kind')
       }
 
-      const largeCols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+      const largeCols = tableInfo(db, 'loop_large_fields')
       if (largeCols.some((c) => c.name === 'goal')) {
         db.run('ALTER TABLE loop_large_fields DROP COLUMN goal')
       }
@@ -503,7 +520,7 @@ export const migrations: Migration[] = [
     id: '152',
     description: 'Add base_commit to loops: exact commit each loop worktree branched from',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'base_commit')) return
       db.run('ALTER TABLE loops ADD COLUMN base_commit TEXT')
     },
@@ -521,10 +538,10 @@ export const migrations: Migration[] = [
     id: '154',
     description: 'Remove the final audit phase: rewrite retired phases, reopen the last section, drop final_audit_done',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (!cols.some((c) => c.name === 'final_audit_done')) return
       const hasSectionPlans =
-        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all() as unknown[]).length > 0
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all()).length > 0
       if (hasSectionPlans) db.run(loadSql('154_reopen_final_audit_section.sql'))
       db.run(loadSql('154_remove_final_audit.sql'))
     },
@@ -533,7 +550,7 @@ export const migrations: Migration[] = [
     id: '155',
     description: 'Add standby_session_id to loops: the other role session kept for same-section reuse',
     apply: (db: Database) => {
-      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      const cols = tableInfo(db, 'loops')
       if (cols.some((c) => c.name === 'standby_session_id')) return
       db.run(loadSql('155_add_loop_standby_session.sql'))
     },
@@ -575,11 +592,11 @@ export const migrations: Migration[] = [
     description: 'Add section ids and section_dependencies edges; backfill the existing chain',
     apply: (db: Database) => {
       const hasSectionPlans =
-        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all() as unknown[]).length > 0
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all()).length > 0
       if (!hasSectionPlans) return
       addColumnIfMissing(db, 'section_plans', 'section_id', '160_add_section_id_to_section_plans.sql')
       const hasDependencies =
-        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_dependencies'").all() as unknown[]).length > 0
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_dependencies'").all()).length > 0
       if (!hasDependencies) db.run(loadSql('160_create_section_dependencies.sql'))
     },
   },

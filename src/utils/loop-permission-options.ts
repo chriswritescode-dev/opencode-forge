@@ -31,17 +31,6 @@ async function readWorkspacePortableRules(
   }
 }
 
-/**
- * Resolves the full ruleset options for a loop, merging the configured
- * `loop.permissions` rules with the portable rules persisted in the given
- * workspace's metadata. Portable rules are written by the remote launcher into
- * `extra.permissionRules` so remote loops keep the launching machine's rules
- * even though the remote server's own config does not carry them.
- *
- * The portable-rules lookup is memoised per client/workspace, so this is not a
- * per-tick or per-permission-check fetch. Empty results are cached (empty
- * arrays are truthy) so a workspace with no portable rules stays cached.
- */
 export async function resolveLoopPermissionOptionsForWorkspace(
   client: ForgeClient,
   config: PluginConfig | undefined,

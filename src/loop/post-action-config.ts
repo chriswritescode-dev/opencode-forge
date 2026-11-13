@@ -7,7 +7,6 @@ export interface ResolvedPostActionConfig {
   model?: string
 }
 
-/** Resolve the post-action config from a plugin config. Enabled requires enabled===true AND (skill or prompt). */
 export function resolvePostActionConfig(config: PluginConfig): ResolvedPostActionConfig {
   const pa = config.loop?.postAction
   const enabled = pa?.enabled === true && (!!pa?.skill || !!pa?.prompt)

@@ -1,10 +1,3 @@
-/**
- * Workspace removal with pending-teardown context.
- *
- * Sets the teardown context before calling workspace.remove so the adapter
- * honors doRemoveWorktree.
- */
-
 import type { ForgeClient } from '../client/port'
 import type { PendingTeardownRegistry } from './pending-teardown'
 import type { Logger } from '../types'
@@ -26,14 +19,6 @@ export interface RemoveWithResult {
   error?: string
 }
 
-/**
- * Remove a forge workspace with proper teardown context.
- *
- * - Sets pendingTeardowns entry before calling workspace.remove
- * - doRemoveWorktree is true for 'remove-fully', false for 'remove-registration-only'
- * - doCommit is always false (sweep and attach safety-net don't commit)
- * - Clears the teardown entry in finally block
- */
 export async function removeForgeWorkspaceWithContext(
   deps: RemoveWithDeps,
   input: RemoveWithInput,

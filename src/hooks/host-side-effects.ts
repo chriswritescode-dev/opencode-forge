@@ -26,36 +26,19 @@ export interface TerminationSideEffectsContext {
   loopSessionUsageRepo?: LoopSessionUsageRepo
 }
 
-/**
- * Host-specific termination side-effects invoked via onTerminated callback.
- *
- * Worktree teardown (commit, branch rename, sandbox stop, worktree remove,
- * branch delete) lives in the forge workspace adapter so the same logic runs
- * whether the loop terminates normally, the orphan sweep removes a stale
- * workspace, or the user deletes the workspace from the TUI. We only set the
- * pending-teardown context here so the adapter honors the teardown flags.
- */
 export async function performTerminationSideEffects(
   state: LoopState,
   reason: TerminationReason,
   _sessionId: string,
   ctx: TerminationSideEffectsContext,
 ): Promise<void> {
-  // Always write a log entry so we can trace and restart later.
   writeTerminationLog(state, reason, ctx)
 
-  // Publish a TUI toast notification.
   publishTerminationToast(state, reason, ctx)
 
-  // Tear down the worktree if one was created.
   await teardownWorktree(state, reason, ctx)
 }
 
-// ---------------------------------------------------------------------------
-// 1. Completion / termination log
-// ---------------------------------------------------------------------------
-
-/** Write a worktree log entry on every termination reason so we can trace and restart later. */
 function writeTerminationLog(
   state: LoopState,
   _reason: TerminationReason,
@@ -67,7 +50,6 @@ function writeTerminationLog(
   const planText = ctx.getPlanText?.(state.loopName, state.sessionId)
   const completionTimestamp = new Date()
 
-  // Fetch cumulative usage after runtime termination has captured the final session
   const usageAggregate = ctx.projectId && ctx.loopSessionUsageRepo
     ? ctx.loopSessionUsageRepo.getAggregate(ctx.projectId, state.loopName)
     : null
@@ -98,11 +80,6 @@ function writeTerminationLog(
   }
 }
 
-// ---------------------------------------------------------------------------
-// 2. TUI toast
-// ---------------------------------------------------------------------------
-
-/** Publish a TUI toast whose variant and message depend on the termination kind. */
 function publishTerminationToast(
   state: LoopState,
   reason: TerminationReason,
@@ -123,7 +100,12 @@ function publishTerminationToast(
   })
 }
 
-function getToastVariant(reason: TerminationReason): { variant: ToastVariant; duration: number } {
+interface ToastPresentation {
+  variant: ToastVariant
+  duration: number
+}
+
+function getToastVariant(reason: TerminationReason): ToastPresentation {
   switch (reason.kind) {
     case 'completed':
       return { variant: 'success', duration: 5000 }
@@ -157,16 +139,11 @@ function getToastMessage(state: LoopState, reason: TerminationReason): string {
   }
 }
 
-// ---------------------------------------------------------------------------
-// 3. Worktree teardown (always commits unless directory is already gone)
-// ---------------------------------------------------------------------------
-
 function resolveUnwarpSettleMs(): number {
   const raw = Number(process.env.FORGE_UNWARP_SETTLE_MS)
   return Number.isFinite(raw) && raw >= 0 ? raw : 750
 }
 
-/** Tear down the worktree workspace — always commits changes back. */
 async function teardownWorktree(
   state: LoopState,
   reason: TerminationReason,
@@ -214,7 +191,6 @@ async function teardownWorktree(
     }
   }
 
-  // Opportunistic sweep of stale sibling workspaces (port required)
   if (ctx.client && ctx.loopsRepo && ctx.projectId && ctx.pendingTeardowns && state.projectDir) {
     try {
       const report = await sweepStaleForgeWorkspaces(

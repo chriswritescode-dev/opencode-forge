@@ -26,9 +26,11 @@ interface Resolution {
   via: string
 }
 
-export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
+export interface SessionLoopResolver {
   resolveActiveLoopForSession(sessionId: string): Promise<ResolvedLoop | null>
-} {
+}
+
+export function createSessionLoopResolver(deps: SessionLoopResolverDeps): SessionLoopResolver {
   const lastLogged = new LRUCache<string>(1000)
 
   const resolve = async (sessionId: string): Promise<Resolution> => {
@@ -36,11 +38,6 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
     const directState = directLoopName ? deps.loop.service.getActiveState(directLoopName) : null
     if (directState?.active) return { loop: directState, via: 'direct' }
 
-    // Walk the ancestor chain so deeply-nested sub-agents (a sub-agent that
-    // spawns another sub-agent via the Task tool) still resolve to the loop
-    // session at the top of their chain. The immediate parent of such a
-    // session is itself a sub-agent with no loop name, so a single hop is not
-    // enough.
     let firstParentId: string | null = null
     let via = 'none'
     const ancestorState = await tolerateUndeterminedParent(findSessionAncestor(sessionId, deps.getParentSessionId, (parentId, depth) => {

@@ -1,4 +1,3 @@
-/** @jsxImportSource @opentui/solid */
 import type { Plugin } from '@opencode/plugin/tui'
 import type { RGBA } from '@opentui/core'
 import type { JSX } from '@opentui/solid'

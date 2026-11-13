@@ -1,6 +1,5 @@
 import { VERSION } from '../version'
 
-/** Keyboard shortcut overrides for the Forge TUI commands. */
 export type TuiKeybinds = {
   executePlan: string
   dashboard: string
@@ -21,7 +20,6 @@ export type TuiOptions = {
   keybinds: TuiKeybinds
 }
 
-/** The option fields both the forge config `tui` section and the plugin options supply. */
 export type TuiOptionOverrides = {
   readonly sidebar?: boolean
   readonly showVersion?: boolean

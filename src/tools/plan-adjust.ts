@@ -32,9 +32,6 @@ export function createPlanAdjustTool(ctx: ToolContext): ToolDefinition {
         return JSON.stringify({ error: 'Not in a loop session. This tool can only be used within an active loop session.' })
       }
 
-      // Guards (loop exists, active, auditing phase, session authorization,
-      // section cap) are enforced authoritatively inside adjustRemainingSections
-      // under its write lock; the tool only resolves the loop and surfaces errors.
       const result = await loop.service.adjustRemainingSections(loopName, {
         sections: args.sections,
         currentSection: args.currentSection,

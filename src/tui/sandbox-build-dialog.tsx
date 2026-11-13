@@ -1,4 +1,3 @@
-/** @jsxImportSource @opentui/solid */
 import type { ForgeTuiHost } from './host'
 import type { SelectRenderable } from '@opentui/core'
 import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
@@ -11,16 +10,14 @@ import type { PluginConfig } from '../types'
 import { runCommand } from '../sandbox/process'
 
 const BUILD_PROGRESS_BAR_WIDTH = 24
-/** Output lines retained for the failure view; a truncated last line rarely explains a docker failure. */
 const BUILD_TAIL_LIMIT = 12
-/** Upper bound on dialog repaints from streamed output, which can arrive hundreds of lines per second. */
 const BUILD_REPAINT_INTERVAL_MS = 100
 
-const BUILD_STAGE_LABELS: Record<SandboxBuildStage, string> = {
+const BUILD_STAGE_LABELS = {
   build: 'Building image',
   save: 'Saving image',
   load: 'Loading into msb',
-}
+} satisfies Record<SandboxBuildStage, string>
 
 function renderProgressBar(ratio: number): string {
   const filled = Math.max(0, Math.min(BUILD_PROGRESS_BAR_WIDTH, Math.round(ratio * BUILD_PROGRESS_BAR_WIDTH)))
@@ -94,17 +91,12 @@ export function SandboxBuildDialog(props: {
     return [{ name: 'Close', description: 'Press enter to close this dialog', value: 'cancel' }]
   })
 
-  // A repeated Enter can reach `onSelect` again before the phase render lands.
-  // Latching here keeps the second press from overwriting this dialog's state
-  // with the concurrent-build rejection while the first build is still running.
   let started = false
 
   const doBuild = async () => {
     if (started) return
     started = true
     setPhase('running')
-    // Fires before any Docker work, so it also proves the keypress reached this
-    // handler even if the dialog itself fails to repaint.
     props.host.toast({ message: `Building ${props.image}...`, variant: 'info', duration: 4000 })
     const startedAt = Date.now()
     timer = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000)
@@ -125,8 +117,6 @@ export function SandboxBuildDialog(props: {
             setStage(progress.stage)
             setStep(null)
           }
-          // BuildKit resolves a DAG, so it announces steps out of order (7/13 can
-          // precede 5/13). Tracking the furthest step reached keeps the bar monotonic.
           if (progress.step && progress.step.current >= (step()?.current ?? 0)) setStep(progress.step)
           const now = Date.now()
           if (now - lastRepaintAt < BUILD_REPAINT_INTERVAL_MS) return

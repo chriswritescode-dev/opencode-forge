@@ -1,6 +1,6 @@
 import { homedir } from 'os'
 import { isAbsolute, join, resolve } from 'path'
-import type { ToolAfterHook, ToolBeforeHook } from './tool-hook-types'
+import type { ToolAfterHook, ToolAfterInput, ToolAfterOutput, ToolArgs, ToolBeforeHook, ToolBeforeOutput } from './tool-hook-types'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
 import { executeSandboxGlob, executeSandboxGrep } from '../sandbox/exec-fs'
@@ -9,14 +9,13 @@ import { canonicalizeExistingPath, canonicalizePath, findContainingMount, isInsi
 const FILE_TOOLS: ReadonlySet<string> = new Set(['read', 'edit', 'write', 'patch'])
 const PATCH_FILE_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to):\s*(.+?)\s*$/gm
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
-function fileToolTargets(tool: string, args: any): string[] {
+function fileToolTargets(tool: string, args: ToolArgs): string[] {
   if (tool === 'patch') {
-    const text = args?.patchText
-    return typeof text === 'string' ? [...text.matchAll(PATCH_FILE_HEADER)].map((match) => match[1]) : []
+    const text = args.patchText
+    return text === undefined ? [] : [...text.matchAll(PATCH_FILE_HEADER)].map((match) => match[1])
   }
-  const path = args?.path ?? args?.filePath
-  return typeof path === 'string' ? [path] : []
+  const path = args.path ?? args.filePath
+  return path === undefined ? [] : [path]
 }
 
 function resolveToolPath(path: string, baseDir: string): string {
@@ -24,8 +23,7 @@ function resolveToolPath(path: string, baseDir: string): string {
   return canonicalizeExistingPath(resolve(baseDir, expanded))
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
-function assertFileToolInsideSandbox(tool: string, args: any, sandbox: SandboxContext): void {
+function assertFileToolInsideSandbox(tool: string, args: ToolArgs, sandbox: SandboxContext): void {
   const mounts = sandbox.mounts.map((mount) => ({
     ...mount,
     hostDir: canonicalizePath(mount.hostDir),
@@ -54,17 +52,10 @@ const STALE_THRESHOLD_MS = 5 * 60 * 1000
 export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): ToolBeforeHook {
   return async (
     input: { tool: string; sessionID: string; callID: string },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
-    output: { args: any },
+    output: ToolBeforeOutput,
   ) => {
-    // This hook routes search tools into the sandbox and fences host file tools to the sandbox
-    // mounts. Return before any resolution for every other tool so a fail-closed resolver error can
-    // never block shell or management tools.
     if (input.tool !== 'glob' && input.tool !== 'grep' && !FILE_TOOLS.has(input.tool)) return
 
-    // Request fail-closed resolution exactly as bash does: when an acknowledged sandbox cannot be
-    // restored (or the selected session's start failed), the resolver throws and the tool call
-    // fails rather than silently touching the host checkout.
     const sandbox = await deps.resolveSandboxForSession(input.sessionID, { throwOnRestoreError: true })
     if (!sandbox) {
       deps.logger.debug(`[sandbox-hook] no sandbox for session ${input.sessionID} tool=${input.tool}`)
@@ -81,19 +72,21 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): ToolBefo
     const requestedPath = output.args?.path
     if (
       (input.tool === 'glob' || input.tool === 'grep') &&
-      typeof requestedPath === 'string' &&
+      requestedPath !== undefined &&
       isAbsolute(requestedPath) &&
       !isInsideAnyMount(requestedPath, mounts)
     ) {
-      // Fail closed: an absolute search path outside the sandbox mounts must not silently fall
-      // back to host execution, which would violate the shell + search isolation scope. Throwing
-      // blocks the search rather than running it on the host.
       throw new Error(`Refusing to run ${input.tool} outside the sandbox workspace mount: ${requestedPath}`)
     }
 
     if (input.tool === 'glob') {
       const args = output.args
       deps.logger.log(`[sandbox-hook] intercepting glob: pattern=${args.pattern}, path=${args.path}`)
+
+      if (args.pattern === undefined) {
+        pendingResults.set(input.callID, { result: 'Glob failed: pattern is required', storedAt: Date.now() })
+        return
+      }
 
       try {
         const result = await executeSandboxGlob(
@@ -114,6 +107,11 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): ToolBefo
       const args = output.args
       deps.logger.log(`[sandbox-hook] intercepting grep: pattern=${args.pattern}, path=${args.path}, include=${args.include}`)
 
+      if (args.pattern === undefined) {
+        pendingResults.set(input.callID, { result: 'Grep failed: pattern is required', storedAt: Date.now() })
+        return
+      }
+
       try {
         const result = await executeSandboxGrep(
           { runtime, containerName, hostDir: sandbox.hostDir },
@@ -133,10 +131,8 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): ToolBefo
 
 export function createSandboxToolAfterHook(deps: SandboxToolHookDeps): ToolAfterHook {
   return async (
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
-    input: { tool: string; sessionID: string; callID: string; args: any },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
-    output: { title: string; output: string; metadata: any },
+    input: ToolAfterInput,
+    output: ToolAfterOutput,
   ) => {
     if (input.tool !== 'glob' && input.tool !== 'grep') return
 

@@ -1,9 +1,3 @@
-/**
- * Shared token usage extraction and formatting utilities for loop sessions.
- * This is the single source of truth for token/cost extraction, merging, and model grouping.
- */
-
-/** Token breakdown for a single message or aggregated usage */
 export interface TokenBreakdown {
   input: number
   output: number
@@ -12,7 +6,6 @@ export interface TokenBreakdown {
   cacheWrite: number
 }
 
-/** Usage aggregated per model */
 export interface ModelUsage {
   model: string
   cost: number
@@ -20,16 +13,10 @@ export interface ModelUsage {
   messageCount: number
 }
 
-/** Loop-session role vocabulary persisted in `loop_session_usage.role`. */
 export type UsageRole = 'code' | 'auditor' | 'unknown'
 
-/**
- * Deterministic render order for role splits: execution first, then audit, then
- * unattributed.
- */
 export const USAGE_ROLE_ORDER: readonly UsageRole[] = ['code', 'auditor', 'unknown']
 
-/** Usage aggregated per loop role, mirroring `ModelUsage`'s shape. */
 export interface RoleUsage {
   role: UsageRole
   cost: number
@@ -37,17 +24,14 @@ export interface RoleUsage {
   messageCount: number
 }
 
-/** Summary of loop usage, optionally attributed to a role */
 export interface LoopUsageSummary {
   totalCost: number
   totalTokens: TokenBreakdown
   perModel: ModelUsage[]
-  /** Per-role split. Optional so hand-built summaries in existing tests stay valid; producers always populate it. */
   perRole?: RoleUsage[]
   attribution?: UsageAttribution
 }
 
-/** Attribution metadata for usage */
 export interface UsageAttribution {
   role: UsageRole
   fallbackModel?: string
@@ -65,7 +49,6 @@ export interface AssistantMessageInfo {
   model_name?: string
 }
 
-/** Create an empty TokenBreakdown */
 export function emptyTokenBreakdown(): TokenBreakdown {
   return {
     input: 0,
@@ -76,7 +59,6 @@ export function emptyTokenBreakdown(): TokenBreakdown {
   }
 }
 
-/** Normalize tokens from SDK format to TokenBreakdown */
 export function normalizeTokens(
   tokens: { input: number; output: number; reasoning: number; cache: { read: number; write: number } } | undefined | null,
 ): TokenBreakdown {
@@ -92,7 +74,6 @@ export function normalizeTokens(
   }
 }
 
-/** Add two TokenBreakdowns together */
 export function addTokens(a: TokenBreakdown, b: TokenBreakdown): TokenBreakdown {
   return {
     input: a.input + b.input,
@@ -103,14 +84,12 @@ export function addTokens(a: TokenBreakdown, b: TokenBreakdown): TokenBreakdown 
   }
 }
 
-/** The cost/tokens/messageCount triple shared by per-model and per-role groups. */
 interface UsageTotals {
   cost: number
   tokens: TokenBreakdown
   messageCount: number
 }
 
-/** Sum a usage entry into a keyed group, copying tokens on first insert. */
 function accumulateUsage<K>(map: Map<K, UsageTotals>, key: K, entry: UsageTotals): void {
   const existing = map.get(key)
   if (existing) {
@@ -122,18 +101,12 @@ function accumulateUsage<K>(map: Map<K, UsageTotals>, key: K, entry: UsageTotals
   }
 }
 
-/** Convert a model-keyed group to a model-sorted array for deterministic output. */
 function sortedModelUsage(map: Map<string, UsageTotals>): ModelUsage[] {
   return Array.from(map.entries())
     .map(([model, data]) => ({ model, cost: data.cost, tokens: data.tokens, messageCount: data.messageCount }))
     .sort((a, b) => a.model.localeCompare(b.model))
 }
 
-/**
- * Merge per-role usage groups, summing cost/tokens/messageCount per role and
- * returning entries in `USAGE_ROLE_ORDER`, omitting absent roles. Tolerates
- * `undefined` inputs so callers can spread `summary.perRole` unconditionally.
- */
 export function mergeRoleUsage(...groups: (RoleUsage[] | undefined)[]): RoleUsage[] {
   const map = new Map<UsageRole, UsageTotals>()
   for (const group of groups) {
@@ -144,18 +117,8 @@ export function mergeRoleUsage(...groups: (RoleUsage[] | undefined)[]): RoleUsag
   return USAGE_ROLE_ORDER.filter(r => map.has(r)).map(r => ({ role: r, ...map.get(r)! }))
 }
 
-/** Default model label when no metadata or fallback is available */
 const DEFAULT_MODEL_LABEL = 'default/session model'
 
-/**
- * Extract model label from message info, falling back to provided model or default.
- * Priority:
- * 1. info.model (already includes provider if applicable)
- * 2. info.modelID or info.modelId (with providerID/provider if available, otherwise model ID as-is)
- * 3. provider/model pairs: providerID+model_name, provider+model_name
- * 4. fallbackModel parameter
- * 5. DEFAULT_MODEL_LABEL ('default/session model')
- */
 export function modelLabelFromMessage(
   info: {
     role: string
@@ -174,36 +137,28 @@ export function modelLabelFromMessage(
     return fallbackModel ?? DEFAULT_MODEL_LABEL
   }
 
-  // Check direct model fields first
   if (info.model) {
     return info.model
   }
   if (info.modelID) {
-    // If we have providerID, combine them
     if (info.providerID) {
       return `${info.providerID}/${info.modelID}`
     }
-    // If we have provider (without ID suffix), combine them
     if (info.provider) {
       return `${info.provider}/${info.modelID}`
     }
-    // No provider info available - use the model ID as-is (actual message model wins)
     return info.modelID
   }
   if (info.modelId) {
-    // If we have providerID, combine them
     if (info.providerID) {
       return `${info.providerID}/${info.modelId}`
     }
-    // If we have provider (without ID suffix), combine them
     if (info.provider) {
       return `${info.provider}/${info.modelId}`
     }
-    // No provider info available - use the model ID as-is (actual message model wins)
     return info.modelId
   }
 
-  // Check provider/model pairs
   if (info.providerID && info.model_name) {
     return `${info.providerID}/${info.model_name}`
   }
@@ -211,15 +166,9 @@ export function modelLabelFromMessage(
     return `${info.provider}/${info.model_name}`
   }
 
-  // Fall back to provided fallback, or default
   return fallbackModel ?? DEFAULT_MODEL_LABEL
 }
 
-/**
- * Summarize assistant usage from messages, grouping by model.
- * Only processes messages with role === 'assistant'.
- * Uses actual model from message metadata when available, otherwise uses fallbackModel.
- */
 export function summarizeAssistantUsage(
   messages: {
     info: {
@@ -269,10 +218,6 @@ export function summarizeAssistantUsage(
   }
 }
 
-/**
- * Merge multiple LoopUsageSummary instances into one.
- * Preserves attribution from the first summary if present.
- */
 export function mergeUsageSummaries(...summaries: LoopUsageSummary[]): LoopUsageSummary {
   if (summaries.length === 0) {
     return {

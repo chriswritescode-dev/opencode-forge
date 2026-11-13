@@ -533,14 +533,25 @@ describe('FORGE_RPC', () => {
 
     expect(readForgeHostSandboxState({
       configEnabled: true,
-      desired: { version: 1, revision: 'rev-1' },
+      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
       activeLoopSandboxes: { ses_loop: true },
     })).toEqual({
       configEnabled: true,
-      desired: { version: 1, revision: 'rev-1' },
+      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
       applied: null,
       controller: null,
       activeLoopSandboxes: { ses_loop: true },
+    })
+    expect(readForgeHostSandboxState({
+      configEnabled: true,
+      desired: { version: 1, revision: 'rev-1' },
+      applied: { version: 1, revision: 'rev-2', enabled: false, sessionId: null, error: null, appliedAt: 2 },
+      controller: { version: 1, phase: 'ready', revision: 'rev-3', sessionId: null },
+    })).toEqual({
+      configEnabled: true,
+      desired: null,
+      applied: { version: 1, revision: 'rev-2', enabled: false, sessionId: null, error: null, appliedAt: 2 },
+      controller: { version: 1, phase: 'ready', revision: 'rev-3', sessionId: null },
     })
     expect(readForgeHostSandboxState({ configEnabled: 'yes' }))
       .toEqual({ error: 'Forge returned an invalid host sandbox state' })

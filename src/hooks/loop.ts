@@ -1,4 +1,5 @@
 import type { ForgeClient } from '../client/port'
+import type { LoopEvent } from '../loop/runtime'
 import type { LoopChangeNotifier, TerminationReason } from '../loop'
 import { createLoop, isWorkspaceNotFoundError } from '../loop'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
@@ -18,7 +19,7 @@ import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 import type { GitService } from '../utils/git-service'
 
 export interface LoopEventHandler {
-  onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
+  onEvent(input: { event: LoopEvent }): Promise<void>
   terminateAll(): void
   clearAllRetryTimeouts(): void
   startWatchdog(loopName: string): void
@@ -31,12 +32,6 @@ export interface LoopEventHandler {
   loop: import('../loop/runtime').Loop
 }
 
-/**
- * Thin adapter that translates host events → `LoopEvent` and delegates
- * all runtime behavior to the Loop created by createLoop().
- *
- * The existing `LoopEventHandler` interface is preserved as-is.
- */
 export function createLoopEventHandler(
   loopsRepo: LoopsRepo,
   plansRepo: PlansRepo,

@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'pa
 import { fileURLToPath } from 'url'
 import { applyEdits, findNodeAtLocation, modify, parseTree } from 'jsonc-parser/lib/esm/main.js'
 import type { Node } from 'jsonc-parser/lib/esm/main.js'
+import { z } from 'zod'
 import {
   resolveCliConfigPath,
   resolveConfigDir,
@@ -24,29 +25,16 @@ export interface UnlinkResult {
   shimPath: string
 }
 
-/**
- * Source of the `<configDir>/plugin/opencode-forge.js` re-export shim. Used by the external mode,
- * where the built server entry lives outside the config directory. The vendored copy needs no
- * shim: OpenCode discovers `<configDir>/plugin/opencode-forge` as a plugin package, and loading
- * both would register the same plugin id twice (one copy fails).
- */
 export function buildShimSource(serverEntry: string): string {
   return `export { default } from ${JSON.stringify(serverEntry)}\n`
 }
 
-/** Relative specifier for `cli.json`, resolved by opencode against the config dir. */
 export const VENDORED_CLI_SPEC = './plugin/opencode-forge/dist'
 
-/** First built server entry candidate that exists on disk, if any. */
 function resolveServerEntry(): string | undefined {
   return resolveServerEntryCandidates().find((candidate) => existsSync(candidate))
 }
 
-/**
- * Package root owning the built server entry — the directory above `dist/`, or
- * the entry's parent when the module layout has no `dist` — or undefined when
- * no built entry exists on disk.
- */
 function resolvePackageRoot(): string | undefined {
   const entry = resolveServerEntry()
   if (!entry) return undefined
@@ -54,12 +42,6 @@ function resolvePackageRoot(): string | undefined {
   return basename(entryDir) === 'dist' ? dirname(entryDir) : resolve(entryDir, '..')
 }
 
-/**
- * Built `dist` directory of the package, or undefined when it is absent. `cli.json`
- * lists opencode V2 plugins by directory, and V2 resolves the configured
- * directory's package entrypoints, so this directory is the spec written into
- * `cli.json` for the external mode.
- */
 export function resolveCliPluginDir(): string | undefined {
   const root = resolvePackageRoot()
   if (!root) return undefined
@@ -67,10 +49,6 @@ export function resolveCliPluginDir(): string | undefined {
   return existsSync(dir) ? dir : undefined
 }
 
-/**
- * Write the server re-export shim pointing at the built entry of this checkout. Only the
- * external mode writes a shim; the vendored copy is discovered directly from `plugin/`.
- */
 export function linkPlugin(options: { dryRun: boolean }): LinkResult {
   const shimPath = resolvePluginShimPath()
   const entry = resolveServerEntry()
@@ -86,7 +64,6 @@ export function linkPlugin(options: { dryRun: boolean }): LinkResult {
   return { action: existing === undefined ? 'created' : 'updated', shimPath, target }
 }
 
-/** Remove the server re-export shim from opencode's plugin directory. */
 export function unlinkPlugin(options: { dryRun: boolean }): UnlinkResult {
   const shimPath = resolvePluginShimPath()
   if (!existsSync(shimPath)) {
@@ -105,12 +82,6 @@ export interface VendorResult {
   missing: string[]
 }
 
-/**
- * Copy the installed package's assets into the vendored dir so the config
- * folder is self-contained. Each asset's destination is removed before copying
- * so stale files never survive an upgrade, and assets absent from the package
- * root are recorded rather than failing the whole operation.
- */
 export function vendorPlugin(options: { dryRun: boolean }): VendorResult {
   const vendorDir = resolveVendorDir()
   const root = resolvePackageRoot()
@@ -139,7 +110,6 @@ export function vendorPlugin(options: { dryRun: boolean }): VendorResult {
   }
 }
 
-/** Remove the vendored package copy from opencode's global plugin directory. */
 export function unvendorPlugin(options: { dryRun: boolean }): 'removed' | 'absent' {
   const vendorDir = resolveVendorDir()
   if (!existsSync(vendorDir)) {
@@ -157,7 +127,6 @@ export interface PluginConfigTarget {
   schema: string
 }
 
-/** `cli.json` is opencode V2's plugin list. */
 export function resolveCliConfigTarget(): PluginConfigTarget {
   return { file: resolveCliConfigPath(), key: 'plugins', schema: 'https://opencode.ai/v2/cli.json' }
 }
@@ -174,13 +143,6 @@ function pluginConfigSource(spec: string, target: PluginConfigTarget): string {
   return `{\n  "$schema": ${JSON.stringify(target.schema)},\n  ${JSON.stringify(target.key)}: [${JSON.stringify(spec)}]\n}\n`
 }
 
-/**
- * Ensure the target config file lists the given plugin spec. opencode V2 loads
- * plugins only from the `plugins` array in `cli.json` — there is no directory
- * scan — so the entry must be written explicitly. The file is parsed and edited as
- * JSONC so existing comments and trailing commas survive, and an already-present or
- * stale forge entry is handled without rewriting unrelated content.
- */
 export function ensurePluginRegistration(options: {
   dryRun: boolean
   spec: string
@@ -230,11 +192,6 @@ export function ensurePluginRegistration(options: {
   }
 }
 
-/**
- * Remove every forge entry from the target config file's plugin array, highest
- * index first so earlier indices stay valid. Returns `'absent'` when the file or
- * any forge entry does not exist.
- */
 export function removePluginRegistration(options: {
   dryRun: boolean
   target: PluginConfigTarget
@@ -274,7 +231,14 @@ interface ForgeEntry {
   spec: string
 }
 
-function scanPluginArray(text: string, key: string, baseDir: string): { plugin?: Node; entries: ForgeEntry[] } {
+interface PluginArrayScan {
+  plugin?: Node
+  entries: ForgeEntry[]
+}
+
+const packageNameSchema = z.looseObject({ name: z.string() })
+
+function scanPluginArray(text: string, key: string, baseDir: string): PluginArrayScan {
   const root = parseTree(text, undefined, { allowTrailingComma: true })
   if (!root) return { entries: [] }
   const plugin = findNodeAtLocation(root, [key])
@@ -305,12 +269,6 @@ function pathLikeSpec(spec: string): string | undefined {
   return undefined
 }
 
-/**
- * A path entry refers to forge when it resolves inside the vendored package
- * dir, or when it points into a `dist` directory whose owning package is
- * actually named `opencode-forge`. Matching the `dist` suffix alone would
- * falsely claim any unrelated local plugin built into `dist/`.
- */
 function isForgePath(spec: string, baseDir: string): boolean {
   const pathLike = pathLikeSpec(spec)
   if (!pathLike) return false
@@ -325,8 +283,8 @@ function isForgePath(spec: string, baseDir: string): boolean {
 
 function readPackageName(dir: string): string | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { name?: unknown }
-    return typeof parsed.name === 'string' ? parsed.name : undefined
+    const parsed = packageNameSchema.safeParse(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')))
+    return parsed.success ? parsed.data.name : undefined
   } catch {
     return undefined
   }

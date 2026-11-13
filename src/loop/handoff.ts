@@ -2,24 +2,32 @@ import { z } from 'zod'
 
 const nonBlank = z.string().refine((value) => value.trim().length > 0, { message: 'must not be blank' })
 
-export const coderHandoffSchema = z.object({
-  changes: z.array(z.object({
-    summary: nonBlank,
-    reason: nonBlank,
-  })).min(1),
-  deviations: z.array(z.object({
-    planItem: nonBlank,
-    actual: nonBlank,
-    reason: nonBlank,
-  })).default([]),
-  verification: z.array(z.object({
-    command: nonBlank,
-    cwd: nonBlank,
-    outcome: z.enum(['pass', 'fail', 'not-run']),
-    changedAfter: z.boolean(),
-  })).min(1),
+const coderChangeSchema = z.object({
+  summary: nonBlank,
+  reason: nonBlank,
+})
+
+const coderDeviationSchema = z.object({
+  planItem: nonBlank,
+  actual: nonBlank,
+  reason: nonBlank,
+})
+
+const coderVerificationSchema = z.object({
+  command: nonBlank,
+  cwd: nonBlank,
+  outcome: z.enum(['pass', 'fail', 'not-run']),
+  changedAfter: z.boolean(),
+})
+
+export const coderHandoffFields = {
+  changes: z.array(coderChangeSchema).min(1),
+  deviations: z.array(coderDeviationSchema).default([]),
+  verification: z.array(coderVerificationSchema).min(1),
   notes: z.string().optional(),
-}).strict()
+}
+
+export const coderHandoffSchema = z.object(coderHandoffFields).strict()
 
 const auditorHandoffSummarySchema = z.object({
   done: z.array(nonBlank).min(1),
@@ -27,12 +35,14 @@ const auditorHandoffSummarySchema = z.object({
   followUps: z.array(nonBlank).default([]),
 })
 
-export const auditorHandoffSchema = z.object({
+export const auditorHandoffFields = {
   summary: auditorHandoffSummarySchema.optional(),
   notes: z.string().optional(),
-}).strict()
+}
 
-export const postActionCompleteSchema = z.object({
+export const auditorHandoffSchema = z.object(auditorHandoffFields).strict()
+
+export const postActionCompleteFields = {
   outcome: z.enum(['completed', 'completed_with_issues', 'failed']),
   steps: z.array(z.object({
     name: nonBlank,
@@ -41,7 +51,9 @@ export const postActionCompleteSchema = z.object({
   })).min(1),
   followUps: z.array(nonBlank).default([]),
   notes: z.string().optional(),
-}).strict()
+}
+
+export const postActionCompleteSchema = z.object(postActionCompleteFields).strict()
 
 export type CoderHandoffPayload = z.infer<typeof coderHandoffSchema>
 type AuditorHandoffSummary = z.infer<typeof auditorHandoffSummarySchema>
@@ -79,7 +91,6 @@ interface LoopHandoffRecordBase {
   resolvedAt: number | null
 }
 
-/** A handoff record whose role and payload are known to match. */
 export type LoopHandoffRecordFor<R extends LoopHandoffRole> = LoopHandoffRecordBase & {
   role: R
   payload: LoopHandoffPayloadByRole[R]
@@ -95,13 +106,22 @@ export interface LoopHandoffInputBase {
   iteration: number
 }
 
-/** A handoff write whose role and payload are known to match. */
 export type LoopHandoffWriteInputFor<R extends LoopHandoffRole> = LoopHandoffInputBase & {
   role: R
   payload: LoopHandoffPayloadByRole[R]
 }
 
 export type LoopHandoffWriteInput = { [R in LoopHandoffRole]: LoopHandoffWriteInputFor<R> }[LoopHandoffRole]
+
+export interface HandoffArgs {
+  changes?: unknown
+  deviations?: unknown
+  verification?: unknown
+  summary?: unknown
+  steps?: unknown
+  outcome?: unknown
+  notes?: unknown
+}
 
 export type ParsedHandoffWriteInput =
   | { ok: true; input: LoopHandoffWriteInputFor<'coder'> }
@@ -113,16 +133,10 @@ export function handoffSchemaForRole<R extends LoopHandoffRole>(role: R): (typeo
   return handoffSchemas[role]
 }
 
-/**
- * Parses a raw tool payload with the role's strict schema and returns the
- * matching write input. The single write-side validation point: a stored
- * handoff is only ever built from the parsed payload, so its role and payload
- * type cannot diverge at the type level either.
- */
 export function parseHandoffWriteInput(
   role: LoopHandoffRole,
   base: LoopHandoffInputBase,
-  raw: unknown,
+  raw: HandoffArgs,
 ): ParsedHandoffWriteInput {
   switch (role) {
     case 'coder': {
@@ -182,7 +196,13 @@ export function formatCoderHandoff(payload: CoderHandoffPayload): string {
   ].join('\n')
 }
 
-export function formatSectionSummary(summary: AuditorHandoffSummary): { done: string; deviations: string; followUps: string } {
+export interface SectionSummaryLines {
+  done: string
+  deviations: string
+  followUps: string
+}
+
+export function formatSectionSummary(summary: AuditorHandoffSummary): SectionSummaryLines {
   return {
     done: bulletList(summary.done).join('\n'),
     deviations: bulletList(summary.deviations).join('\n'),

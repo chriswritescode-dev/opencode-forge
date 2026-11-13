@@ -19,6 +19,20 @@ describe('resolveForgeConfigMaps', () => {
     expect(Object.keys(cfg.agent)).toEqual(expect.arrayContaining(['code', 'architect', 'auditor', 'build', 'plan']))
     expect(Object.keys(cfg.command)).toEqual(expect.arrayContaining(['review', 'execute-plan', 'loop-status']))
   })
+
+  test('drops only the malformed agent and command entries', async () => {
+    const applyConfig = createConfigHandler(buildAgents())
+    const cfg = await resolveForgeConfigMaps(async (doc) => {
+      await applyConfig(doc)
+      doc.agent = { ...doc.agent, broken: { mode: 'not-a-mode' } }
+      doc.command = { ...doc.command, broken: { template: 42 } }
+    })
+
+    expect(cfg.agent.broken).toBeUndefined()
+    expect(cfg.command.broken).toBeUndefined()
+    expect(Object.keys(cfg.agent)).toEqual(expect.arrayContaining(['code', 'architect', 'auditor']))
+    expect(Object.keys(cfg.command)).toEqual(expect.arrayContaining(['review', 'execute-plan']))
+  })
 })
 
 describe('registerForgeAgentsV2', () => {

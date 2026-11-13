@@ -95,13 +95,6 @@ function padRows(rows: DiagramRow[]): DiagramRow[] {
   })
 }
 
-/**
- * Fixed box-drawing view of the loop state machine. Edge counts use the same
- * `fromPhase→toPhase` keys as the web graph, with terminal rows collapsing onto
- * `fromPhase→terminal`; transitions for phases this view does not draw are
- * ignored. The terminal box is labelled with the loop status only when the
- * loop is not running.
- */
 export function renderLoopMachineDiagram(input: {
   phase: string
   status: string

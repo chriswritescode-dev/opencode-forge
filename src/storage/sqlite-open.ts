@@ -1,41 +1,40 @@
 import { Database } from 'bun:sqlite'
 import { mkdirSync, unlinkSync } from 'fs'
 import { dirname } from 'path'
+import { z } from 'zod'
+
+const integrityCheckRowSchema = z.object({ integrity_check: z.string() })
+const statementChangesResultSchema = z.object({ changes: z.number() })
+
+export function statementChanges(result: void): number {
+  const parsed = statementChangesResultSchema.safeParse(result)
+  return parsed.success ? parsed.data.changes : 0
+}
+
+interface ImmediateTransactionRunner<T> {
+  immediate: () => T
+}
+
+type TransactionCallable<T> = () => T
+
+function hasImmediateRunner<T>(
+  transaction: TransactionCallable<T>,
+): transaction is TransactionCallable<T> & ImmediateTransactionRunner<T> {
+  return 'immediate' in transaction
+}
 
 interface SqliteOpenOptions {
-  /** Bootstrap schema (runs on every successful open — must be idempotent, e.g. CREATE TABLE IF NOT EXISTS). */
   bootstrap: (db: Database) => void
-  /** Pragmas to run after open and on fresh-db creation. */
   pragmas: string[]
-  /** Human-readable label used in error logging (e.g. "Forge database" or "Graph database"). */
   label: string
-  /**
-   * Optional additional validation after the integrity_check.
-   * Throw to trigger corruption recovery. Called with the opened db.
-   */
   validate?: (db: Database) => void
-  /**
-   * Hook called before opening, for non-destructive cleanup of inconsistent
-   * on-disk state (e.g. orphaned SHM files). Receives the dbPath.
-   */
   preOpenCleanup?: (dbPath: string) => void
-  /**
-   * When true, `createFreshDatabase` will `mkdirSync(dirname(dbPath), { recursive: true })`
-   * before opening. Set false for callers that manage directory creation themselves.
-   */
   ensureParentDir?: boolean
 }
 
-/**
- * Runs `fn` in a `BEGIN IMMEDIATE` transaction, taking the write lock up front so a
- * read-then-write inside `fn` cannot interleave with another connection's write.
- */
 export function runImmediateTransaction<T>(db: Database, fn: () => T): T {
-  // `db.transaction(fn)` returns a function plus `.immediate` / `.deferred` / `.exclusive`
-  // variants; bun-types does not surface the property on the inferred call signature under this
-  // tsconfig, so cast explicitly.
-  const run = db.transaction(fn) as unknown as { immediate: () => T }
-  return run.immediate()
+  const transaction = db.transaction(fn)
+  return hasImmediateRunner<T>(transaction) ? transaction.immediate() : transaction()
 }
 
 function deleteDatabaseFiles(dbPath: string): void {
@@ -77,17 +76,6 @@ function createFreshDatabase(dbPath: string, options: SqliteOpenOptions): Databa
   return freshDb
 }
 
-/**
- * Opens a SQLite database with integrity verification and corruption recovery.
- *
- * - Runs `PRAGMA integrity_check` after open.
- * - Optionally runs a caller-supplied `validate` hook for deeper checks
- *   (e.g. exercising data pages — catches WAL-level corruption that
- *   integrity_check can miss).
- * - On integrity failure OR a corruption error during open, deletes the
- *   DB + WAL + SHM files and recreates a fresh database via `bootstrap`.
- * - Non-corruption errors during open are re-thrown for the caller to handle.
- */
 export function openSqliteWithIntegrityGuard(
   dbPath: string,
   options: SqliteOpenOptions,
@@ -101,8 +89,7 @@ export function openSqliteWithIntegrityGuard(
     db = new Database(dbPath)
     applyPragmas(db, options.pragmas)
 
-    // Run integrity check
-    const integrityResult = db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }
+    const integrityResult = integrityCheckRowSchema.parse(db.prepare('PRAGMA integrity_check').get())
     if (integrityResult.integrity_check !== 'ok') {
       db.close()
       console.error(`${options.label} corruption detected at ${dbPath}: ${integrityResult.integrity_check}`)
@@ -111,7 +98,6 @@ export function openSqliteWithIntegrityGuard(
       db = null
     }
 
-    // Additional caller-supplied validation (e.g. query a real table to catch WAL-level corruption)
     if (db && options.validate) {
       try {
         options.validate(db)
@@ -128,7 +114,6 @@ export function openSqliteWithIntegrityGuard(
     const errorMsg = err instanceof Error ? err.message : String(err)
     console.error(`${options.label} open failed at ${dbPath}: ${errorMsg}`)
 
-    // Close db handle if it was opened before failing
     if (db) {
       try {
         db.close()
@@ -140,7 +125,6 @@ export function openSqliteWithIntegrityGuard(
       deleteDatabaseFiles(dbPath)
       needsBootstrap = true
     } else {
-      // Re-throw transient errors (e.g. SQLITE_BUSY) so the caller can retry
       throw err
     }
   }
@@ -149,7 +133,6 @@ export function openSqliteWithIntegrityGuard(
     return createFreshDatabase(dbPath, options)
   }
 
-  // Bootstrap schema on every open — must be idempotent
   options.bootstrap(db)
   return db
 }

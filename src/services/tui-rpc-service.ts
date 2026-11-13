@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { PluginConfig, Logger } from '../types'
 import type { LoopsRepo, LoopRow } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
-import type { SessionSandboxPreferencesRepo } from '../storage/repos/session-sandbox-preferences-repo'
+import type { SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage/repos/session-sandbox-preferences-repo'
 import { getRestartability } from '../loop/restartability'
 import { forgeWorktreesRoot, listForgeWorktreeDirs, loopBranchExists } from '../workspace/forge-naming'
 import { isSandboxConfigEnabled } from '../sandbox/context'
@@ -31,7 +31,6 @@ export interface TuiRpcServiceDeps {
   plansRepo: PlansRepo
   sandboxPreferences: SessionSandboxPreferencesRepo
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
-  /** Notified after the desired host-sandbox revision is written. */
   onHostSandboxChanged?: () => void
   logger: Logger
 }
@@ -154,13 +153,14 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
             ? { enabled: request.enabled, sessionId: request.sessionId }
             : { enabled: current?.enabled ?? false, sessionId: current?.sessionId ?? request.sessionId }
           const overrides = request.overrides !== undefined ? readSandboxOverrides(request.overrides) : current?.overrides
-          return {
+          const desired: SessionSandboxDesiredState = {
             version: 1,
             revision,
             ...binding,
             requestedAt: Date.now(),
-            ...(overrides ? { overrides } : {}),
           }
+          if (overrides) desired.overrides = overrides
+          return desired
         })
       } catch (err) {
         return { error: errorMessage(err) }

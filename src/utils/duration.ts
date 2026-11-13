@@ -1,6 +1,3 @@
-// Pure, dependency-free duration helpers shared by the server (loop tooling,
-// dashboard service) and the TUI dashboard.
-
 export function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)

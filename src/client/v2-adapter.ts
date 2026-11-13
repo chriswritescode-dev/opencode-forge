@@ -1,4 +1,5 @@
 import type { Plugin } from '@opencode/plugin'
+import { z } from 'zod'
 import { classify, requestError, unavailableError } from './errors'
 import { ForgeClientError } from './port'
 import { processShared } from '../utils/process-shared'
@@ -11,11 +12,11 @@ import type {
   SessionMessagePart,
   SessionMessages,
   SessionStatus,
+  SessionToolState,
 } from './port'
 import { FORGE_EVENT_TYPES, mapV2Error, mapV2SessionInfo } from '../host/v2-events'
 import type { ForgeToastInput } from '../host/forge-rpc'
 import { LRUCache } from '../utils/lru-cache'
-import { isRecord } from '../utils/is-record'
 
 type V2Session = Plugin.Context['session']
 type V2SessionInfo = Awaited<ReturnType<V2Session['get']>>
@@ -28,8 +29,42 @@ type V2ToolState = Extract<V2AssistantContent, { type: 'tool' }>['state']
 type V2TokenUsage = NonNullable<V2AssistantMessage['tokens']>
 type V2ModelInfo = Awaited<ReturnType<Plugin.Context['model']['list']>>['data'][number]
 
+type SessionCreateRequest = {
+  title?: string
+  location: { directory: string }
+  permissions?: V2PermissionRule[]
+}
+
+type SessionUpdateRequest = {
+  sessionID: string
+  title?: string
+  permissions?: V2PermissionRule[]
+}
+
+type SessionModelRequest = {
+  providerID: string
+  id: string
+  variant?: string
+}
+
+type SessionSwitchModelRequest = {
+  sessionID: string
+  model: SessionModelRequest
+}
+
 type V1PermissionRule = NonNullable<Session['permission']>[number]
 export type V2PermissionRule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
+
+const permissionEffectSchema = z.enum(['allow', 'deny', 'ask'])
+const sessionStatusEntrySchema = z.object({
+  type: z.enum(['idle', 'busy', 'retry']),
+  attempt: z.number().optional(),
+  message: z.string().optional(),
+  next: z.number().optional(),
+})
+const permissionResourceEffectsSchema = z.record(z.string(), permissionEffectSchema)
+const permissionTableSchema = z.looseObject({})
+const modelLimitSchema = z.looseObject({ context: z.number().optional() })
 
 export interface V2ClientLike {
   readonly session: V2Session
@@ -48,18 +83,22 @@ export interface V2ForgeClient extends ForgeClient {
   recordStatusEvent(event: ForgeEvent): void
 }
 
-export const V1_TO_V2_TOOL_NAMES: Record<string, string> = {
+export const V1_TO_V2_TOOL_NAMES = {
   bash: 'shell',
   task: 'subagent',
+} satisfies Record<string, string>
+
+function renamed(table: Record<string, string>, name: string): string | undefined {
+  return table[name]
 }
 
-const V1_TO_V2_ACTION_NAMES: Record<string, string> = {
+const V1_TO_V2_ACTION_NAMES = {
   ...V1_TO_V2_TOOL_NAMES,
   write: 'edit',
   patch: 'edit',
-}
+} satisfies Record<string, string>
 
-export function invertRenameTable(renames: Record<string, string>): Record<string, string> {
+export function invertRenameTable(renames: Record<string, string>) {
   const inverted: Record<string, string> = {}
   for (const [from, to] of Object.entries(renames)) {
     if (!(to in inverted)) inverted[to] = from
@@ -67,14 +106,14 @@ export function invertRenameTable(renames: Record<string, string>): Record<strin
   return inverted
 }
 
-const V2_TO_V1_ACTION_NAMES: Record<string, string> = {
+const V2_TO_V1_ACTION_NAMES = {
   ...invertRenameTable(V1_TO_V2_ACTION_NAMES),
   edit: 'write',
-}
+} satisfies Record<string, string>
 
 export function toV2Ruleset(ruleset: V1PermissionRule[]): V2PermissionRule[] {
   return ruleset.map((rule) => ({
-    action: V1_TO_V2_ACTION_NAMES[rule.permission] ?? rule.permission,
+    action: renamed(V1_TO_V2_ACTION_NAMES, rule.permission) ?? rule.permission,
     resource: rule.pattern,
     effect: rule.action,
   }))
@@ -82,48 +121,36 @@ export function toV2Ruleset(ruleset: V1PermissionRule[]): V2PermissionRule[] {
 
 export function fromV2Ruleset(ruleset: ReadonlyArray<V2PermissionRule>): V1PermissionRule[] {
   return ruleset.map((rule) => ({
-    permission: V2_TO_V1_ACTION_NAMES[rule.action] ?? rule.action,
+    permission: renamed(V2_TO_V1_ACTION_NAMES, rule.action) ?? rule.action,
     pattern: rule.resource,
     action: rule.effect,
   }))
 }
 
-function isV2Effect(value: unknown): value is V2PermissionRule['effect'] {
-  return value === 'allow' || value === 'deny' || value === 'ask'
-}
-
-export function toV2PermissionMap(permission: unknown): V2PermissionRule[] {
-  if (!isRecord(permission)) return []
+export function toV2PermissionMap<P>(permission: P): V2PermissionRule[] {
+  const parsed = permissionTableSchema.safeParse(permission)
+  if (!parsed.success) return []
   const rules: V2PermissionRule[] = []
-  for (const [tool, value] of Object.entries(permission)) {
-    const action = V1_TO_V2_ACTION_NAMES[tool] ?? tool
-    if (isV2Effect(value)) {
-      rules.push({ action, resource: '*', effect: value })
+  for (const [tool, value] of Object.entries(parsed.data)) {
+    const action = renamed(V1_TO_V2_ACTION_NAMES, tool) ?? tool
+    const effect = permissionEffectSchema.safeParse(value)
+    if (effect.success) {
+      rules.push({ action, resource: '*', effect: effect.data })
       continue
     }
-    if (!isRecord(value)) continue
-    for (const [resource, effect] of Object.entries(value)) {
-      if (isV2Effect(effect)) rules.push({ action, resource, effect })
+    const perResource = permissionResourceEffectsSchema.safeParse(value)
+    if (!perResource.success) continue
+    for (const [resource, resourceEffect] of Object.entries(perResource.data)) {
+      rules.push({ action, resource, effect: resourceEffect })
     }
   }
   return rules
 }
 
-function isSessionStatus(value: unknown): value is SessionStatus[string] {
-  if (!value || typeof value !== 'object') return false
-  const type = (value as { type?: unknown }).type
-  return type === 'idle' || type === 'busy' || type === 'retry'
-}
-
 const SESSION_STATUS_CACHE_CAPACITY = 1000
 
-/** How long a client instance reuses its resolved model context-window limits before listing models again. */
 const MODEL_CONTEXT_CACHE_TTL_MS = 60_000
 
-/**
- * Process-wide session status, fed from every location's events before the ownership filter, so a
- * host instance can report the status of loop sessions that live in a worktree location.
- */
 const sessionStatusCache = processShared('v2-session-status.v1', () => new LRUCache<SessionStatus[string]>(SESSION_STATUS_CACHE_CAPACITY))
 
 export function resetV2SessionStatusCache(): void {
@@ -138,19 +165,26 @@ async function call<T>(method: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
+type ContentPart = { type: string; text?: string }
+type MessageContent = string | ReadonlyArray<ContentPart>
+
+function isContentParts(content: MessageContent): content is ReadonlyArray<ContentPart> {
+  return Array.isArray(content)
+}
+
 export function contentToText(
-  content: string | ReadonlyArray<{ type: string; text?: string }> | undefined,
+  content: MessageContent | undefined,
 ): string {
-  if (typeof content === 'string') return content
-  if (!content) return ''
+  if (content === undefined) return ''
+  if (!isContentParts(content)) return content
   const lines: string[] = []
   for (const part of content) {
-    if (part.type === 'text' && typeof part.text === 'string') lines.push(part.text)
+    if (part.type === 'text' && part.text !== undefined) lines.push(part.text)
   }
   return lines.join('\n')
 }
 
-function toToolState(state: V2ToolState): Record<string, unknown> {
+function toToolState(state: V2ToolState): SessionToolState {
   if (state.status === 'completed') {
     return { status: state.status, input: state.input, output: contentToText(state.content), metadata: state.metadata ?? {} }
   }
@@ -203,14 +237,6 @@ function toAssistantMessageParts(message: V2AssistantMessage, sessionID: string)
   })
 }
 
-/**
- * Whether a V2 session message is a conversation turn the port may expose.
- * Control-only records — compaction (running/completed/failed), shell, skill,
- * and the agent/model switch notices — carry no turn result, so exposing a
- * compaction summary as an assistant reply would let a phase handler consume it
- * as the coder's or auditor's answer. They stay out of `session.messages` here,
- * which is the single point every reader goes through.
- */
 function isVisibleV2Message(message: V2Message): message is V2VisibleMessage {
   return message.type === 'user' || message.type === 'assistant'
 }
@@ -250,7 +276,7 @@ function addTokenUsage(total: V2TokenUsage, tokens: V2TokenUsage): void {
   total.cache.write += tokens.cache.write
 }
 
-function visibleAssistantUsage(messages: SessionMessages): { cost: number; tokens: V2TokenUsage } {
+function visibleAssistantUsage(messages: SessionMessages): UsageTotals {
   const tokens = emptyTokenUsage()
   let cost = 0
   for (const message of messages) {
@@ -261,10 +287,11 @@ function visibleAssistantUsage(messages: SessionMessages): { cost: number; token
   return { cost, tokens }
 }
 
-function usageRemainder(
-  info: V2SessionInfo,
-  used: { cost: number; tokens: V2TokenUsage },
-): { cost: number; tokens: V2TokenUsage } {
+type UsageTotals = { cost: number; tokens: V2TokenUsage }
+
+function usageRemainder(  info: V2SessionInfo,
+  used: UsageTotals,
+): UsageTotals {
   const tokens = info.tokens ?? emptyTokenUsage()
   return {
     cost: Math.max(0, (info.cost ?? 0) - used.cost),
@@ -280,7 +307,7 @@ function usageRemainder(
   }
 }
 
-function hasUsage(usage: { cost: number; tokens: V2TokenUsage }): boolean {
+function hasUsage(usage: UsageTotals): boolean {
   return usage.cost > 0
     || usage.tokens.input > 0
     || usage.tokens.output > 0
@@ -292,19 +319,23 @@ function hasUsage(usage: { cost: number; tokens: V2TokenUsage }): boolean {
 function usageRemainderMessage(
   sessionID: string,
   info: V2SessionInfo,
-  usage: { cost: number; tokens: V2TokenUsage },
+  usage: UsageTotals,
 ): SessionMessages[number] {
   const model = info.model
+  const messageInfo: SessionMessageInfo = {
+    id: `${sessionID}:usage-remainder`,
+    role: 'assistant',
+    sessionID,
+    time: { created: info.time?.created ?? 0 },
+    cost: usage.cost,
+    tokens: usage.tokens,
+  }
+  if (model) {
+    messageInfo.providerID = model.providerID
+    messageInfo.modelID = model.id
+  }
   return {
-    info: {
-      id: `${sessionID}:usage-remainder`,
-      role: 'assistant',
-      sessionID,
-      time: { created: info.time?.created ?? 0 },
-      cost: usage.cost,
-      tokens: usage.tokens,
-      ...(model ? { providerID: model.providerID, modelID: model.id } : {}),
-    },
+    info: messageInfo,
     parts: [],
   }
 }
@@ -316,7 +347,7 @@ function toPortSession(info: V2SessionInfo): Session {
 
 function toProviderModelInfo(model: V2ModelInfo): ProviderList['all'][number]['models'][string] {
   const cost = model.cost[0]
-  return {
+  const info: ProviderList['all'][number]['models'][string] = {
     id: model.id,
     name: model.name,
     release_date: new Date(model.time.released).toISOString(),
@@ -324,9 +355,10 @@ function toProviderModelInfo(model: V2ModelInfo): ProviderList['all'][number]['m
       toolcall: model.capabilities.tools,
       reasoning: model.compatibility?.reasoningField !== undefined,
     },
-    ...(cost ? { cost: { input: cost.input, output: cost.output } } : {}),
     variants: Object.fromEntries(model.variants.map((variant) => [variant.id, {}])),
   }
+  if (cost) info.cost = { input: cost.input, output: cost.output }
+  return info
 }
 
 export function toProviderListFromV2(
@@ -352,36 +384,37 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
   function recordStatusEvent(event: ForgeEvent): void {
     if (event.type === FORGE_EVENT_TYPES.sessionDeleted) {
       const sessionID = event.properties.sessionID
-      if (typeof sessionID === 'string') sessionStatusCache.delete(sessionID)
+      if (sessionID !== undefined) sessionStatusCache.delete(sessionID)
       return
     }
     if (event.type === FORGE_EVENT_TYPES.sessionIdle) {
       const sessionID = event.properties.sessionID
-      if (typeof sessionID === 'string') sessionStatusCache.set(sessionID, { type: 'idle' })
+      if (sessionID !== undefined) sessionStatusCache.set(sessionID, { type: 'idle' })
       return
     }
     if (event.type === FORGE_EVENT_TYPES.sessionStatus) {
       const sessionID = event.properties.sessionID
-      const status = event.properties.status
-      if (typeof sessionID === 'string' && isSessionStatus(status)) sessionStatusCache.set(sessionID, status)
+      const status = sessionStatusEntrySchema.safeParse(event.properties.status)
+      if (sessionID !== undefined && status.success) sessionStatusCache.set(sessionID, status.data)
     }
   }
 
   const session: ForgeClient['session'] = {
-    create: (params) => call('session.create', async () =>
-      toPortSession(await ctx.session.create({
+    create: (params) => call('session.create', async () => {
+      const createParams: SessionCreateRequest = {
         title: params.title,
         location: { directory: params.workspaceID ?? params.workspace ?? params.directory ?? options.directory },
-        ...(params.permission ? { permissions: toV2Ruleset(params.permission) } : {}),
-      }))),
+      }
+      if (params.permission) createParams.permissions = toV2Ruleset(params.permission)
+      return toPortSession(await ctx.session.create(createParams))
+    }),
     get: (params) => call('session.get', async () =>
       toPortSession(await ctx.session.get({ sessionID: params.sessionID }))),
     update: (params) => call('session.update', async () => {
-      await ctx.session.update({
-        sessionID: params.sessionID,
-        ...(params.title !== undefined ? { title: params.title } : {}),
-        ...(params.permission !== undefined ? { permissions: toV2Ruleset(params.permission) } : {}),
-      })
+      const update: SessionUpdateRequest = { sessionID: params.sessionID }
+      if (params.title !== undefined) update.title = params.title
+      if (params.permission !== undefined) update.permissions = toV2Ruleset(params.permission)
+      await ctx.session.update(update)
     }),
     messages: (params) => call('session.messages', async () => {
       const mapped = toSessionMessages(
@@ -412,14 +445,13 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
         await ctx.session.switchAgent({ sessionID: params.sessionID, agent: params.agent })
       }
       if (params.model) {
-        await ctx.session.switchModel({
-          sessionID: params.sessionID,
-          model: {
-            providerID: params.model.providerID,
-            id: params.model.modelID,
-            ...(params.variant ? { variant: params.variant } : {}),
-          },
-        })
+        const model: SessionModelRequest = {
+          providerID: params.model.providerID,
+          id: params.model.modelID,
+        }
+        if (params.variant) model.variant = params.variant
+        const switched: SessionSwitchModelRequest = { sessionID: params.sessionID, model }
+        await ctx.session.switchModel(switched)
       }
       await ctx.session.prompt({
         sessionID: params.sessionID,
@@ -451,8 +483,9 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
         const listed = await ctx.model.list({ location: { directory: options.directory } })
         const limits = new Map<string, number>()
         for (const info of listed.data) {
-          const context = isRecord(info.limit) ? info.limit.context : undefined
-          if (typeof context === 'number' && context > 0) {
+          const limit = modelLimitSchema.safeParse(info.limit)
+          const context = limit.success ? limit.data.context : undefined
+          if (context !== undefined && context > 0) {
             limits.set(`${info.providerID}/${info.id}`, context)
           }
         }

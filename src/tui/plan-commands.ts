@@ -8,21 +8,11 @@ export interface ForgePlanCommandsDeps {
   host: ForgeTuiHost
   pluginConfig: PluginConfig
   currentSessionId(): string | null
-  /**
-   * The Forge client and execution context cache for the location the TUI currently shows, or
-   * null when that project cannot be resolved.
-   */
   ensureClient(): Promise<{ client: ForgeProjectClient; cache: ExecutionContextCache } | null>
 }
 
 export interface ForgePlanCommands {
-  /**
-   * Opens the execution dialog for the current session's stored plan (or an empty plan the user
-   * pastes from the dialog). Without a session, only a restart is possible, so it opens the
-   * restart dialog instead.
-   */
   executePlan(): Promise<void>
-  /** Opens the execution dialog in restart mode for the project's restartable loops. */
   restartLoop(options?: { emptyMessage?: string }): Promise<void>
 }
 

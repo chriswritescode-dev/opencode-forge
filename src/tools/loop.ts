@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from './tool'
+import { tool } from './tool'
 import type { ToolContext } from './types'
 
 import { slugify } from '../utils/logger'
@@ -13,7 +13,7 @@ import { loopBranchExists } from '../workspace/forge-naming'
 
 const z = tool.schema
 
-export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition> {
+export function createLoopTools(ctx: ToolContext) {
   const { loopHandler, config, logger } = ctx
 
   function auditorModelStatusLabel(state: LoopState): string {
@@ -24,18 +24,10 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
     return index > 0 ? `${base} (fallback ${index}/${chain.length - 1})` : base
   }
 
-  /**
-   * Detects when a newly created loop session resolved to a different opencode
-   * project than the one this plugin/TUI instance is scoped to. This happens
-   * when the launch directory had no git commit when opencode started (project
-   * id derives from the root commit), and it makes the session invisible to the
-   * TUI session list and un-navigable. Best effort — returns null when scopes
-   * match or the lookup fails.
-   */
   async function projectScopeWarning(sessionId: string): Promise<string | null> {
     try {
       const info = await ctx.client.session.get({ sessionID: sessionId })
-      const sessionProject = (info as { projectID?: string })?.projectID
+      const sessionProject = info.projectID
       if (sessionProject && sessionProject !== ctx.projectId) {
         logger.error(`loop: project scope mismatch — session ${sessionId} belongs to project ${sessionProject}, but this instance is scoped to ${ctx.projectId}`)
         return [
@@ -46,7 +38,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
         ].join('\n')
       }
     } catch {
-      // Best effort only — never block a successful launch on this check.
     }
     return null
   }
@@ -167,7 +158,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
           return `Failed to start loop: ${result.error.message}`
         }
 
-        // Format success message to match existing output
         const maxInfo = result.data.maxIterations > 0 ? result.data.maxIterations.toString() : 'unlimited'
         const modelInfo = result.data.modelUsed ?? 'default'
         const lines: string[] = [
@@ -261,7 +251,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
 
           if (active.length === 0) {
             if (recent.length === 0) {
-              // Even with no active loops, show cumulative usage if available
               const loopsRepo = ctx.loopsRepo
               const allLoopNames = new Set<string>()
               for (const loop of loopsRepo.listAll(ctx.projectId)) {
@@ -318,7 +307,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
           active.forEach((s, i) => {
             const duration = formatDuration(computeElapsedSeconds(s.startedAt))
             const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
-            // Check if any session registered to this loop is busy (main + child/subagent sessions)
             const isBusy = Object.entries(statuses).some(([sid, v]) =>
               ctx.loop.service.resolveLoopName(sid) === s.loopName && v.type === 'busy',
             )
@@ -415,7 +403,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
             statusLines.push(...formatSessionOutput(sessionOutput))
           }
 
-          // Add restartability display
           const restartability = getRestartability(state, {
             branchExists: () => loopBranchExists(state, ctx.directory),
           })
@@ -429,7 +416,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
             statusLines.push(`Restart: available with loop-status name=${state.loopName} restart=true`)
           }
 
-          // Add cumulative usage (merged persisted + live, with double-count prevention)
           const { formatCumulativeUsage } = await import('../utils/loop-format')
           statusLines.push(...formatCumulativeUsage(
             ctx.loopSessionUsageRepo,
@@ -448,10 +434,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
 
         let sessionStatus = 'unknown'
         try {
-          const statusResult = await ctx.client.session.status({ directory: state.worktreeDir })
-          const statuses = statusResult as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
-          // Check if any session registered to this loop is busy (main + child/subagent sessions)
-          const isBusy = Object.entries(statuses ?? {}).some(([sid, s]) =>
+          const statuses = await ctx.client.session.status({ directory: state.worktreeDir })
+          const isBusy = Object.entries(statuses).some(([sid, s]) =>
             ctx.loop.service.resolveLoopName(sid) === state.loopName && s.type === 'busy',
           )
           if (isBusy) {
@@ -510,7 +494,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
               },
             )
           } catch {
-            // Silently ignore fetch errors to avoid cluttering output
           }
         }
         if (sessionOutput) {
@@ -523,7 +506,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
           statusLines.push(...formatAuditResult(state.lastAuditResult))
         }
 
-        // Add restartability display for active loops using shared helper
         const restartability = getRestartability(state, {
           branchExists: () => loopBranchExists(state, ctx.directory),
         })
@@ -537,7 +519,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
           statusLines.push(`Restart: available with loop-status name=${state.loopName} restart=true`)
         }
 
-        // Add cumulative usage (merged persisted + live, with double-count prevention)
         const { formatCumulativeUsage } = await import('../utils/loop-format')
         statusLines.push(...formatCumulativeUsage(
           ctx.loopSessionUsageRepo,

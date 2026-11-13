@@ -16,10 +16,6 @@ export type ApplyPlanDecompositionResult =
   | { ok: true; totalSections: number }
   | { ok: false; errors: string[] }
 
-/** Single source of truth for the one-shot decompose-and-persist step shared by
- *  loop start (attachLoopToSession) and loop restart (handleLoopRestart).
- *  A plan whose section graph is invalid is rejected before anything is written,
- *  so an invalid graph can never leave partial section rows behind. */
 export function applyPlanDecomposition(args: ApplyPlanDecompositionArgs): ApplyPlanDecompositionResult {
   const { projectId, loopName, planText, loopsRepo, sectionPlansRepo } = args
   const maxSections = args.maxSections ?? MAX_TOTAL_SECTIONS

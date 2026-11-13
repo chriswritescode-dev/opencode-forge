@@ -1,24 +1,42 @@
-/**
- * Returns the value stored under `key` for the whole process, creating it on first use.
- *
- * OpenCode loads a separate copy of the plugin's module graph for each location, all in one
- * process, so module-level state is per location. State that must be one per process (the
- * per-project host sandbox controller, idle-gate markers, prompt in-flight guards) lives on
- * `globalThis` under a registered symbol so every module copy resolves the same value. Bump the
- * key's version suffix when the stored shape changes, so copies from different builds never share
- * an incompatible value.
- */
-export function processShared<T>(key: string, create: () => T): T {
-  const scope = globalThis as Record<symbol, unknown>
-  const symbol = Symbol.for(`opencode-forge.${key}`)
-  return (scope[symbol] ??= create()) as T
+import type { SessionStatusEntry } from '../client/port'
+import type { ToolDefinition } from '../tools/tool'
+import type { SandboxContext } from '../sandbox/context'
+import type { SharedSessionSandboxController } from '../host/forge-core'
+import type { ForgeTuiEventEmitter } from '../host/tui-events'
+import type { IdleGateStore } from '../loop/idle-gate'
+import type { InFlightEntry } from '../loop/in-flight-guard'
+import type { LRUCache } from './lru-cache'
+
+export interface ForgeSharedRegistries {
+  'idle-gate.v2': IdleGateStore
+  'prompt-in-flight.v2': Map<string, InFlightEntry>
+  'loop-state-locks.v1': Map<string, Promise<unknown>>
+  'loop-internal-fallback-aborts.v1': Map<string, number>
+  'loop-pending-code-graph-snapshots.v1': Map<string, string>
+  'session-sandbox-controllers.v1': Map<string, SharedSessionSandboxController>
+  'tui-event-emitters.v1': Map<string, Set<ForgeTuiEventEmitter>>
+  'v2-location-tools.v1': Map<string, Record<string, ToolDefinition>>
+  'pending-shell-sandboxes.v1': Map<string, SandboxContext>
+  'v2-session-status.v1': LRUCache<SessionStatusEntry>
+  'loop-registry.v2': Map<string, Set<string>>
 }
 
-/**
- * Builds the key for process-shared state that is scoped to one loop. Loop names are only
- * unique within a project, and one OpenCode process can host several projects, so shared
- * maps must key entries by project AND loop name to keep same-named loops independent.
- */
+declare global {
+  var __opencodeForgeShared: Partial<ForgeSharedRegistries> | undefined
+}
+
+export function processShared<K extends keyof ForgeSharedRegistries>(
+  key: K,
+  create: () => ForgeSharedRegistries[K],
+): ForgeSharedRegistries[K] {
+  const store = (globalThis.__opencodeForgeShared ??= {})
+  const existing = store[key]
+  if (existing !== undefined) return existing
+  const created = create()
+  store[key] = created
+  return created
+}
+
 export function projectLoopKey(projectId: string, loopName: string): string {
   return `${projectId}\u0000${loopName}`
 }

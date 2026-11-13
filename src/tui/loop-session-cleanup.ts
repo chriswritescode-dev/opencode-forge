@@ -1,22 +1,21 @@
 import type { Plugin } from '@opencode/plugin/tui'
 import { join, relative, sep } from 'path'
+import { z } from 'zod'
 import type { ForgeRpcError, ForgeWorktreesOutput } from '../host/forge-rpc'
 import { isWithinDir } from '../workspace/forge-naming'
+import type { JsonObject } from '../utils/json-schema'
 
 const SESSION_LIST_PAGE_SIZE = 100
 
-/** A successful server worktree listing, without the RPC error arm. */
+const sessionDeleteSchema = z.looseObject({ sessionID: z.string().min(1) })
+
 export type ForgeWorktreeList = Exclude<ForgeWorktreesOutput, ForgeRpcError>
 
-/**
- * Loads the server worktree listing. `fresh` bypasses any caller-side cache; the
- * post-paging re-check must always read the live list so a worktree created while
- * sessions were paging is not mistaken for an orphan.
- */
 export type LoadForgeWorktrees = (options?: { fresh?: boolean }) => Promise<ForgeWorktreesOutput>
 
-export function readForgeSessionDelete(data: Readonly<Record<string, unknown>>): string | null {
-  return typeof data.sessionID === 'string' && data.sessionID.length > 0 ? data.sessionID : null
+export function readForgeSessionDelete(data: JsonObject): string | null {
+  const parsed = sessionDeleteSchema.safeParse(data)
+  return parsed.success ? parsed.data.sessionID : null
 }
 
 export async function removeSessionBestEffort(context: Plugin.Context, sessionID: string): Promise<void> {
@@ -64,13 +63,6 @@ async function listOrphanCandidates(
   return candidates
 }
 
-/**
- * Deletes loop sessions whose Forge worktree directory no longer exists. The
- * session list is paged against a first worktree snapshot, then the worktree
- * list is fetched again before deleting: a loop started while paging creates its
- * worktree directory before its session, so only a worktree absent from both
- * snapshots is a real orphan. A failed re-check deletes nothing.
- */
 export async function removeOrphanedLoopSessions(
   context: Plugin.Context,
   projectId: string,

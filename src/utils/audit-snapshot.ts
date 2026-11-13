@@ -71,7 +71,7 @@ function validateCommitSha(sha: string, label: string): string {
   return sha
 }
 
-function gitEnv(overrides: Record<string, string>): Record<string, string> {
+function gitEnv(overrides: Record<string, string>) {
   return {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     HOME: process.env.HOME ?? '',
@@ -194,7 +194,6 @@ async function assertAuditRefAvailable(toplevel: string, refName: string, logger
   }
 }
 
-/** Whether Git ignores `path`; `git add` rejects an exclude pathspec that names an ignored path. */
 async function isPathIgnored(toplevel: string, path: string, logger: Logger): Promise<boolean> {
   const probe = await runGitProbe(toplevel, ['check-ignore', '-q', '--', path], logger, 'check-ignore')
   if (probe.exitCode === 0) return true
@@ -344,10 +343,6 @@ function parseHunkRange(line: string): CodeGraphLineRange | null {
   return { start, end: start + count - 1 }
 }
 
-/**
- * New-side changed line ranges per repo-relative file between two snapshots; deleted paths are
- * excluded, and a changed file with no text hunks (binary, or a pure rename) maps to no ranges.
- */
 export async function listSnapshotChangedRanges(cwd: string, from: string, to: string, logger: Logger): Promise<Record<string, CodeGraphLineRange[]>> {
   const fromBase = from.endsWith('^') ? from.slice(0, -1) : from
   validateCommitSha(fromBase, 'from snapshot SHA')

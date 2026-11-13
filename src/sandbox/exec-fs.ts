@@ -10,10 +10,6 @@ export function quoteShellArg(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
 
-/**
- * Execute a glob pattern search inside a sandbox container.
- * Mounts are at identical host paths, so returned paths are emitted verbatim.
- */
 export async function executeSandboxGlob(
   sandbox: SandboxExecutionDeps,
   pattern: string,
@@ -47,10 +43,6 @@ interface GrepMatch {
   text: string
 }
 
-/**
- * Execute a grep/regex search inside a sandbox container.
- * Mounts are at identical host paths, so returned paths are emitted verbatim.
- */
 export async function executeSandboxGrep(
   sandbox: SandboxExecutionDeps,
   pattern: string,

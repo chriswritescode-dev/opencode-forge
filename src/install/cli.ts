@@ -118,7 +118,6 @@ Options:
   -h, --help       Show this help
 `
 
-/** Render a colored diff between the installed file and the bundled version. */
 function showDiff(file: PlannedFile): void {
   const color = stdout.isTTY ? '--color=always' : '--color=never'
   const res = spawnSync(
@@ -133,12 +132,10 @@ function showDiff(file: PlannedFile): void {
   stdout.write(`\n${res.stdout || '  (no textual diff)\n'}\n`)
 }
 
-/** Interactive yes/no question for the plugin-directory step. */
 interface LinkPrompter {
   confirm(question: string, defaultYes: boolean): Promise<boolean>
 }
 
-/** Interactive prompter backed by a readline interface. */
 function interactivePrompter(rl: ReturnType<typeof createInterface>): InstallerPrompter & LinkPrompter {
   return {
     async fileConflict(file: PlannedFile): Promise<ConflictChoice> {
@@ -257,10 +254,6 @@ function ensurePluginEntries(options: { dryRun: boolean; cliSpec: string }): voi
   )
 }
 
-/**
- * Perform the plugin-registration step after the bundle install: register the
- * cli.json entry, or remove the vendored copy and cli.json entry on unlink.
- */
 async function runPluginLinkStep(
   opts: CliOptions,
   prompter: InstallerPrompter & Partial<LinkPrompter>,
@@ -312,17 +305,10 @@ async function runPluginLinkStep(
   ensurePluginEntries({ dryRun: opts.dryRun, cliSpec })
 }
 
-/** True when the msb binary resolves on PATH. Deliberately not `msb doctor`, which costs 30s. */
 function isMsbInstalled(): boolean {
   return spawnSync('msb', ['--version'], { stdio: 'ignore' }).error === undefined
 }
 
-/**
- * Offer to install the sandbox runtime. The shipped config enables the sandbox, so without msb the
- * first loop launch fails with a rollback; this is the only point in the flow where the
- * prerequisite is surfaced before that happens. Defaults to no: it pipes a remote script into a
- * shell, which nobody should get without asking for it.
- */
 async function runSandboxPrerequisiteStep(
   opts: CliOptions,
   prompter: InstallerPrompter & Partial<LinkPrompter>,
@@ -380,7 +366,7 @@ async function main(): Promise<void> {
   try {
     const prompter: InstallerPrompter & Partial<LinkPrompter> = rl
       ? interactivePrompter(rl)
-      : autoPrompter(opts.mode as 'force' | 'keep' | 'yes')
+      : autoPrompter(opts.mode === 'interactive' ? 'yes' : opts.mode)
     const summary = await runInteractiveInstall(getBundleSpecs(), prompter, {
       prune: opts.prune,
       dryRun: opts.dryRun,
@@ -393,8 +379,8 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  const message = err instanceof Error ? err.message : String(err)
+main().catch((cause: unknown) => {
+  const message = cause instanceof Error ? cause.message : String(cause)
   stdout.write(`\nInstaller failed: ${message}\n`)
   process.exitCode = 1
 })
