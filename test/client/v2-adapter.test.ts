@@ -585,6 +585,34 @@ describe('createForgeClientFromV2', () => {
     })
   })
 
+  describe('skill.list', () => {
+    it('maps the listed skills onto their paths for the requested directory', async () => {
+      const list = vi.fn().mockResolvedValue({
+        location: { directory: '/wt' },
+        data: [
+          { id: 'pr-review', name: 'pr-review', path: '/home/u/.config/opencode/skills/pr-review/SKILL.md', content: '' },
+          { id: 'tdd', name: 'tdd', path: '/home/u/.claude/skills/tdd/SKILL.md', content: '' },
+        ],
+      })
+      const { client, calls } = clientFor({ skill: { list } })
+
+      await expect(client.skill.list({ directory: '/wt' })).resolves.toEqual([
+        { path: '/home/u/.config/opencode/skills/pr-review/SKILL.md' },
+        { path: '/home/u/.claude/skills/tdd/SKILL.md' },
+      ])
+      expect(calls).toEqual([{ method: 'skill.list', args: [{ location: { directory: '/wt' } }] }])
+    })
+
+    it('classifies a host failure', async () => {
+      const { client } = clientFor({ skill: { list: vi.fn().mockRejectedValue(new Error('skill list unavailable')) } })
+
+      const err = failure(await client.skill.list({ directory: '/wt' }).catch((e: unknown) => e))
+
+      expect(err.kind).toBe('request')
+      expect(err.method).toBe('skill.list')
+    })
+  })
+
   describe('toast', () => {
     it('emits the mapped toast payload when an emitter is configured', async () => {
       const publishToast = vi.fn()
@@ -827,6 +855,7 @@ describe('ForgeClient surface', () => {
       'model',
       'recordStatusEvent',
       'session',
+      'skill',
       'toast',
       'workspace',
     ])

@@ -74,6 +74,7 @@ export interface FakeV2ContextOptions {
   event?: Record<string, AnyMethod>
   provider?: Record<string, AnyMethod>
   model?: Record<string, AnyMethod>
+  skill?: Record<string, AnyMethod>
   tool?: Record<string, AnyMethod>
   agent?: Record<string, AnyMethod>
   command?: Record<string, AnyMethod>
@@ -142,6 +143,10 @@ const PROVIDER_DEFAULTS: Record<string, AnyMethod> = {
 }
 
 const MODEL_DEFAULTS: Record<string, AnyMethod> = {
+  list: async () => ({ location: { directory: DEFAULT_DIRECTORY }, data: [] }),
+}
+
+const SKILL_DEFAULTS: Record<string, AnyMethod> = {
   list: async () => ({ location: { directory: DEFAULT_DIRECTORY }, data: [] }),
 }
 
@@ -329,6 +334,7 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
     event: makeDomain('event', EVENT_DEFAULTS, options.event, calls, hooks),
     provider: makeDomain('provider', PROVIDER_DEFAULTS, options.provider, calls, hooks),
     model: makeDomain('model', MODEL_DEFAULTS, options.model, calls, hooks),
+    skill: makeDomain('skill', SKILL_DEFAULTS, options.skill, calls, hooks),
     tool: makeDomain('tool', makeToolDefaults(tools, builtinTools), options.tool, calls, hooks),
     agent: makeDomain('agent', makeAgentDefaults(agents, defaultAgent), options.agent, calls, hooks),
     command: makeDomain('command', makeCommandDefaults(commands), options.command, calls, hooks),

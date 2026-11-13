@@ -15,7 +15,6 @@ import { z } from 'zod'
 export {
   resolveConfigPath,
   resolvePromptsDir,
-  resolveSkillsDir,
   resolveBundledContainerDir,
 } from './install/paths'
 

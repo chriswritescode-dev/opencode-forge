@@ -170,6 +170,13 @@ export function createFakeForgeClient(
         overrides?.model?.contextLimit,
       ),
     },
+    skill: {
+      list: makeMethod(
+        'skill.list',
+        async (_p: Record<string, unknown>) => [],
+        overrides?.skill?.list,
+      ),
+    },
     toast: makeMethod(
       'toast',
       async (_p: Record<string, unknown>) => {},

@@ -70,6 +70,7 @@ export interface V2ClientLike {
   readonly session: V2Session
   readonly location: Plugin.Context['location']
   readonly model: Plugin.Context['model']
+  readonly skill: Plugin.Context['skill']
 }
 
 export interface V2ForgeClientOptions {
@@ -495,6 +496,13 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     }),
   }
 
+  const skill: ForgeClient['skill'] = {
+    list: (params) => call('skill.list', async () => {
+      const listed = await ctx.skill.list({ location: { directory: params.directory } })
+      return listed.data.map((info) => ({ path: info.path }))
+    }),
+  }
+
   const toast: ForgeClient['toast'] = async (input) => {
     if (!options.publishToast) return
     try {
@@ -509,5 +517,5 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     }
   }
 
-  return { session, workspace: options.workspace, model, toast, recordStatusEvent }
+  return { session, workspace: options.workspace, model, skill, toast, recordStatusEvent }
 }
