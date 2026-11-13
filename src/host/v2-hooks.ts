@@ -157,9 +157,10 @@ export async function registerForgeHooksV2(
   await ctx.tool.hook('execute.before', async (event) => {
     await applySubagentDefaultModel(ctx, event)
     const input = { tool: toV1ToolName(event.tool), sessionID: event.sessionID, callID: event.id }
-    const output = { args: toolArgsSchema.safeParse(event.input).data ?? {} }
+    const parsedArgs = toolArgsSchema.safeParse(event.input)
+    const output = { args: parsedArgs.success ? parsedArgs.data : {} }
     await core.toolBefore(input, output)
-    event.input = output.args
+    if (parsedArgs.success) event.input = output.args
   })
 
   await ctx.tool.hook('execute.after', async (event) => {

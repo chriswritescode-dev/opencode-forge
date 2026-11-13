@@ -618,7 +618,7 @@ export function readForgeLoopDefaults<P>(payload: P): ForgeLoopDefaultsOutput {
   })
 }
 
-const topLevelObjectSchema = z.record(z.string(), z.json())
+const topLevelObjectSchema = z.record(z.string(), z.unknown())
 
 export function toForgeRpcJson<T>(value: T): JsonValue {
   const object = topLevelObjectSchema.safeParse(value)
