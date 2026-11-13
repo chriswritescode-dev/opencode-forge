@@ -4,7 +4,7 @@ import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, 
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, basename, dirname, posix as posixPath } from 'path'
-import { mkdirSync, existsSync, lstatSync, readlinkSync } from 'fs'
+import { mkdirSync, existsSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
@@ -201,6 +201,10 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
   const canonicalRoots = rootCandidates.map((root) => canonicalizePath(root))
   for (const dir of resolvedSkillDirs) {
     if (canonicalRoots.some((root) => isSameOrDescendantPath(canonicalizePath(dir), root))) continue
+    if (rootCandidates.some((root) => isSameOrDescendantPath(dir, root))) {
+      logger.log(`Sandbox: skipping skill that resolves outside its skills directory: ${dir}`)
+      continue
+    }
     addSkillDir(dir)
   }
 
@@ -218,29 +222,15 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
     })
     .sort((a, b) => a.length - b.length)
 
-  const roots = rootCandidates.map((root) => resolve(root))
   const mounts: SandboxMount[] = []
   const accepted: string[] = []
   for (const dir of candidates) {
     const canonical = canonicalizePath(dir)
     if (accepted.some((root) => isSameOrDescendantPath(canonical, root))) continue
     accepted.push(canonical)
-    const nestedUnderRoot = roots.some((root) => dir !== root && isSameOrDescendantPath(dir, root))
-    const reserved = [...roots, workspaceDir, canonicalWorkspaceDir, SANDBOX_CACHE_DIR, ...mounts.map((mount) => mount.containerDir)]
-    const containerDir = nestedUnderRoot ? resolveNestedSkillGuestPath(dir, canonical, reserved) : dir
-    mounts.push({ hostDir: nestedUnderRoot ? canonical : dir, containerDir, readOnly: true })
+    mounts.push({ hostDir: dir, containerDir: dir, readOnly: true })
   }
   return mounts
-}
-
-function resolveNestedSkillGuestPath(dir: string, canonical: string, reserved: readonly string[]): string {
-  if (!lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) return canonical
-  const linkTarget = resolve(dirname(dir), readlinkSync(dir))
-  const overlapsReserved = reserved.some((path) => {
-    const reservedPath = resolve(path)
-    return isSameOrDescendantPath(linkTarget, reservedPath) || isSameOrDescendantPath(reservedPath, linkTarget)
-  })
-  return overlapsReserved ? canonical : linkTarget
 }
 
 export function createSandboxManager(

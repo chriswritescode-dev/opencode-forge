@@ -88,7 +88,7 @@ describe('SandboxManager skills mount', () => {
     expect(active?.mounts.some((mount) => mount.containerDir === resolve(root))).toBe(false)
   })
 
-  test('mounts the root plus a skill directory whose symlink target is outside it', async () => {
+  test('skips a skill symlinked outside the skills root and mounts only the root', async () => {
     const root = createTempDir()
     const skillsRoot = join(root, 'skills')
     const external = join(root, 'external-skills', 'media-use')
@@ -96,117 +96,18 @@ describe('SandboxManager skills mount', () => {
     createSkill(external)
     symlinkSync(external, join(skillsRoot, 'media-use'), 'dir')
 
-    const { manager, runtime } = createManager(async () => [
+    const { manager, runtime, logger } = createManager(async () => [
       join(skillsRoot, 'pr-review', 'SKILL.md'),
       join(skillsRoot, 'media-use', 'SKILL.md'),
     ])
     await manager.start('test', WORKSPACE)
 
-    const resolvedRoot = resolve(skillsRoot)
-    const resolvedLink = resolve(skillsRoot, 'media-use')
-    const active = manager.getActive('test')
-    expect(active?.mounts).toContainEqual(readOnlyMount(resolvedRoot))
-    const entries = workspaceEntries(runtime)
-    expect(entries).toContainEqual({
-      hostDir: realpathSync(external),
-      containerDir: external,
-      readOnly: true,
-    })
-    expect(entries.map((entry) => entry.containerDir)).not.toContain(resolvedLink)
-  })
-
-  test('mounts a symlinked skill at its link target when that target passes through another symlink', async () => {
-    const root = realpathSync(createTempDir())
-    const skillsRoot = join(root, 'skills')
-    const realExternalRoot = join(root, 'dotfiles-real')
-    const aliasRoot = join(root, 'dotfiles')
-    createSkill(join(skillsRoot, 'pr-review'))
-    createSkill(join(realExternalRoot, 'media-use'))
-    symlinkSync(realExternalRoot, aliasRoot, 'dir')
-    symlinkSync(join(aliasRoot, 'media-use'), join(skillsRoot, 'media-use'), 'dir')
-
-    const { manager, runtime } = createManager(async () => [
-      join(skillsRoot, 'pr-review', 'SKILL.md'),
-      join(skillsRoot, 'media-use', 'SKILL.md'),
+    expect(workspaceEntries(runtime)).toEqual([
+      { hostDir: WORKSPACE, containerDir: WORKSPACE },
+      { hostDir: realpathSync(skillsRoot), containerDir: resolve(skillsRoot), readOnly: true },
     ])
-    await manager.start('test', WORKSPACE)
-
-    const entries = workspaceEntries(runtime)
-    expect(entries).toContainEqual({
-      hostDir: join(realExternalRoot, 'media-use'),
-      containerDir: join(aliasRoot, 'media-use'),
-      readOnly: true,
-    })
-    expect(entries.map((entry) => entry.containerDir)).not.toContain(join(skillsRoot, 'media-use'))
-    expect(entries.map((entry) => entry.containerDir)).not.toContain(join(realExternalRoot, 'media-use'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining(resolve(skillsRoot, 'media-use')))
   })
-
-  test('mounts a symlinked skill at its real path when the link text runs through the workspace', async () => {
-    const root = realpathSync(createTempDir())
-    const workspace = join(root, 'workspace')
-    const skillsRoot = join(root, 'skills')
-    const realSkill = join(root, 'outside', 'media-use')
-    createSkill(join(skillsRoot, 'pr-review'))
-    createSkill(realSkill)
-    mkdirSync(workspace, { recursive: true })
-    symlinkSync(join(root, 'outside'), join(workspace, 'outside-link'), 'dir')
-    symlinkSync(join(workspace, 'outside-link', 'media-use'), join(skillsRoot, 'media-use'), 'dir')
-
-    const { manager, runtime } = createManager(async () => [
-      join(skillsRoot, 'pr-review', 'SKILL.md'),
-      join(skillsRoot, 'media-use', 'SKILL.md'),
-    ])
-    await manager.start('test', workspace)
-
-    const entries = workspaceEntries(runtime)
-    expect(entries).toContainEqual({ hostDir: realSkill, containerDir: realSkill, readOnly: true })
-    expect(entries.some((entry) => entry.containerDir !== workspace && entry.containerDir.startsWith(workspace + '/'))).toBe(false)
-  })
-
-  test('mounts a symlinked skill at its real path when the link target is another skill mount', async () => {
-    const root = realpathSync(createTempDir())
-    const skillsRoot = join(root, 'skills')
-    const otherSkill = join(root, 'other', 'shared')
-    const realSkill = join(root, 'real', 'media-use')
-    createSkill(join(skillsRoot, 'pr-review'))
-    createSkill(otherSkill)
-    createSkill(realSkill)
-    symlinkSync(realSkill, join(otherSkill, 'nested'), 'dir')
-    symlinkSync(join(otherSkill, 'nested'), join(skillsRoot, 'media-use'), 'dir')
-
-    const { manager, runtime } = createManager(async () => [
-      join(skillsRoot, 'pr-review', 'SKILL.md'),
-      join(otherSkill, 'SKILL.md'),
-      join(skillsRoot, 'media-use', 'SKILL.md'),
-    ])
-    await manager.start('test', WORKSPACE)
-
-    const entries = workspaceEntries(runtime)
-    expect(entries).toContainEqual({ hostDir: realSkill, containerDir: realSkill, readOnly: true })
-    expect(entries.map((entry) => entry.containerDir)).not.toContain(join(otherSkill, 'nested'))
-  })
-
-  test('mounts a relative skill symlink at the path its link text names, not its realpath', async () => {
-    const root = createTempDir()
-    const skillsRoot = join(root, 'home', 'skills')
-    createSkill(join(skillsRoot, 'pr-review'))
-    createSkill(join(root, 'dotfiles', 'media-use'))
-    symlinkSync(join(root, 'dotfiles'), join(root, 'home', 'alias'), 'dir')
-    symlinkSync('../alias/media-use', join(skillsRoot, 'media-use'), 'dir')
-
-    const { manager, runtime } = createManager(async () => [
-      join(skillsRoot, 'pr-review', 'SKILL.md'),
-      join(skillsRoot, 'media-use', 'SKILL.md'),
-    ])
-    await manager.start('test', WORKSPACE)
-
-    expect(workspaceEntries(runtime)).toContainEqual({
-      hostDir: realpathSync(join(root, 'dotfiles', 'media-use')),
-      containerDir: join(root, 'home', 'alias', 'media-use'),
-      readOnly: true,
-    })
-  })
-
 
   test('does not mount a skill symlink that points back inside the skills root', async () => {
     const root = createTempDir()
