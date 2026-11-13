@@ -124,6 +124,8 @@ function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): { conte
   }
 }
 
+const questionAnswersSchema = z.array(z.array(z.string()))
+
 const planApprovalQuestionArgsSchema = z.looseObject({
   questions: z.array(z.looseObject({
     options: z.array(z.looseObject({ label: z.string().optional() })).optional(),
@@ -179,7 +181,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
     }
 
     if (input.tool === 'question' && isPlanApprovalQuestionArgs(input.args)) {
-          const answer = output.metadata.answers?.[0]?.[0]?.trim() ?? output.output.trim()
+          const answers = questionAnswersSchema.safeParse(output.metadata.answers)
+          const answer = (answers.success ? answers.data[0]?.[0]?.trim() : undefined) ?? output.output.trim()
           const answerLower = answer.toLowerCase()
           const matchedLabel = PLAN_EXECUTION_LABELS.find((l) =>
             answerLower === l.toLowerCase() || answerLower.startsWith(l.toLowerCase())

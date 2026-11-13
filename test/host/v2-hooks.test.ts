@@ -238,6 +238,26 @@ describe('registerForgeHooksV2 tool hooks', () => {
     expect(before).toEqual([{ tool: 'grep', args: { pattern: 'needle', path: 'src', include: '*.ts' } }])
   })
 
+  test('execute.before leaves an input the Forge argument schema rejects untouched', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const input = { path: 42, query: 'needle' }
+    const event = {
+      tool: 'mcp_custom',
+      sessionID: 'ses_1',
+      agent: 'code',
+      messageID: 'msg_1',
+      id: 'call_1',
+      input,
+    }
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toBe(input)
+    expect(event.input).toEqual({ path: 42, query: 'needle' })
+  })
+
   test('execute.after replaces the text content with the hook output', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, after } = createStubCore({

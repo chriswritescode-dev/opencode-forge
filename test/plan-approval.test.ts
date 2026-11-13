@@ -93,6 +93,25 @@ describe('Plan approval hooks', () => {
       expect(runtime.plansRepo.getForSession(TEST_PROJECT, fallbackSessionID)?.content).toBe(fallbackPlan)
     })
 
+    test('malformed metadata answers fall back to the output text', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          abort: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+        },
+      })
+      const sessionID = 'malformed-answers-session'
+      runtime.plansRepo.writeForSession(TEST_PROJECT, sessionID, '# Plan\n\nBody.')
+      const hook = createToolExecuteAfterHook(createContext({ client }))
+      const output = { title: '', output: 'New session', metadata: { answers: [[42]] } }
+
+      await expect(
+        hook({ tool: 'question', sessionID, callID: 'malformed-answers', args: planApprovalQuestionArgs() }, output),
+      ).resolves.toBeUndefined()
+
+      expect(output.metadata).toMatchObject({ forgePlanApprovalHandled: true })
+    })
+
     test('Execute here aborts the source, preserves the plan and does not dispatch', async () => {
       const abortSpy = vi.fn(async () => {})
       const { client, calls } = createFakeForgeClient({ session: { abort: abortSpy } })
