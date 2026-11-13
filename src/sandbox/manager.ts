@@ -226,16 +226,16 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
     if (accepted.some((root) => isSameOrDescendantPath(canonical, root))) continue
     accepted.push(canonical)
     const nestedUnderRoot = roots.some((root) => dir !== root && isSameOrDescendantPath(dir, root))
-    const containerDir = nestedUnderRoot ? resolveNestedSkillGuestPath(dir, canonical, roots) : dir
+    const containerDir = nestedUnderRoot ? resolveNestedSkillGuestPath(dir, canonical, [...roots, workspaceDir, canonicalWorkspaceDir]) : dir
     mounts.push({ hostDir: nestedUnderRoot ? canonical : dir, containerDir, readOnly: true })
   }
   return mounts
 }
 
-function resolveNestedSkillGuestPath(dir: string, canonical: string, roots: readonly string[]): string {
+function resolveNestedSkillGuestPath(dir: string, canonical: string, reserved: readonly string[]): string {
   if (!lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) return canonical
   const linkTarget = resolve(dirname(dir), readlinkSync(dir))
-  return roots.some((root) => isSameOrDescendantPath(linkTarget, root)) ? canonical : linkTarget
+  return reserved.some((path) => isSameOrDescendantPath(linkTarget, resolve(path))) ? canonical : linkTarget
 }
 
 export function createSandboxManager(
