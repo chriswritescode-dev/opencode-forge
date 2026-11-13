@@ -51,7 +51,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
 # global CLI installs below rely on, so a floating tag silently breaks the image build
 # the moment the next major lands. An exact pin keeps the build reproducible; the
 # flag is guaranteed for the whole 11.x line.
-RUN npm install -g pnpm@11.28.1
+RUN npm install -g pnpm@11.28.11
 
 # bun installed to a world-accessible location. The default installer targets
 # /root/.bun, which is unreadable (mode 0700) when the container runs as a
@@ -155,9 +155,10 @@ RUN pnpm add -g playwright-core@latest --global-bin-dir /usr/local/bin --store-d
     && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?* \
     && chmod -R 0777 /opt/forge
 
-# Ghidra 12.1.x plus a 64-bit JDK 21, for REA's native-analysis provider
-# (`rea function ... --provider ghidra`). REA requires a full JDK 21+ and a
-# Ghidra installation whose native decompiler matches the host architecture at
+# Ghidra 12.2 plus a 64-bit JDK 25, for REA's native-analysis provider
+# (`rea function ... --provider ghidra`). Ghidra 12.2 declares JDK 25 or newer,
+# while Ghidra 12.1 required JDK 21. REA needs a full JDK and a Ghidra
+# installation whose native decompiler matches the host architecture at
 # Ghidra/Features/Decompiler/os/<platform>/decompile.
 #
 # Ghidra's release archives ship native decompilers for linux_x86_64, mac_* and
@@ -174,15 +175,15 @@ RUN pnpm add -g playwright-core@latest --global-bin-dir /usr/local/bin --store-d
 #
 # Ghidra and the JDK live under /opt, off the cache disk the runtime mount
 # shadows. JAVA_HOME points at an arch-neutral symlink so its value is stable.
-ARG GHIDRA_VERSION=12.1.4
-ARG GHIDRA_BUILD_DATE=20260921
+ARG GHIDRA_VERSION=12.2
+ARG GHIDRA_BUILD_DATE=20261016
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bison \
         flex \
-        openjdk-21-jdk-headless \
+        openjdk-25-jdk-headless \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -sfn "$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" /usr/lib/jvm/java-21 \
+    && ln -sfn "$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" /usr/lib/jvm/java-25 \
     && ghidra_root="/opt/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC" \
     && case "$(dpkg --print-architecture)" in \
          amd64) ghidra_platform=linux_x86_64 ;; \
@@ -204,7 +205,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod +x "$ghidra_root/support/analyzeHeadless" \
     && chmod -R a+rX /opt/ghidra
 ENV GHIDRA_INSTALL_DIR=/opt/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC \
-    JAVA_HOME=/usr/lib/jvm/java-21
+    JAVA_HOME=/usr/lib/jvm/java-25
 
 # REA (`rea-agents`) — the reverse-engineering CLI for application and
 # native-binary investigation — installed globally with the same pnpm pattern as
@@ -216,8 +217,10 @@ ENV GHIDRA_INSTALL_DIR=/opt/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC \
 #
 # @latest is deliberately left to pnpm 11's default 1-day minimumReleaseAge
 # supply-chain gate, so the resolved version is the newest release at least a day
-# old and can briefly trail npm's newest. REA is version-coupled to Ghidra
-# 12.1.x; pin an exact version here if that pairing needs to stop floating.
+# old and can briefly trail npm's newest. REA's Ghidra bridge is verified with
+# Ghidra 12.1.4 and admits 12.2, so the 12.2 pairing is validated by the smoke
+# test in this change; pin an exact version here if that pairing needs to stop
+# floating.
 RUN pnpm add -g rea-agents@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
     && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?* \
     && chmod -R 0777 /opt/forge
@@ -281,6 +284,21 @@ RUN if [ "$INSTALL_CODEGRAPH" = "true" ]; then \
         && codegraph --version; \
     fi
 ENV CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1
+
+ARG VHS_VERSION=0.12.1
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ttyd \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "$(dpkg --print-architecture)" in \
+         amd64) vhs_arch=x86_64 ;; \
+         arm64) vhs_arch=arm64 ;; \
+         *) echo "unsupported architecture for vhs: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/vhs.tar.gz "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_${vhs_arch}.tar.gz" \
+    && tar -xzf /tmp/vhs.tar.gz -C /tmp \
+    && install -m 0755 "/tmp/vhs_${VHS_VERSION}_Linux_${vhs_arch}/vhs" /usr/local/bin/vhs \
+    && rm -rf /tmp/vhs.tar.gz "/tmp/vhs_${VHS_VERSION}_Linux_${vhs_arch}" \
+    && ffmpeg -version && ffprobe -version && ttyd --version && vhs --version
+ENV VHS_NO_SANDBOX=true
 
 # Docker Engine from Docker's official apt repository. The microVM boots a real
 # kernel, so the daemon runs natively — no privileged-container or nested-
