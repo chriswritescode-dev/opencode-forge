@@ -163,6 +163,29 @@ describe('SandboxManager skills mount', () => {
     expect(entries.some((entry) => entry.containerDir !== workspace && entry.containerDir.startsWith(workspace + '/'))).toBe(false)
   })
 
+  test('mounts a symlinked skill at its real path when the link target is another skill mount', async () => {
+    const root = realpathSync(createTempDir())
+    const skillsRoot = join(root, 'skills')
+    const otherSkill = join(root, 'other', 'shared')
+    const realSkill = join(root, 'real', 'media-use')
+    createSkill(join(skillsRoot, 'pr-review'))
+    createSkill(otherSkill)
+    createSkill(realSkill)
+    symlinkSync(realSkill, join(otherSkill, 'nested'), 'dir')
+    symlinkSync(join(otherSkill, 'nested'), join(skillsRoot, 'media-use'), 'dir')
+
+    const { manager, runtime } = createManager(async () => [
+      join(skillsRoot, 'pr-review', 'SKILL.md'),
+      join(otherSkill, 'SKILL.md'),
+      join(skillsRoot, 'media-use', 'SKILL.md'),
+    ])
+    await manager.start('test', WORKSPACE)
+
+    const entries = workspaceEntries(runtime)
+    expect(entries).toContainEqual({ hostDir: realSkill, containerDir: realSkill, readOnly: true })
+    expect(entries.map((entry) => entry.containerDir)).not.toContain(join(otherSkill, 'nested'))
+  })
+
   test('ignores flat skills that have no skill directory', async () => {
     const root = createTempDir()
     const flat = join(root, 'skills', 'one-liner.md')

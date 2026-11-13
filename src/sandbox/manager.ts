@@ -226,7 +226,8 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
     if (accepted.some((root) => isSameOrDescendantPath(canonical, root))) continue
     accepted.push(canonical)
     const nestedUnderRoot = roots.some((root) => dir !== root && isSameOrDescendantPath(dir, root))
-    const containerDir = nestedUnderRoot ? resolveNestedSkillGuestPath(dir, canonical, [...roots, workspaceDir, canonicalWorkspaceDir]) : dir
+    const reserved = [...roots, workspaceDir, canonicalWorkspaceDir, SANDBOX_CACHE_DIR, ...mounts.map((mount) => mount.containerDir)]
+    const containerDir = nestedUnderRoot ? resolveNestedSkillGuestPath(dir, canonical, reserved) : dir
     mounts.push({ hostDir: nestedUnderRoot ? canonical : dir, containerDir, readOnly: true })
   }
   return mounts
