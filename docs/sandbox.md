@@ -30,7 +30,7 @@ The image installs `codegraph` by default. Set `codeGraph.install` to `false` be
 
 `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a **Build sandbox template** command in the palette. Trigger it at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically. The dialog stays open for the duration and shows a live progress bar, the current Docker step, elapsed time, and streamed build output; on failure it keeps the last lines of Docker output so the cause is visible. A first build takes several minutes, and closing the dialog does not cancel it — it finishes in the background and reports with a toast. Restart OpenCode after changing sandbox configuration.
 
-The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, the Rust toolchain (rustup, cargo, rustc, clippy, rustfmt), ripgrep, git with Git LFS, jq, rsync, sqlite3, the GitHub CLI (`gh`), the Hugging Face CLI (`hf`), `codegraph` (pinned v1.6.2 under `/opt/codegraph`, with telemetry, daemon, and file watcher disabled image-wide; leave it out with `codeGraph.install: false`, see [Code Graph](configuration.md#code-graph)), Chromium, and Docker Engine (see [Nested Docker](#nested-docker)).
+The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, the Rust toolchain (rustup, cargo, rustc, clippy, rustfmt), ripgrep, git with Git LFS, jq, rsync, sqlite3, the GitHub CLI (`gh`), the Hugging Face CLI (`hf`), `codegraph` (pinned v1.6.2 under `/opt/codegraph`, with telemetry, daemon, and file watcher disabled image-wide; leave it out with `codeGraph.install: false`, see [Code Graph](configuration.md#code-graph)), Chromium, the recording tools `ffmpeg`, `ttyd`, and `vhs` (see [Recording](#recording)), and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
@@ -43,6 +43,14 @@ chromium --no-sandbox --disable-dev-shm-usage --headless
 ```
 
 The browser lives at `/opt/forge/.local/share/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`), deliberately off the cache disk so the image-shipped build is not hidden by the cache-disk mount (see [Tool Caches and Disk Space](#tool-caches-and-disk-space)).
+
+### Recording
+
+The image ships `ffmpeg` (with `ffprobe`) and `ttyd` from Ubuntu's repository and a pinned `vhs` (v0.12.1) from its GitHub release, so a loop can record a terminal session, or convert and join video clips into an mp4, without installing anything. Together they add about 270 MB to the image.
+
+`vhs` needs `ttyd` and `ffmpeg` on `PATH` and launches the first browser it finds there, which is the image's `chromium`. The image sets `VHS_NO_SANDBOX=true`, because that browser does not start with Chromium's own sandbox inside the sandbox image, the same reason the `chromium` command above takes `--no-sandbox`. In a tape, quote an absolute `Output` path (`Output "/tmp/demo.mp4"`); an unquoted leading `/` is read as the start of a regular expression.
+
+Playwright records browser video as WebM with its own bundled ffmpeg build; the system `ffmpeg` is what converts those clips to mp4.
 
 ## How It Works
 
