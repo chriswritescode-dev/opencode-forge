@@ -62,7 +62,6 @@ const sessionStatusEntrySchema = z.object({
   message: z.string().optional(),
   next: z.number().optional(),
 })
-const permissionResourceEffectsSchema = z.record(z.string(), permissionEffectSchema)
 const permissionTableSchema = z.looseObject({})
 const modelLimitSchema = z.looseObject({ context: z.number().optional() })
 
@@ -139,10 +138,11 @@ export function toV2PermissionMap<P>(permission: P): V2PermissionRule[] {
       rules.push({ action, resource: '*', effect: effect.data })
       continue
     }
-    const perResource = permissionResourceEffectsSchema.safeParse(value)
+    const perResource = permissionTableSchema.safeParse(value)
     if (!perResource.success) continue
     for (const [resource, resourceEffect] of Object.entries(perResource.data)) {
-      rules.push({ action, resource, effect: resourceEffect })
+      const parsedEffect = permissionEffectSchema.safeParse(resourceEffect)
+      if (parsedEffect.success) rules.push({ action, resource, effect: parsedEffect.data })
     }
   }
   return rules

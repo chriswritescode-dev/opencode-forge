@@ -145,6 +145,19 @@ test('the image configures a system-scope git identity as a lowest-precedence fa
   expect(dockerfile).toContain('git config --system user.email "forge-sandbox@localhost"')
 })
 
+test('the image installs ffmpeg, ttyd, and a pinned vhs that can launch the image browser', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+
+  expect(dockerfile).toContain('ARG VHS_VERSION=0.12.1')
+  expect(dockerfile).toContain('apt-get install -y --no-install-recommends ffmpeg ttyd')
+  expect(dockerfile).toContain('/usr/local/bin/vhs')
+  expect(dockerfile).toContain('ENV VHS_NO_SANDBOX=true')
+
+  const argStart = dockerfile.indexOf('ARG VHS_VERSION')
+  expect(argStart).toBeGreaterThan(-1)
+  expect(argStart).toBeLessThan(dockerfile.lastIndexOf('USER agent'))
+})
+
 test('globally installed CLIs are built against a store the cache-disk mount cannot shadow', () => {
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
   const globalInstalls = dockerfile.split('\n').filter((line) => line.includes('pnpm add -g'))
@@ -159,7 +172,7 @@ test('the image pnpm is pinned exactly to a version whose CLI still accepts --gl
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
   const install = dockerfile.split('\n').find((line) => line.includes('npm install -g pnpm'))
 
-  expect(install).toBe('RUN npm install -g pnpm@11.28.1')
+  expect(install).toBe('RUN npm install -g pnpm@11.28.11')
   expect(dockerfile).not.toContain('pnpm@latest')
 })
 

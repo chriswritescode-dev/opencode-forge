@@ -110,6 +110,10 @@ export interface SandboxMountPlan {
   mounts: SandboxMount[]
 }
 
+export interface SandboxMountPlan {
+  mounts: SandboxMount[]
+}
+
 export interface ActiveSandbox {
   containerName: string
   projectDir: string
