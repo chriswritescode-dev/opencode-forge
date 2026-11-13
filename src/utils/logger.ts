@@ -58,11 +58,11 @@ export function createLogger(config: LoggingConfig) {
           if (arg === undefined) return 'undefined'
           if (arg instanceof Error) return arg.stack ?? `${arg.name}: ${arg.message}`
           if (arg instanceof Function) return String(arg)
-          if (arg instanceof Object) {
+          if (arg instanceof Object || Object.getPrototypeOf(arg) === null) {
             try {
               return JSON.stringify(arg)
             } catch {
-              return String(arg)
+              return Object.prototype.toString.call(arg)
             }
           }
           return String(arg)

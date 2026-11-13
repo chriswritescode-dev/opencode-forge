@@ -19,7 +19,7 @@ export type ToolMetadata = {
 }
 
 export interface ToolBeforeOutput {
-  args: ToolArgs
+  readonly args: ToolArgs
 }
 
 export interface ToolAfterInput extends ToolBeforeInput {

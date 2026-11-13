@@ -70,3 +70,28 @@ describe('createLogger init does not destroy an existing log', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe('PRIOR FAILURE WINDOW\n')
   })
 })
+
+describe('createLogger argument formatting', () => {
+  let dir: string
+  let filePath: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'forge-logger-args-'))
+    filePath = join(dir, 'forge.log')
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('null-prototype and circular objects never throw', () => {
+    const bare = Object.create(null)
+    bare.key = 'value'
+    const circular = Object.create(null)
+    circular.self = circular
+    const logger = createLogger({ enabled: true, file: filePath })
+
+    expect(() => logger.log('args', bare, circular)).not.toThrow()
+    expect(readFileSync(filePath, 'utf-8')).toContain('args {"key":"value"} [object Object]')
+  })
+})
