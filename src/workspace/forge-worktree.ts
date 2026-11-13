@@ -63,19 +63,19 @@ export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extr
 }
 
 const forgeLoopExtraSchema = z.object({
-  hostSessionId: z.string().optional(),
-  title: z.string().optional(),
-  executionModel: z.string().optional(),
-  auditorModel: z.string().optional(),
-  executionVariant: z.string().optional(),
-  auditorVariant: z.string().optional(),
-  planSource: z.enum(['stored', 'inline']).optional(),
-  planText: z.string().optional(),
-  initialPromptOwner: z.enum(['server', 'tui']).optional(),
-  pendingAttachStartedAt: z.number().optional(),
-  sandboxEnabled: z.boolean().optional(),
-  sandboxContainer: z.string().optional(),
-  maxIterations: z.number().optional(),
+  hostSessionId: z.string().optional().catch(undefined),
+  title: z.string().optional().catch(undefined),
+  executionModel: z.string().optional().catch(undefined),
+  auditorModel: z.string().optional().catch(undefined),
+  executionVariant: z.string().optional().catch(undefined),
+  auditorVariant: z.string().optional().catch(undefined),
+  planSource: z.enum(['stored', 'inline']).optional().catch(undefined),
+  planText: z.string().optional().catch(undefined),
+  initialPromptOwner: z.enum(['server', 'tui']).optional().catch(undefined),
+  pendingAttachStartedAt: z.number().optional().catch(undefined),
+  sandboxEnabled: z.boolean().optional().catch(undefined),
+  sandboxContainer: z.string().optional().catch(undefined),
+  maxIterations: z.number().optional().catch(undefined),
 })
 
 export type ForgeLoopExtraFields = z.infer<typeof forgeLoopExtraSchema>

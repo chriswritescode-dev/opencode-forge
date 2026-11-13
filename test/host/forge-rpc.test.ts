@@ -502,6 +502,7 @@ describe('FORGE_RPC', () => {
   test('toForgeRpcJson omits a top-level null plan and readForgeSessionPlan restores it', () => {
     expect(toForgeRpcJson({ plan: null })).toEqual({})
     expect(toForgeRpcJson({ plan: '# Plan' })).toEqual({ plan: '# Plan' })
+    expect(toForgeRpcJson({ desired: null, note: undefined, revision: 'rev-1' })).toEqual({ revision: 'rev-1' })
 
     expect(readForgeSessionPlan({ plan: '# Plan' })).toEqual({ plan: '# Plan' })
     expect(readForgeSessionPlan({})).toEqual({ plan: null })

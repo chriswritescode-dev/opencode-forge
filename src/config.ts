@@ -103,11 +103,9 @@ export function createConfigHandler(
     const effectiveAgents: AgentConfigIndex = createAgentConfigs(agents)
     if (agentOverrides) {
       for (const [name, overrides] of Object.entries(agentOverrides)) {
-        const role = Object.entries(agents).find(
-          ([, agent]) => agent.displayName === name
-        )?.[0]
-        if (role === undefined) continue
-        effectiveAgents[role] = { ...effectiveAgents[role], ...overrides }
+        const existing = effectiveAgents[name]
+        if (existing === undefined) continue
+        effectiveAgents[name] = { ...existing, ...overrides }
       }
     }
 

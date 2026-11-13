@@ -3,6 +3,7 @@ import {
   bindSessionToWorkspace,
   createBuiltinWorktreeWorkspace,
   getForgeWorkspaceBranch,
+  getForgeWorkspaceForgeLoop,
   getForgeWorkspacePermissionRules,
 } from '../../src/workspace/forge-worktree'
 import { createFakeForgeClient } from '../helpers/fake-client'
@@ -195,6 +196,19 @@ describe('createBuiltinWorktreeWorkspace', () => {
         },
       })
     })
+  })
+})
+
+describe('getForgeWorkspaceForgeLoop', () => {
+  it('keeps the valid fields when another field has the wrong type', () => {
+    const forgeLoop = getForgeWorkspaceForgeLoop({
+      extra: { forgeLoop: { executionModel: null, pendingAttachStartedAt: 123, initialPromptOwner: 'tui' } },
+    })
+
+    expect(forgeLoop).toBeDefined()
+    expect(forgeLoop?.pendingAttachStartedAt).toBe(123)
+    expect(forgeLoop?.initialPromptOwner).toBe('tui')
+    expect(forgeLoop?.executionModel).toBeUndefined()
   })
 })
 

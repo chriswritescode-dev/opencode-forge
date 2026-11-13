@@ -32,6 +32,18 @@ describe('createConfigHandler', () => {
       expect(permission['graph-analyze']).toBeUndefined()
     })
 
+    test('agent overrides apply to the agent with that display name and ignore unknown names', async () => {
+      const configHandler = createConfigHandler(agents, { auditor: { temperature: 0.3 }, ghost: { temperature: 0.9 } })
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const agentConfig = config.agent as Record<string, Record<string, unknown>>
+      expect(agentConfig.auditor?.temperature).toBe(0.3)
+      expect(agentConfig.auditor?.prompt).toBe(agents.auditor.systemPrompt)
+      expect(agentConfig.ghost).toBeUndefined()
+    })
+
     test('built-in agents without enhancement are hidden if in REPLACED_BUILTIN_AGENTS', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
