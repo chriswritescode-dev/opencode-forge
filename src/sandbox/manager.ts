@@ -104,6 +104,7 @@ export function resolveCustomMounts(
 
 const DOCKER_AVAILABLE_TTL = 30_000
 const LIVENESS_CHECK_TTL = 2_000
+export const SKILL_LIST_TIMEOUT_MS = 10_000
 
 export interface SandboxMountPlan {
   mounts: SandboxMount[]
@@ -235,6 +236,7 @@ export function createSandboxManager(
   const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
   const skillDirCache = new Map<string, string[]>()
+  const skillListAttempted = new Set<string>()
   const convergedSecrets = new Set<string>()
   const preparedCacheDisks = new Set<string>()
   const handledSecretEnvs = new Map<string, Set<string>>()
@@ -286,10 +288,20 @@ export function createSandboxManager(
 
   async function refreshSkillDirs(projectDir: string): Promise<void> {
     const absolute = resolve(projectDir)
+    skillListAttempted.add(absolute)
     const listSkillPaths = config.listSkillPaths
     if (!listSkillPaths) return
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      const paths = await listSkillPaths(absolute)
+      const paths = await Promise.race([
+        listSkillPaths(absolute),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`skill listing timed out after ${SKILL_LIST_TIMEOUT_MS}ms`)),
+            SKILL_LIST_TIMEOUT_MS,
+          )
+        }),
+      ])
       const dirs: string[] = []
       const seen = new Set<string>()
       for (const path of paths) {
@@ -305,6 +317,8 @@ export function createSandboxManager(
         ? 'the previously resolved skill directories'
         : config.fallbackSkillsDir ? `the fallback skills directory ${config.fallbackSkillsDir}` : 'no skills mount'
       logger.log(`Sandbox: could not list skills for ${absolute}; using ${fallback}: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 
@@ -707,7 +721,7 @@ export function createSandboxManager(
   }
 
   async function resolveUsableSandbox(worktreeName: string, projectDir: string, startedAt?: string): Promise<string> {
-    if (!skillDirCache.has(resolve(projectDir))) await refreshSkillDirs(projectDir)
+    if (!skillListAttempted.has(resolve(projectDir))) await refreshSkillDirs(projectDir)
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName ?? runtime.sandboxContainerName(worktreeName)
     const state = await runtime.getSandboxState(containerName)

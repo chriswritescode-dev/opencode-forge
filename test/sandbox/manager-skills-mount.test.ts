@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
-import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
+import { createSandboxManager, SKILL_LIST_TIMEOUT_MS, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 import { createMockLogger } from '../helpers/logger'
 
@@ -205,6 +205,58 @@ describe('SandboxManager skills mount', () => {
     }
 
     expect(calls).toBe(1)
+  })
+
+  test('does not retry a rejected skill list on liveness re-checks', async () => {
+    const fallbackDir = createTempDir()
+    createSkill(join(fallbackDir, 'pr-review'))
+    let calls = 0
+    const { manager } = createManager(async () => {
+      calls += 1
+      throw new Error('skill list unavailable')
+    }, { fallbackSkillsDir: fallbackDir })
+
+    await manager.start('test', WORKSPACE)
+    const callsAfterStart = calls
+    vi.useFakeTimers({ now: Date.now() + 60_000 })
+    try {
+      await manager.ensureRunning('test', WORKSPACE)
+      await manager.ensureRunning('test', WORKSPACE)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(callsAfterStart).toBe(1)
+    expect(calls).toBe(callsAfterStart)
+  })
+
+  test('starts with the fallback skills mount when the list never resolves', async () => {
+    const fallbackDir = createTempDir()
+    createSkill(join(fallbackDir, 'pr-review'))
+    let calls = 0
+    const { manager, runtime } = createManager(() => {
+      calls += 1
+      return new Promise<string[]>(() => {})
+    }, { fallbackSkillsDir: fallbackDir })
+
+    vi.useFakeTimers()
+    try {
+      const started = manager.start('test', WORKSPACE)
+      await vi.advanceTimersByTimeAsync(SKILL_LIST_TIMEOUT_MS)
+      await started
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const resolved = resolve(fallbackDir)
+    const active = manager.getActive('test')
+    expect(calls).toBe(1)
+    expect(active?.mounts).toContainEqual(readOnlyMount(resolved))
+    expect(workspaceEntries(runtime)).toContainEqual({
+      hostDir: realpathSync(resolved),
+      containerDir: resolved,
+      readOnly: true,
+    })
   })
 
   test('does not duplicate a custom mount of the skills root', async () => {
