@@ -122,8 +122,9 @@ describe('SandboxManager skills mount', () => {
     await manager.start('test', WORKSPACE)
 
     const containerDirs = workspaceEntries(runtime).map((entry) => entry.containerDir)
-    expect(containerDirs).toContain(resolve(skillsRoot))
-    expect(containerDirs.filter((dir) => dir.startsWith(resolve(skillsRoot)))).toHaveLength(1)
+    const rootDir = resolve(skillsRoot)
+    expect(containerDirs).toContain(rootDir)
+    expect(containerDirs.filter((dir) => dir === rootDir || dir.startsWith(`${rootDir}/`))).toHaveLength(1)
   })
 
 
