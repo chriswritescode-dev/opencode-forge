@@ -8,6 +8,7 @@ import { createSessionHooks, createLoopEventHandler } from '../hooks'
 import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createSessionAutoApproveRepo } from '../storage'
 import type { LoopChangeNotifier } from '../loop'
 import { resolveBundledContainerDir, resolvePromptsDir } from '../setup'
+import { resolveSkillsDir } from '../install/paths'
 import { resolveLogPath } from '../storage'
 import { createLogger, slugify } from '../utils/logger'
 import { createMsbRuntime, describeMsbUnavailable } from '../sandbox/msb'
@@ -463,6 +464,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
         toolOutputDir: resolveOpencodeToolOutputDir(),
         tmpDir: resolveOpencodeTmpDir(),
+        listSkillPaths: async (dir) => (await forgeClient.skill.list({ directory: dir })).map((entry) => entry.path),
+        fallbackSkillsDir: resolveSkillsDir(),
         sourceProjectDir: projectRoot,
         mountProjectReadonly: config.sandbox?.mountProjectReadonly,
         buildContextDir: resolveBundledContainerDir(),

@@ -3,7 +3,7 @@ import type { SandboxRuntime, SandboxWorkspace } from './msb'
 import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
-import { resolve, join, isAbsolute, posix as posixPath } from 'path'
+import { resolve, join, isAbsolute, basename, dirname, posix as posixPath } from 'path'
 import { mkdirSync, existsSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
@@ -20,6 +20,8 @@ export interface SandboxManagerConfig {
   templateBuildArgs?: string[]
   toolOutputDir?: string
   tmpDir?: string
+  listSkillPaths?: (projectDir: string) => Promise<string[]>
+  fallbackSkillsDir?: string
   network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[]; allowLan?: boolean }
 }
 
@@ -102,6 +104,11 @@ export function resolveCustomMounts(
 
 const DOCKER_AVAILABLE_TTL = 30_000
 const LIVENESS_CHECK_TTL = 2_000
+export const SKILL_LIST_TIMEOUT_MS = 10_000
+
+export interface SandboxMountPlan {
+  mounts: SandboxMount[]
+}
 
 export interface SandboxMountPlan {
   mounts: SandboxMount[]
@@ -154,6 +161,74 @@ export function buildSandboxWorkspaces(mounts: SandboxMount[], logger: Logger): 
   }))
 }
 
+const SKILL_ROOT_DIR_NAMES: ReadonlySet<string> = new Set(['skills', 'skill'])
+
+export interface SkillMountSelection {
+  skillDirs: readonly string[]
+  workspaceDir: string
+  logger: Logger
+  fallbackRoots?: readonly string[]
+}
+
+export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
+  const { skillDirs, workspaceDir, logger, fallbackRoots = [] } = input
+  const canonicalWorkspaceDir = canonicalizePath(workspaceDir)
+
+  const rootCandidates: string[] = []
+  const skillDirCandidates: string[] = []
+  const seen = new Set<string>()
+
+  const addRoot = (dir: string): void => {
+    if (seen.has(dir)) return
+    seen.add(dir)
+    rootCandidates.push(dir)
+  }
+  const addSkillDir = (dir: string): void => {
+    if (seen.has(dir)) return
+    seen.add(dir)
+    skillDirCandidates.push(dir)
+  }
+
+  for (const root of fallbackRoots) addRoot(resolve(root))
+
+  const resolvedSkillDirs = skillDirs.map((dir) => resolve(dir))
+  for (const dir of resolvedSkillDirs) {
+    const parent = dirname(dir)
+    if (SKILL_ROOT_DIR_NAMES.has(basename(parent))) addRoot(parent)
+    else addSkillDir(dir)
+  }
+
+  const canonicalRoots = rootCandidates.map((root) => canonicalizePath(root))
+  for (const dir of resolvedSkillDirs) {
+    if (canonicalRoots.some((root) => isSameOrDescendantPath(canonicalizePath(dir), root))) continue
+    addSkillDir(dir)
+  }
+
+  const candidates = [...rootCandidates, ...skillDirCandidates]
+    .filter((dir) => {
+      if (isSameOrDescendantPath(canonicalizePath(dir), canonicalWorkspaceDir)) {
+        logger.log(`Sandbox: skipping skills mount inside the workspace: ${dir}`)
+        return false
+      }
+      if (!existsSync(dir)) {
+        logger.log(`Sandbox: skipping skills mount; directory does not exist: ${dir}`)
+        return false
+      }
+      return true
+    })
+    .sort((a, b) => a.length - b.length)
+
+  const mounts: SandboxMount[] = []
+  const accepted: string[] = []
+  for (const dir of candidates) {
+    const canonical = canonicalizePath(dir)
+    if (accepted.some((root) => isSameOrDescendantPath(canonical, root))) continue
+    accepted.push(canonical)
+    mounts.push({ hostDir: dir, containerDir: dir, readOnly: true })
+  }
+  return mounts
+}
+
 export function createSandboxManager(
   runtime: SandboxRuntime,
   config: SandboxManagerConfig,
@@ -164,6 +239,8 @@ export function createSandboxManager(
   const lastLivenessCheck = new Map<string, number>()
   const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
+  const skillDirCache = new Map<string, string[]>()
+  const skillListAttempted = new Set<string>()
   const convergedSecrets = new Set<string>()
   const preparedCacheDisks = new Set<string>()
   const handledSecretEnvs = new Map<string, Set<string>>()
@@ -213,6 +290,42 @@ export function createSandboxManager(
     imageReady = true
   }
 
+  async function refreshSkillDirs(projectDir: string): Promise<void> {
+    const absolute = resolve(projectDir)
+    skillListAttempted.add(absolute)
+    const listSkillPaths = config.listSkillPaths
+    if (!listSkillPaths) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const paths = await Promise.race([
+        listSkillPaths(absolute),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`skill listing timed out after ${SKILL_LIST_TIMEOUT_MS}ms`)),
+            SKILL_LIST_TIMEOUT_MS,
+          )
+        }),
+      ])
+      const dirs: string[] = []
+      const seen = new Set<string>()
+      for (const path of paths) {
+        if (!path || !isAbsolute(path) || basename(path) !== 'SKILL.md') continue
+        const dir = resolve(dirname(path))
+        if (seen.has(dir)) continue
+        seen.add(dir)
+        dirs.push(dir)
+      }
+      skillDirCache.set(absolute, dirs)
+    } catch (err) {
+      const fallback = skillDirCache.has(absolute)
+        ? 'the previously resolved skill directories'
+        : config.fallbackSkillsDir ? `the fallback skills directory ${config.fallbackSkillsDir}` : 'no skills mount'
+      logger.log(`Sandbox: could not list skills for ${absolute}; using ${fallback}: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   function buildMountPlan(projectDir: string): SandboxMountPlan {
     const absolute = resolve(projectDir)
     const worktreeMount: SandboxMount = { hostDir: absolute, containerDir: absolute }
@@ -232,11 +345,13 @@ export function createSandboxManager(
 
     const toolOutputMount = resolveToolOutputMount(absolute)
     const tmpMount = resolveTempMount(absolute)
+    const skillsMounts = resolveSkillsMounts(absolute)
 
     const reserved = new Set<string>([worktreeMount.containerDir, ...orderedGitMounts.map((m) => m.containerDir)])
     if (projectMount) reserved.add(projectMount.containerDir)
     if (toolOutputMount) reserved.add(toolOutputMount.containerDir)
     if (tmpMount) reserved.add(tmpMount.containerDir)
+    for (const mount of skillsMounts) reserved.add(mount.containerDir)
     const customMounts = resolveCustomMounts(config.customMounts, reserved, logger)
 
     const candidates: SandboxMount[] = [
@@ -245,6 +360,7 @@ export function createSandboxManager(
       ...(projectMount ? [projectMount] : []),
       ...(toolOutputMount ? [toolOutputMount] : []),
       ...(tmpMount ? [tmpMount] : []),
+      ...skillsMounts,
       ...customMounts,
     ]
 
@@ -277,6 +393,18 @@ export function createSandboxManager(
     }
     if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
     return { hostDir: resolved, containerDir: resolved, readOnly: false }
+  }
+
+  function resolveSkillsMounts(workspaceDir: string): SandboxMount[] {
+    const cached = skillDirCache.get(workspaceDir)
+    const fallbackRoots = cached === undefined && config.fallbackSkillsDir ? [config.fallbackSkillsDir] : []
+    if (cached === undefined && fallbackRoots.length === 0) return []
+    return resolveSkillMounts({
+      skillDirs: cached ?? [],
+      workspaceDir,
+      logger,
+      fallbackRoots,
+    })
   }
 
   function detectGitMount(projectDir: string): SandboxMount[] {
@@ -435,6 +563,7 @@ export function createSandboxManager(
   async function start(worktreeName: string, projectDir: string, startedAt?: string, overrides?: SandboxOverrides): Promise<{ containerName: string }> {
     await ensureRuntimeAvailable()
     await ensureTemplate()
+    await refreshSkillDirs(projectDir)
 
     const containerName = runtime.sandboxContainerName(worktreeName)
 
@@ -596,6 +725,7 @@ export function createSandboxManager(
   }
 
   async function resolveUsableSandbox(worktreeName: string, projectDir: string, startedAt?: string): Promise<string> {
+    if (!skillListAttempted.has(resolve(projectDir))) await refreshSkillDirs(projectDir)
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName ?? runtime.sandboxContainerName(worktreeName)
     const state = await runtime.getSandboxState(containerName)

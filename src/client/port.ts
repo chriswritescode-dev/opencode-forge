@@ -68,6 +68,14 @@ export type ModelContextLimitParams = {
   modelID: string
 }
 
+export type SkillListParams = {
+  directory?: string
+}
+
+export type SkillListEntry = {
+  path: string
+}
+
 export type Session = {
   id: string
   slug: string
@@ -271,6 +279,9 @@ export interface ForgeClient {
   }
   model: {
     contextLimit(params: ModelContextLimitParams): Promise<number | undefined>
+  }
+  skill: {
+    list(params: SkillListParams): Promise<SkillListEntry[]>
   }
   toast(input: ToastInput): Promise<void>
 }
