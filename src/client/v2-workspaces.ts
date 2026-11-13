@@ -33,7 +33,9 @@ export interface V2ForgeWorkspacesDeps {
 const workspaceExtraSchema = z.record(z.string(), z.json())
 
 function toExtra<V>(value: V): WorkspaceExtra | null {
-  const parsed = workspaceExtraSchema.safeParse(value)
+  const text = JSON.stringify(value)
+  if (text === undefined) return null
+  const parsed = workspaceExtraSchema.safeParse(JSON.parse(text))
   return parsed.success ? parsed.data : null
 }
 

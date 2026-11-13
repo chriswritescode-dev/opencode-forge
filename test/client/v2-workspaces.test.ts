@@ -90,6 +90,18 @@ describe('createV2ForgeWorkspaces', () => {
     expect(calls.map((call) => call.method)).toContain('worktree.refresh')
   })
 
+  it('keeps the extra when a nested field is undefined', async () => {
+    const { workspaces } = setup()
+    const directory = join(dataDir, 'worktrees', WORKTREE_DIR_NAME)
+
+    await workspaces.create({
+      ...createParams(),
+      extra: { loopName: LOOP_NAME, projectDirectory: PROJECT_DIRECTORY, forgeLoop: { executionVariant: undefined } },
+    })
+
+    expect(readForgeWorkspaceMetadata(directory)?.extra).toMatchObject({ loopName: LOOP_NAME, forgeLoop: {} })
+  })
+
   it('lists the created workspace', async () => {
     const { workspaces } = setup()
     const created = await workspaces.create(createParams())
