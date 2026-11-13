@@ -6,7 +6,7 @@
 
 # Interface: PluginConfig
 
-Defined in: [types.ts:135](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L135)
+Defined in: [types.ts:135](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L135)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [types.ts:135](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **agents?**: `Record`\<`string`, `AgentOverrideConfig`\>
 
-Defined in: [types.ts:148](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L148)
+Defined in: [types.ts:148](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L148)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [types.ts:148](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **auditorFallbackModels?**: (`string` \| `AuditorFallbackModel`)[]
 
-Defined in: [types.ts:144](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L144)
+Defined in: [types.ts:144](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L144)
 
 ***
 
@@ -30,7 +30,7 @@ Defined in: [types.ts:144](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **auditorModel?**: `string`
 
-Defined in: [types.ts:141](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L141)
+Defined in: [types.ts:141](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L141)
 
 ***
 
@@ -38,7 +38,7 @@ Defined in: [types.ts:141](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **auditorVariant?**: `string`
 
-Defined in: [types.ts:143](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L143)
+Defined in: [types.ts:143](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L143)
 
 ***
 
@@ -46,7 +46,7 @@ Defined in: [types.ts:143](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **autoApprove?**: `AutoApproveConfig`
 
-Defined in: [types.ts:151](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L151)
+Defined in: [types.ts:151](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L151)
 
 ***
 
@@ -54,7 +54,7 @@ Defined in: [types.ts:151](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **codeGraph?**: `CodeGraphConfig`
 
-Defined in: [types.ts:150](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L150)
+Defined in: [types.ts:150](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L150)
 
 ***
 
@@ -62,7 +62,7 @@ Defined in: [types.ts:150](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **compaction?**: [`CompactionConfig`](CompactionConfig.md)
 
-Defined in: [types.ts:138](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L138)
+Defined in: [types.ts:138](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L138)
 
 ***
 
@@ -70,7 +70,7 @@ Defined in: [types.ts:138](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **completedLoopTtlMs?**: `number`
 
-Defined in: [types.ts:146](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L146)
+Defined in: [types.ts:146](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L146)
 
 ***
 
@@ -78,7 +78,7 @@ Defined in: [types.ts:146](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **dataDir?**: `string`
 
-Defined in: [types.ts:136](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L136)
+Defined in: [types.ts:136](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L136)
 
 ***
 
@@ -86,7 +86,7 @@ Defined in: [types.ts:136](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **executionModel?**: `string`
 
-Defined in: [types.ts:140](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L140)
+Defined in: [types.ts:140](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L140)
 
 ***
 
@@ -94,7 +94,7 @@ Defined in: [types.ts:140](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **executionVariant?**: `string`
 
-Defined in: [types.ts:142](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L142)
+Defined in: [types.ts:142](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L142)
 
 ***
 
@@ -102,7 +102,7 @@ Defined in: [types.ts:142](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **logging?**: `LoggingConfig`
 
-Defined in: [types.ts:137](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L137)
+Defined in: [types.ts:137](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L137)
 
 ***
 
@@ -110,7 +110,7 @@ Defined in: [types.ts:137](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **loop?**: `LoopConfig`
 
-Defined in: [types.ts:145](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L145)
+Defined in: [types.ts:145](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L145)
 
 ***
 
@@ -118,7 +118,7 @@ Defined in: [types.ts:145](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **messagesTransform?**: `MessagesTransformConfig`
 
-Defined in: [types.ts:139](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L139)
+Defined in: [types.ts:139](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L139)
 
 ***
 
@@ -126,7 +126,7 @@ Defined in: [types.ts:139](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **sandbox?**: `SandboxConfig`
 
-Defined in: [types.ts:149](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L149)
+Defined in: [types.ts:149](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L149)
 
 ***
 
@@ -134,4 +134,4 @@ Defined in: [types.ts:149](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **tui?**: `TuiConfig`
 
-Defined in: [types.ts:147](https://github.com/chriswritescode-dev/opencode-forge/blob/1e32740c5bae2c89cdf8948693eab5defed57297/src/types.ts#L147)
+Defined in: [types.ts:147](https://github.com/chriswritescode-dev/opencode-forge/blob/3384920737f4fa69a642c2b9cd8881e3545ac914/src/types.ts#L147)

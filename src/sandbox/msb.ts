@@ -38,6 +38,8 @@ export function buildMsbExecArgs(name: string, command: string, opts?: BuildMsbE
 
 export const SANDBOX_CACHE_DIR = '/opt/forge/cache'
 
+export const SANDBOX_ROOT_DISK = '6g'
+
 export function parseMsbCpus(raw: string | undefined, logger: Logger): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined
   const value = Number(raw)
@@ -191,7 +193,7 @@ export function buildMsbCreateArgs(
   if (workspaces.length === 0) {
     throw new Error('buildMsbCreateArgs requires at least one workspace')
   }
-  const args = ['create', opts.image, '--name', name, '--quiet']
+  const args = ['create', opts.image, '--name', name, '--quiet', '--root-disk', SANDBOX_ROOT_DISK]
   if (opts.cpus !== undefined) args.push('-c', String(opts.cpus))
   if (opts.memory) args.push('-m', opts.memory)
   for (const ws of workspaces) {
