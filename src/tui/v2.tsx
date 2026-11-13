@@ -67,7 +67,7 @@ type KeymapLayerConfig = ReturnType<Parameters<Plugin.Context['keymap']['layer']
 type KeymapCommandConfig = NonNullable<KeymapLayerConfig['commands']>[number]
 
 function withKeybind(command: KeymapCommandConfig, bind: string | undefined): KeymapCommandConfig {
-  return bind === undefined ? command : { ...command, bind }
+  return bind ? { ...command, bind } : command
 }
 
 function resolveV2TuiDirectory(context: Plugin.Context): string | null {

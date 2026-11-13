@@ -709,6 +709,20 @@ describe('V2 TUI setup', () => {
     cleanup()
   })
 
+  test('omits empty keybinds so OpenCode does not reject the layer', () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    for (const id of ['forge.dashboard', 'forge.permissions.toggleAutoApprove']) {
+      const command = findCommand(fake, id)
+      expect('bind' in command).toBe(false)
+      expect(command.bind).toBeUndefined()
+    }
+    expect(findCommand(fake, 'forge.plan.execute').bind).toBe('<leader>f')
+    cleanup()
+  })
+
   test('execute plan without a session falls back to restart and asks for a session when nothing is restartable', async () => {
     const fake = createFakeV2TuiContext()
 
