@@ -20,6 +20,7 @@ export interface HostSandboxToggleDeps {
   readState(): Promise<ForgeHostSandboxStateOutput>
   setState(input: ForgeHostSandboxSetInput): Promise<ForgeHostSandboxSetOutput>
   currentSessionId(): string | null
+  getParentSessionId?(sessionId: string): string | null | undefined
   toast(input: ForgeToastInput): void
 }
 
@@ -223,7 +224,7 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
       label: 'Sandbox toggle',
       timeoutMs: TOGGLE_ACK_TIMEOUT_MS,
       build: (current, sessionId) => {
-        enabling = !isSessionSandboxWanted(current, sessionId)
+        enabling = !isSessionSandboxWanted(current, sessionId, deps.getParentSessionId)
         return { enabled: enabling }
       },
       success: () => enabling

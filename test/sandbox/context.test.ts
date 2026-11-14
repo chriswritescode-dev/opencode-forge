@@ -7,6 +7,7 @@ import {
   SANDBOX_OFF_NOTE,
   isSandboxEnabled,
   isSandboxConfigEnabled,
+  isHostSessionsDefaultEnabled,
   resolveSandboxContextForLoop,
   resolveSandboxMountConfigs,
 } from '../../src/sandbox/context'
@@ -111,6 +112,24 @@ describe('isSandboxConfigEnabled', () => {
   it('is false only when explicitly disabled', () => {
     expect(isSandboxConfigEnabled({ sandbox: { mode: 'msb' as const, enabled: false } })).toBe(false)
     expect(isSandboxConfigEnabled({ sandbox: { mode: 'msb' as const, enabled: true } })).toBe(true)
+  })
+})
+
+describe('isHostSessionsDefaultEnabled', () => {
+  it('is on by default (config absent or hostSessions not set)', () => {
+    expect(isHostSessionsDefaultEnabled(undefined)).toBe(true)
+    expect(isHostSessionsDefaultEnabled({})).toBe(true)
+    expect(isHostSessionsDefaultEnabled({ sandbox: { mode: 'msb' as const } })).toBe(true)
+    expect(isHostSessionsDefaultEnabled({ sandbox: { mode: 'msb' as const, hostSessions: true } })).toBe(true)
+  })
+
+  it('is off when hostSessions is explicitly disabled', () => {
+    expect(isHostSessionsDefaultEnabled({ sandbox: { mode: 'msb' as const, hostSessions: false } })).toBe(false)
+  })
+
+  it('is off when sandboxing itself is disabled, even without an explicit hostSessions value', () => {
+    expect(isHostSessionsDefaultEnabled({ sandbox: { mode: 'msb' as const, enabled: false } })).toBe(false)
+    expect(isHostSessionsDefaultEnabled({ sandbox: { mode: 'msb' as const, enabled: false, hostSessions: true } })).toBe(false)
   })
 })
 

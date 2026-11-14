@@ -21,6 +21,8 @@ describe('createHostSandboxToggle', () => {
     configEnabled?: boolean
     hostSessionsDefault?: boolean
     readError?: string
+    sessions?: Record<string, boolean>
+    parentSessionId?: string
   }
 
   function setup(options: SetupOptions) {
@@ -28,7 +30,9 @@ describe('createHostSandboxToggle', () => {
     let state: ForgeHostSandboxState = {
       configEnabled: options.configEnabled ?? true,
       hostSessionsDefault: options.hostSessionsDefault ?? true,
-      desired: null,
+      desired: options.sessions
+        ? { version: 2, revision: 'rev-0', sessions: { ...options.sessions }, requestedAt: 1 }
+        : null,
       applied: null,
       controller: null,
     }
@@ -59,6 +63,7 @@ describe('createHostSandboxToggle', () => {
       readState,
       setState,
       currentSessionId: () => options.sessionId,
+      getParentSessionId: (id) => (id === options.sessionId ? options.parentSessionId : undefined),
       toast: (input) => toasts.push(input),
     })
     toggles.push(toggle)
@@ -133,6 +138,28 @@ describe('createHostSandboxToggle', () => {
     await pending
 
     expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', enabled: true })
+    expect(toasts.at(-1)).toMatchObject({
+      variant: 'success',
+      message: 'Sandbox on for this session. Agent shell, glob, and grep calls run in the project\'s shared sandbox; commands you run yourself stay on the host.',
+    })
+  })
+
+  test('toggles a child of an opted-out parent back into the shared sandbox', async () => {
+    const { toasts, toggle, setState, acknowledge } = setup({
+      sessionId: 'ses_child',
+      hostSessionsDefault: true,
+      sessions: { ses_parent: false },
+      parentSessionId: 'ses_parent',
+    })
+
+    const pending = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_child', enabled: true })
+    expect(toggle.preference()?.desired?.sessions).toEqual({ ses_parent: false, ses_child: true })
     expect(toasts.at(-1)).toMatchObject({
       variant: 'success',
       message: 'Sandbox on for this session. Agent shell, glob, and grep calls run in the project\'s shared sandbox; commands you run yourself stay on the host.',

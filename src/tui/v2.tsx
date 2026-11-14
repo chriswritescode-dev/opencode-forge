@@ -94,6 +94,10 @@ async function resolveV2TuiProjectIdForDirectory(context: Plugin.Context, direct
   }
 }
 
+function readParentSessionId(context: Plugin.Context, sessionId: string): string | null | undefined {
+  return context.data.session.get(sessionId)?.parentID
+}
+
 function readForgeToast(data: JsonObject): ForgeToastEvent | null {
   const parsed = forgeToastSchema.safeParse(data)
   if (!parsed.success) return null
@@ -112,7 +116,14 @@ function SandboxStatusText(props: {
   sessionId: Accessor<string | null>
 }) {
   const theme = () => props.context.theme
-  const status = createMemo(() => deriveSessionSandboxDisplayStatus(props.preference(), props.sessionId() ?? undefined))
+  const status = createMemo(() => {
+    const context = props.context
+    return deriveSessionSandboxDisplayStatus(
+      props.preference(),
+      props.sessionId() ?? undefined,
+      (id) => readParentSessionId(context, id),
+    )
+  })
   const [frame, setFrame] = createSignal(0)
 
   createEffect(() => {
@@ -358,6 +369,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       readForgeHostSandboxSetOutput,
     ),
     currentSessionId,
+    getParentSessionId: (sessionId) => readParentSessionId(context, sessionId),
     toast: (input) => host.toast(input),
   })
 
@@ -370,7 +382,11 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     currentSessionId,
     readState: (sessionId) => call(async (rpc, location) => await rpc.autoApproveState({ sessionId }, location), readForgeAutoApproveState),
     setState: (sessionId, enabled) => call(async (rpc, location) => await rpc.autoApproveSet({ sessionId, enabled }, location), readForgeAutoApproveState),
-    isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(hostSandbox.preference(), id) === 'enabled',
+    isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(
+      hostSandbox.preference(),
+      id,
+      (sessionId) => readParentSessionId(context, sessionId),
+    ) === 'enabled',
     toast: (input) => host.toast(input),
   })
 

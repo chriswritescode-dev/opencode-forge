@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { randomUUID } from 'node:crypto'
 import type { ForgeClient, ForgeEvent, SessionGetParams } from '../client/port'
 import { ForgeClientError } from '../client/port'
 import { buildAgents } from '../agents'
@@ -52,6 +53,8 @@ import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-ser
 import { createDashboardService, type DashboardService } from '../services/dashboard-service'
 import { processShared } from '../utils/process-shared'
 import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
+import { FORGE_EVENT_TYPES } from './v2-events'
+import { withoutSandboxSession } from '../storage/session-sandbox-state'
 import { withWriteNotifications } from '../utils/write-notifications'
 import { errorMessage } from '../utils/error-message'
 
@@ -739,6 +742,20 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   sessionSandboxProvider = hostSessionProvider
   void sharedSessionSandbox.started.catch((err) => logger.error('Session sandbox controller failed to start', err))
 
+  const forgetHostSandboxSession = (sessionID: string | undefined): void => {
+    if (!sessionID) return
+    try {
+      const desired = sandboxPreferences.getDesired(projectId)
+      const revision = randomUUID()
+      const next = withoutSandboxSession(desired, sessionID, revision)
+      if (!next || next === desired) return
+      sandboxPreferences.updateDesired(projectId, (current) => withoutSandboxSession(current, sessionID, revision) ?? next)
+      emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId })
+    } catch (err) {
+      logger.log(`[sandbox] failed to drop sandbox preference for deleted session ${sessionID}: ${errorMessage(err)}`)
+    }
+  }
+
   const resolveSandboxForSession = createUnifiedSandboxResolver({
     resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     resolveLoopSandbox: (resolved, opts) => resolveSandboxContextForLoop(sandboxManager, resolved, logger, opts),
@@ -1012,6 +1029,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       await forgeSessionAttachHook(input)
       await sessionHooks.onEvent(input)
       await planApprovalEventHook(input)
+      if (input.event.type === FORGE_EVENT_TYPES.sessionDeleted) forgetHostSandboxSession(input.event.properties.sessionID)
     },
     toolBefore: async (input, output) => {
       let resolved: Awaited<ReturnType<typeof sessionLoopResolver.resolveActiveLoopForSession>> | null = null

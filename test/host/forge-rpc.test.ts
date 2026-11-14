@@ -554,7 +554,7 @@ describe('FORGE_RPC', () => {
       controller: { version: 1, phase: 'ready', revision: 'rev-3' },
     })).toEqual({
       configEnabled: true,
-      hostSessionsDefault: true,
+      hostSessionsDefault: false,
       desired: { version: 2, revision: 'rev-1', sessions: { ses_1: true }, requestedAt: 1 },
       applied: { version: 2, revision: 'rev-2', running: false, error: null, appliedAt: 2 },
       controller: { version: 1, phase: 'ready', revision: 'rev-3' },

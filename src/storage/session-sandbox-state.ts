@@ -78,3 +78,14 @@ export const controllerStateSchema = z.object({
 export function isHostSandboxWanted(desired: SessionSandboxDesiredState | null, hostSessionsDefault: boolean): boolean {
   return hostSessionsDefault || Object.values(desired?.sessions ?? {}).some(Boolean)
 }
+
+export function withoutSandboxSession(
+  desired: SessionSandboxDesiredState | null,
+  sessionId: string,
+  revision: string,
+): SessionSandboxDesiredState | null {
+  if (!desired || !Object.hasOwn(desired.sessions, sessionId)) return desired
+  const sessions = { ...desired.sessions }
+  delete sessions[sessionId]
+  return { ...desired, revision, sessions, requestedAt: Date.now() }
+}

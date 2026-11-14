@@ -671,7 +671,7 @@ export function readForgeHostSandboxState<P>(payload: P): ForgeHostSandboxStateO
     const data = parsed.data
     const state: ForgeHostSandboxState = {
       configEnabled: data.configEnabled,
-      hostSessionsDefault: data.hostSessionsDefault ?? true,
+      hostSessionsDefault: data.hostSessionsDefault ?? false,
       desired: data.desired,
       applied: data.applied,
       controller: data.controller,

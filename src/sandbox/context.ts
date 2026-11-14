@@ -147,6 +147,7 @@ export function isSandboxConfigEnabled(config: PluginConfig | undefined): boolea
 }
 
 export function isHostSessionsDefaultEnabled(config: PluginConfig | undefined): boolean {
+  if (!isSandboxConfigEnabled(config)) return false
   return config?.sandbox?.hostSessions !== false
 }
 

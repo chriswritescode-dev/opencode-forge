@@ -849,9 +849,9 @@ describe('createForgeCore', () => {
     expect(applied!.error).toBeTruthy()
     closeDatabase(db)
 
-    // The failed project sandbox refuses every host session of the project, not just the one named
-    // by the requested revision.
-    await expect(globBefore(built.core, 'ses-unrelated', 'c2')).rejects.toThrow(/unavailable/)
+    // Sandboxing is disabled, so the host default is off: a session that did not opt in falls back to
+    // host execution instead of routing into the failed project sandbox.
+    await expect(globBefore(built.core, 'ses-unrelated', 'c2')).resolves.toBeUndefined()
 
     await built.core.cleanup()
   })

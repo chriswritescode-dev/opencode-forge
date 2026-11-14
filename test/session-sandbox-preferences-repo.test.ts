@@ -7,6 +7,7 @@ import {
   SESSION_SANDBOX_CONTROLLER_KEY,
 } from '../src/storage'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState } from '../src/storage'
+import { withoutSandboxSession } from '../src/storage/session-sandbox-state'
 import { createTestDb } from './helpers/test-db'
 
 const PROJECT_A = 'project-a'
@@ -19,6 +20,34 @@ function makeDesired(overrides: Partial<SessionSandboxDesiredState> = {}): Sessi
 function makeApplied(overrides: Partial<SessionSandboxAppliedState> = {}): SessionSandboxAppliedState {
   return { version: 2, revision: 'rev-1', running: true, error: null, appliedAt: 2000, ...overrides }
 }
+
+describe('withoutSandboxSession', () => {
+  test('returns null unchanged when no desired state exists', () => {
+    expect(withoutSandboxSession(null, 'sess-1', 'rev-2')).toBeNull()
+  })
+
+  test('returns the same object when the session has no own entry', () => {
+    const desired = makeDesired({ sessions: { 'sess-1': true } })
+    expect(withoutSandboxSession(desired, 'sess-2', 'rev-2')).toBe(desired)
+    expect(withoutSandboxSession(desired, 'toString', 'rev-2')).toBe(desired)
+  })
+
+  test('drops the entry with a new revision and preserves overrides without mutating the input', () => {
+    const desired = makeDesired({ sessions: { 'sess-1': true, 'sess-2': false }, overrides: { allowLan: true } })
+    const before = Date.now()
+    const next = withoutSandboxSession(desired, 'sess-1', 'rev-2')
+
+    expect(next).toEqual({
+      version: 2,
+      revision: 'rev-2',
+      sessions: { 'sess-2': false },
+      requestedAt: expect.any(Number),
+      overrides: { allowLan: true },
+    })
+    expect(next?.requestedAt).toBeGreaterThanOrEqual(before)
+    expect(desired.sessions).toEqual({ 'sess-1': true, 'sess-2': false })
+  })
+})
 
 describe('SessionSandboxPreferencesRepo', () => {
   let db: Database

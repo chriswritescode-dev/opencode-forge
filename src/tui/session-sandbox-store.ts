@@ -29,8 +29,23 @@ export function isHostSandboxRunning(pref: SessionSandboxPreference): boolean {
     && applied.error === null
 }
 
-export function isSessionSandboxWanted(pref: SessionSandboxPreference, sessionId: string): boolean {
-  return pref.desired?.sessions[sessionId] ?? pref.hostSessionsDefault
+export type ParentSessionIdResolver = (sessionId: string) => string | null | undefined
+
+export function isSessionSandboxWanted(
+  pref: SessionSandboxPreference,
+  sessionId: string,
+  getParentSessionId?: ParentSessionIdResolver,
+): boolean {
+  const sessions = pref.desired?.sessions
+  if (!sessions) return pref.hostSessionsDefault
+  const visited = new Set<string>()
+  let current: string | null | undefined = sessionId
+  while (current !== null && current !== undefined && !visited.has(current)) {
+    visited.add(current)
+    if (Object.hasOwn(sessions, current)) return sessions[current]
+    current = getParentSessionId?.(current)
+  }
+  return pref.hostSessionsDefault
 }
 
 export function isSessionSandboxPreferenceSettled(pref: SessionSandboxPreference): boolean {
@@ -45,12 +60,13 @@ export type SessionSandboxDisplayStatus = 'enabled' | 'disabled' | 'loading' | '
 export function deriveSessionSandboxDisplayStatus(
   pref: SessionSandboxPreference | null,
   sessionId?: string,
+  getParentSessionId?: ParentSessionIdResolver,
 ): SessionSandboxDisplayStatus {
   if (!pref || !sessionId) return 'disabled'
   if (pref.activeLoopSandboxes && Object.hasOwn(pref.activeLoopSandboxes, sessionId)) {
     return pref.activeLoopSandboxes[sessionId] ? 'enabled' : 'disabled'
   }
-  if (!isSessionSandboxWanted(pref, sessionId)) return 'disabled'
+  if (!isSessionSandboxWanted(pref, sessionId, getParentSessionId)) return 'disabled'
   const controller = pref.controller
   if (controller && controller.revision === pref.desired?.revision) {
     if (controller.phase === 'loading') return 'loading'

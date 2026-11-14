@@ -75,6 +75,50 @@ describe('session-sandbox-store', () => {
     test('falls back to the project default without a persisted desired state', () => {
       expect(isSessionSandboxWanted({ desired: null, applied: null, hostSessionsDefault: true }, 'sess-1')).toBe(true)
     })
+
+    test('inherits a parent entry when the session has none of its own', () => {
+      const pref = { desired: desired({ sessions: { 'sess-parent': false } }), applied: null, hostSessionsDefault: true }
+      const getParentSessionId = (id: string) => (id === 'sess-child' ? 'sess-parent' : undefined)
+      expect(isSessionSandboxWanted(pref, 'sess-child', getParentSessionId)).toBe(false)
+      expect(isSessionSandboxWanted(pref, 'sess-child')).toBe(true)
+    })
+
+    test('a session entry wins over an ancestor entry', () => {
+      const inherits = (id: string) => (id === 'sess-child' ? 'sess-parent' : undefined)
+      const optedOutParent = {
+        desired: desired({ sessions: { 'sess-parent': false, 'sess-child': true } }),
+        applied: null,
+        hostSessionsDefault: true,
+      }
+      expect(isSessionSandboxWanted(optedOutParent, 'sess-child', inherits)).toBe(true)
+      const optedInParent = {
+        desired: desired({ sessions: { 'sess-parent': true, 'sess-child': false } }),
+        applied: null,
+        hostSessionsDefault: true,
+      }
+      expect(isSessionSandboxWanted(optedInParent, 'sess-child', inherits)).toBe(false)
+    })
+
+    test('walks past an unset parent to a grandparent entry', () => {
+      const pref = { desired: desired({ sessions: { 'sess-grandparent': false } }), applied: null, hostSessionsDefault: true }
+      const links: Record<string, string | undefined> = { 'sess-child': 'sess-parent', 'sess-parent': 'sess-grandparent' }
+      expect(isSessionSandboxWanted(pref, 'sess-child', (id) => links[id])).toBe(false)
+    })
+
+    test('falls back to the project default when no ancestor has an entry', () => {
+      const pref = { desired: desired({ sessions: { 'sess-other': false } }), applied: null, hostSessionsDefault: true }
+      const links: Record<string, string | undefined> = { 'sess-child': 'sess-parent', 'sess-parent': 'sess-grandparent' }
+      expect(isSessionSandboxWanted(pref, 'sess-child', (id) => links[id])).toBe(true)
+    })
+
+    test('terminates on a cyclic parent chain', () => {
+      const pref = { desired: desired({ sessions: { 'sess-other': true } }), applied: null, hostSessionsDefault: false }
+      const links: Record<string, string | undefined> = { 'sess-a': 'sess-b', 'sess-b': 'sess-a' }
+      expect(isSessionSandboxWanted(pref, 'sess-a', (id) => links[id])).toBe(false)
+      expect(isSessionSandboxWanted(pref, 'sess-a', (id) => id)).toBe(false)
+      const optedOut = { ...pref, desired: desired({ sessions: { 'sess-b': true } }) }
+      expect(isSessionSandboxWanted(optedOut, 'sess-a', (id) => links[id])).toBe(true)
+    })
   })
 
   describe('isSessionSandboxPreferenceSettled', () => {
@@ -132,6 +176,29 @@ describe('session-sandbox-store', () => {
       }
       expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('disabled')
       expect(deriveSessionSandboxDisplayStatus(pref, 'sess-2')).toBe('enabled')
+    })
+
+    test('shows disabled for a child inheriting an opted-out parent', () => {
+      const pref = {
+        desired: desired({ sessions: { 'sess-parent': false } }),
+        applied: appliedState(),
+        hostSessionsDefault: true,
+      }
+      const getParentSessionId = (id: string) => (id === 'sess-child' ? 'sess-parent' : undefined)
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-child', getParentSessionId)).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-child')).toBe('enabled')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-parent', getParentSessionId)).toBe('disabled')
+    })
+
+    test('shows enabled for a child inheriting an opted-in parent when the default is off', () => {
+      const pref = {
+        desired: desired({ sessions: { 'sess-parent': true } }),
+        applied: appliedState(),
+        hostSessionsDefault: false,
+      }
+      const getParentSessionId = (id: string) => (id === 'sess-child' ? 'sess-parent' : undefined)
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-child', getParentSessionId)).toBe('enabled')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-child')).toBe('disabled')
     })
 
     test('shows disabled for every session when the project default is off and none opted in', () => {
