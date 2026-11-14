@@ -1,6 +1,6 @@
 # Sandbox
 
-Forge can run loop iterations or one selected host session inside an isolated `msb` sandbox — a microVM booted by the [microsandbox](https://microsandbox.dev) CLI — while keeping the active project directory mounted at its identical host path for fast host/sandbox file sharing.
+Forge can run loop iterations or your regular host sessions inside an isolated `msb` sandbox — a microVM booted by the [microsandbox](https://microsandbox.dev) CLI — while keeping the active project directory mounted at its identical host path for fast host/sandbox file sharing.
 
 See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](loop-system.md).
 
@@ -54,8 +54,8 @@ Playwright records browser video as WebM with its own bundled ffmpeg build; the 
 
 ## How It Works
 
-1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root selected from the TUI.
-2. Forge creates one sandbox per loop, or one project-scoped host-session sandbox shared by plugin instances in the process.
+1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root; a session whose directory lies outside the project root (for example a separate git worktree) runs on the host.
+2. Forge creates one sandbox per loop, plus one project-scoped host-session sandbox (`forge-host-session-<hash of the projectId>`) shared by every regular session of that project and by plugin instances in the process. With `sandbox.hostSessions` on (the default) that sandbox is started in the background when the plugin loads, so a new session reuses it instead of waiting for creation.
 3. The active directory, the read-only source project (when `sandbox.mountProjectReadonly` is enabled), and the worktree's git metadata directory are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
 4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work, but are fenced to the sandbox mounts (see [File-Tool Boundary](#file-tool-boundary)).
 
@@ -68,7 +68,7 @@ Sandbox loops use opencode's native `shell` tool — streaming output, truncatio
 1. Forge wraps the built-in `shell` tool. For a call from a session that should be sandboxed, the wrapper prefixes the command with a one-off `forge-sandbox-required-<uuid> && ` marker and remembers the sandbox for that marker.
 2. The `shell` `create.before` hook has no session ID. It recognizes the marker, strips it, points `event.shell` at the generated shim (`<dataDir>/forge-shell`), and sets `FORGE_SANDBOX_CONTAINER`. Without a marker it routes by location instead: a shell spawn in a loop worktree location resolves to that loop's sandbox.
 3. The shim runs the command via `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
-4. Shell calls from sessions with no expected sandbox are left alone: the shim is not used and OpenCode's own shell runs the command. Active loop routing always takes precedence over host-session preference. When no loop is active and no host sandbox is on, the wrapper performs no session lookups.
+4. Shell calls from sessions with no expected sandbox are left alone: the shim is not used and OpenCode's own shell runs the command. Active loop routing always takes precedence over the host-session preference. A regular session routes into the shared project sandbox unless it has been toggled off, or `sandbox.hostSessions` is `false` and it has not been toggled on.
 
 The marker makes the routing fail closed: if it is not stripped, the command fails with "command not found" rather than running on the host. The shim itself also fails closed — if the sandbox is expected but `msb exec` fails (or the loop sandbox cannot be restored), the command errors and never silently runs on the host. `msb exec` propagates the guest command's exit code verbatim, so the shell tool keeps seeing real exit statuses.
 
@@ -76,7 +76,7 @@ Commands the user runs directly — `!` commands and terminals — do not pass t
 
 ## Permission Auto-Approval
 
-When the host sandbox is turned on for a session (the `Host sandbox` menu in the TUI, which writes a desired state through the Forge server RPC and waits for the server's applied acknowledgement), Forge resolves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask is resolved to allow or deny rather than shown. It is denied when it matches an `autoApprove.deny` rule; otherwise it is allowed, including requests that match an explicit OpenCode `ask` rule. OpenCode `deny` rules still deny. This applies only while the session's shell calls actually route into a running sandbox. A request that arrives during initial sandbox startup waits for that resolution: if the sandbox becomes active it is auto-approved under the same policy; otherwise the prompt is shown as usual. When the sandbox is off or failed to start, prompts are shown as usual unless a per-session auto-approve is separately enabled. The attached server's `sandbox.enabled` decides whether the toggle is available at all.
+When a session runs in the host-session sandbox (its preference is on — the default with `sandbox.hostSessions`; `Toggle sandbox` in the TUI writes a desired state through the Forge server RPC and waits for the server's applied acknowledgement), Forge resolves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask is resolved to allow or deny rather than shown. It is denied when it matches an `autoApprove.deny` rule; otherwise it is allowed, including requests that match an explicit OpenCode `ask` rule. OpenCode `deny` rules still deny. This applies only while the session's shell calls actually route into a running sandbox. A request that arrives during initial sandbox startup waits for that resolution: if the sandbox becomes active it is auto-approved under the same policy; otherwise the prompt is shown as usual. When the sandbox is off or failed to start, prompts are shown as usual unless a per-session auto-approve is separately enabled. The attached server's `sandbox.enabled` decides whether the toggle is available at all.
 
 OpenCode `deny` rules still apply: they settle before the hook runs. Loop sessions are unaffected because their permission ruleset already allows everything it doesn't deny.
 
@@ -125,7 +125,7 @@ Forge applies the rules at sandbox **create time** only. msb rules are per sandb
 
 msb's default egress is deny with an implicit `allow@public`, so private (LAN) address ranges are blocked even when public egress is open, including with the `*` wildcard. Set `sandbox.network.allowLan: true` (default `false`) to let the sandbox reach them. Forge then creates the sandbox with `--net public,private`, or appends `--net-rule allow@private` when an allow-list is active. Public-host restrictions remain, but the entire private-address group is allowed independently of the host list, even if every configured host is invalid. This exposes every service on your LAN (routers, NAS, other machines) to commands the agent runs, so keep it off unless a task needs it.
 
-The loop settings dialog and the `Host sandbox` menu override it per sandbox. Like the other egress rules it is fixed at create time: changing it on a running host sandbox removes and recreates the sandbox, after confirmation. Host bind mounts survive (they are host directories), but the VM root filesystem, the Docker and cache disks, and all running processes are lost — the removal deletes the sandbox's named Docker and cache volumes along with it. Forge reads the current setting back from `msb inspect` rather than assuming it, and refuses to apply overrides when that read fails, so a LAN restriction is never assumed to hold.
+The loop settings dialog and the `Sandbox settings` dialog override it per sandbox. Like the other egress rules it is fixed at create time: changing it on a running host sandbox removes and recreates the sandbox, after confirmation. Host bind mounts survive (they are host directories), but the VM root filesystem, the Docker and cache disks, and all running processes are lost — the removal deletes the sandbox's named Docker and cache volumes along with it. Forge reads the current setting back from `msb inspect` rather than assuming it, and refuses to apply overrides when that read fails, so a LAN restriction is never assumed to hold.
 
 ## Environment Passthrough
 
@@ -261,6 +261,8 @@ The cache volume keeps its contents across msb's `--replace` recovery (the retry
 
 msb sandboxes are reusable: `msb exec` resolves a stopped or crashed sandbox by starting it in place, so a stop is never a correctness problem — only a restart. A stop is a full VM reboot that destroys in-memory state while on-disk state persists. Forge adopts an existing running or stopped sandbox without recreating it (reusing the same `forge-<worktree>` name), and relies on msb's start-in-place resolution instead of holding a separate keep-alive exec open.
 
+The shared host-session sandbox follows the project's sessions rather than one selected session: it is started in the background when the plugin loads, reused by every regular session that wants it, and removed when OpenCode exits. With `sandbox.hostSessions: false` it is created when the first session is toggled on and stops once no session wants it. A shared sandbox that fails to start leaves routed calls in the sessions that want it refused (with an error asking for a toggle off/on retry or `sandbox.hostSessions: false`), never falling back to the host; opted-out sessions are unaffected. Sessions whose directory lies outside the project root run on the host, because the shared sandbox mounts the project root.
+
 ## Large Command Output
 
 Shell output truncation is handled by opencode's native shell tool: when output exceeds the tool limit, the full output is spilled to opencode's tool-output directory on the host (readable from loop sessions, see below). The worktree `.forge/` scratch directory is added to git exclude so forge-written files are not committed.
@@ -278,7 +280,7 @@ The skill directories opencode actually loaded are bind-mounted **read-only** at
 
 ## File-Tool Boundary
 
-In a sandboxed session (a sandbox loop, its subagents and auditor, or a host session with the sandbox toggled on), the sandbox mounts are the boundary for every tool, including the file tools that run on the host. Before `read`, `write`, `edit`, or `patch` runs, Forge resolves each target path (relative paths against the workspace, `~` against the home directory, symlinks followed to their real location) and:
+In a sandboxed session (a sandbox loop, its subagents and auditor, or a host session whose sandbox preference is on), the sandbox mounts are the boundary for every tool, including the file tools that run on the host. Before `read`, `write`, `edit`, or `patch` runs, Forge resolves each target path (relative paths against the workspace, `~` against the home directory, symlinks followed to their real location) and:
 
 - refuses it when it lies outside every sandbox mount, so a symlink in the worktree pointing at `~/.ssh` is refused like the direct path;
 - refuses `write`, `edit`, and `patch` when the path lies in a read-only mount;
@@ -303,11 +305,11 @@ The mount is read-only because the setting exists to grant read access. To make 
 
 The TUI execution dialog can override these for a single loop when launching in Loop mode, and can turn the sandbox off for that loop. The overrides are persisted on the loop row and read back whenever its sandbox is (re)created, so a restarted loop keeps its resources and a loop launched with the sandbox off stays off. They apply when the loop's sandbox is created, and a per-loop setting can turn the sandbox off, never on when the server has `sandbox.enabled: false`. See [TUI → Loop Settings](tui.md#loop-settings).
 
-The `Host sandbox` menu overrides `cpus` and `memory` (and LAN access) for the project's host sandbox. The overrides are stored with the host sandbox's desired state, so they survive restarts. Unlike a loop's, they are also applied to a host sandbox that already exists: a CPU or memory change runs `msb modify <sandbox> --cpus <n> --memory <size> --restart`. msb cannot resize a running microVM live, so the sandbox restarts. Its root filesystem and the Docker and cache disks are kept; running processes, including the Docker daemon and its containers, are not. See [TUI → Host Sandbox Menu](tui.md#host-sandbox-menu). A failed resize is handled like a failed start: the sandbox is removed and the session is blocked until the sandbox is turned on again.
+The `Sandbox settings` dialog overrides `cpus` and `memory` (and LAN access) for the project's shared host-session sandbox, so they affect every session using it. The overrides are stored with the host sandbox's desired state, so they survive restarts. Unlike a loop's, they are also applied to a host sandbox that already exists: a CPU or memory change runs `msb modify <sandbox> --cpus <n> --memory <size> --restart`. msb cannot resize a running microVM live, so the sandbox restarts. Its root filesystem and the Docker and cache disks are kept; running processes, including the Docker daemon and its containers, are not. See [TUI → Host Sandbox](tui.md#host-sandbox). A failed resize is handled like a failed start: the sandbox is removed and the sessions that want it are blocked until a session is toggled off and on again.
 
 Every sandboxed request's context note states the sandbox's CPUs, memory, and LAN access. After the sandbox a session was using restarts (a resize) or is recreated (a LAN change, or turned off and on between two requests), the next request's note says so once and names what was lost, so the agent restarts services or reinstalls tooling instead of assuming they are still there.
 
-Both the container and host notes also say the project directory is shared between the host and the container, so dependency directories and native build output created in the other environment may be built for the wrong OS or architecture and must be deleted and rebuilt rather than only reinstalled. When a session's sandbox is turned off, its requests keep the host note — leading with the container-to-host change, probed once — on every request until the sandbox is turned on again, so the agent is not left reading container output as if it described the host.
+Both the container and host notes also say the project directory is shared between the host and the container, so dependency directories and native build output created in the other environment may be built for the wrong OS or architecture and must be deleted and rebuilt rather than only reinstalled. When a session's sandbox preference is turned off, its requests keep the host note — leading with the container-to-host change, probed once — on every request until it is turned back on, so the agent is not left reading container output as if it described the host.
 
 `memory` and `cpus` are exactly what the guest gets. There is no autoscaling: nothing observes memory pressure, so a build needing more than `memory` is OOM-killed rather than given more. Size `memory` for the peak of the heaviest command the sandbox will run.
 

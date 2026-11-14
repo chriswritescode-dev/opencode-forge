@@ -146,6 +146,11 @@ export function isSandboxConfigEnabled(config: PluginConfig | undefined): boolea
   return config?.sandbox?.enabled !== false
 }
 
+export function isHostSessionsDefaultEnabled(config: PluginConfig | undefined): boolean {
+  if (!isSandboxConfigEnabled(config)) return false
+  return config?.sandbox?.hostSessions !== false
+}
+
 export function resolveSandboxMountConfigs(config: PluginConfig | undefined): SandboxMountConfig[] {
   return [
     ...(config?.sandbox?.mounts ?? []),

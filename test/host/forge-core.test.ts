@@ -9,6 +9,7 @@ import {
   createLoopsRepo,
   createPlansRepo,
   createSessionAutoApproveRepo,
+  createSessionSandboxPreferencesRepo,
   initializeDatabase,
   SESSION_AUTO_APPROVE_KEY_PREFIX,
   SESSION_AUTO_APPROVE_TTL_MS,
@@ -50,7 +51,11 @@ describe('createForgeCore', () => {
     })
     const adapters: unknown[] = []
     core = await createForgeCore(
-      { dataDir: join(testDir, 'memory'), ...config },
+      {
+        dataDir: join(testDir, 'memory'),
+        ...config,
+        sandbox: { hostSessions: false, ...(config.sandbox ?? {}) },
+      },
       {
         directory: testDir,
         projectId,
@@ -128,10 +133,44 @@ describe('createForgeCore', () => {
   })
 
   test('resolveShellSandbox skips session lookups while no loop or host sandbox is active', async () => {
-    const built = await buildCore()
+    const built = await buildCore({ sandbox: { hostSessions: false } })
 
     await expect(built.core.resolveShellSandbox('ses_host_1')).resolves.toBeNull()
     expect(built.calls.some((call) => call.method === 'session.get')).toBe(false)
+  })
+
+  test('a deleted session drops its host sandbox preference entry and notifies the TUI', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { hostSessions: false } }, undefined, {
+      publishTuiEvent: (event) => events.push(event),
+    })
+
+    const seedDb = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createSessionSandboxPreferencesRepo(seedDb).setDesired(built.projectId, {
+        version: 2,
+        revision: 'rev-1',
+        sessions: { ses_host_1: true, ses_other: false },
+        requestedAt: 1,
+        overrides: { allowLan: true },
+      })
+    } finally {
+      closeDatabase(seedDb)
+    }
+
+    await built.core.onEvent({ event: { type: 'session.deleted', properties: { sessionID: 'ses_host_1' } } })
+    await settleTuiEvents()
+
+    const readDb = initializeDatabase(join(testDir, 'memory'))
+    try {
+      const desired = createSessionSandboxPreferencesRepo(readDb).getDesired(built.projectId)
+      expect(desired?.sessions).toEqual({ ses_other: false })
+      expect(desired?.overrides).toEqual({ allowLan: true })
+      expect(desired?.revision).not.toBe('rev-1')
+    } finally {
+      closeDatabase(readDb)
+    }
+    expect(events.filter((event) => event.type === 'hostSandboxChanged').length).toBeGreaterThan(0)
   })
 
   test('autoApprovesPermissions honors the per-session auto-approve flag', async () => {

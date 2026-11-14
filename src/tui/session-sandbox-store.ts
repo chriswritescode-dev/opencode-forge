@@ -10,6 +10,7 @@ export interface SessionSandboxPreference {
   applied: SessionSandboxAppliedState | null
   controller?: SessionSandboxControllerState | null
   activeLoopSandboxes?: Record<string, boolean>
+  hostSessionsDefault: boolean
   unavailable?: boolean
   unavailableReason?: string
 }
@@ -19,22 +20,32 @@ export function hostSandboxToggleBlocked(configEnabled: boolean): string | null 
   return null
 }
 
-export function deriveSessionSandboxAcknowledged(
-  pref: SessionSandboxPreference,
-): SessionSandboxAppliedState | null {
+export function isHostSandboxRunning(pref: SessionSandboxPreference): boolean {
   const { desired, applied } = pref
-  if (
-    desired &&
-    applied &&
-    desired.revision === applied.revision &&
-    desired.enabled &&
-    applied.enabled &&
-    desired.sessionId === applied.sessionId &&
-    applied.error == null
-  ) {
-    return applied
+  return !!desired
+    && !!applied
+    && desired.revision === applied.revision
+    && applied.running
+    && applied.error === null
+}
+
+export type ParentSessionIdResolver = (sessionId: string) => string | null | undefined
+
+export function isSessionSandboxWanted(
+  pref: SessionSandboxPreference,
+  sessionId: string,
+  getParentSessionId?: ParentSessionIdResolver,
+): boolean {
+  const sessions = pref.desired?.sessions
+  if (!sessions) return pref.hostSessionsDefault
+  const visited = new Set<string>()
+  let current: string | null | undefined = sessionId
+  while (current !== null && current !== undefined && !visited.has(current)) {
+    visited.add(current)
+    if (Object.hasOwn(sessions, current)) return sessions[current]
+    current = getParentSessionId?.(current)
   }
-  return null
+  return pref.hostSessionsDefault
 }
 
 export function isSessionSandboxPreferenceSettled(pref: SessionSandboxPreference): boolean {
@@ -49,30 +60,19 @@ export type SessionSandboxDisplayStatus = 'enabled' | 'disabled' | 'loading' | '
 export function deriveSessionSandboxDisplayStatus(
   pref: SessionSandboxPreference | null,
   sessionId?: string,
+  getParentSessionId?: ParentSessionIdResolver,
 ): SessionSandboxDisplayStatus {
   if (!pref || !sessionId) return 'disabled'
   if (pref.activeLoopSandboxes && Object.hasOwn(pref.activeLoopSandboxes, sessionId)) {
     return pref.activeLoopSandboxes[sessionId] ? 'enabled' : 'disabled'
   }
+  if (!isSessionSandboxWanted(pref, sessionId, getParentSessionId)) return 'disabled'
   const controller = pref.controller
-  if (
-    controller &&
-    controller.revision === pref.desired?.revision &&
-    controller.sessionId === sessionId
-  ) {
-    if (controller.phase === 'loading' && pref.desired?.enabled) return 'loading'
+  if (controller && controller.revision === pref.desired?.revision) {
+    if (controller.phase === 'loading') return 'loading'
     if (controller.phase === 'failed') return 'failed'
   }
-  const acknowledged = deriveSessionSandboxAcknowledged(pref)
-  if (acknowledged?.sessionId === sessionId) return 'enabled'
-  if (
-    pref.desired?.sessionId === sessionId &&
-    pref.desired.enabled &&
-    isSessionSandboxPreferenceSettled(pref)
-  ) {
-    return 'failed'
-  }
-  if (pref.desired?.sessionId === sessionId && !isSessionSandboxPreferenceSettled(pref)) return 'loading'
-  return 'disabled'
+  if (isHostSandboxRunning(pref)) return 'enabled'
+  if (isSessionSandboxPreferenceSettled(pref) && pref.applied?.error) return 'failed'
+  return 'loading'
 }
-

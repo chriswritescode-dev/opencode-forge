@@ -10,6 +10,7 @@ The TUI surface provides:
 
 - the [Execution Dialog](#execution-dialog) (`Execute plan`, `tui.keybinds.executePlan`) with plan, model, variant, loop-name, and loop-settings selection. It launches through the server plugin's `executePlan` RPC method, which runs the same execution service as the `execute-plan` tool, and restarts a loop through the server's `loopRestart` RPC
 - `Build sandbox template`
+- the `Toggle sandbox` palette command (and `tui.keybinds.toggleHostSandbox`), which turns the shared host-session sandbox on or off for the current session, and `Sandbox settings` (and `tui.keybinds.sandboxSettings`), which sets the shared project sandbox's CPUs, memory, and LAN access
 - auto-follow of replacement code and auditor sessions when a loop you are viewing rotates. Subagent sessions and sessions outside the loop worktree are not followed.
 - the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project, listing up to three loops — running loops first, then the most recent finished ones — each as a status-colored bullet with the truncated loop name, status, and `iteration/max`, read through the `loopSidebar` RPC on every `loopsChanged` push. A running loop shows `▸` instead of the bullet; clicking its row expands it to the current phase and how long it has been in it, then the section (`Section n/total`, when the loop has sections) and the loop's total elapsed time. The phase and start times come from the server with the rows; while a loop is expanded the TUI only advances the clocks locally
 - the `Open dashboard` palette command (and `tui.keybinds.dashboard`), which opens the full-screen [Dashboard](dashboard.md)
@@ -27,7 +28,7 @@ Options come from forge-config `tui`; plugin options set on the `cli.json` entry
 
 The sidebar shows the Forge title (with version when `tui.showVersion` is on) and the project's loops. Captured plans live on the server in the `plansRepo` SQL store; the TUI keeps no local archive or in-TUI editor.
 
-When sandboxing is configured, the sidebar displays the current session's msb state as `· MSB enabled/disabled/loading/failed` next to the Forge title. The `Toggle sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, open the [host sandbox menu](#host-sandbox-menu), which requests a desired sandbox state for the current session and its Task subagents through the Forge server RPC; the server reconciles the request, acknowledges the applied revision, and routes the session's shell, `glob`, and `grep` calls into the sandbox. The server's `sandbox.enabled` decides availability, so the indicator is hidden and the request is refused when the attached server has sandboxing disabled. While it is on, permission prompts in those sessions are resolved to allow or deny without prompting unless `sandbox.autoApprovePermissions` is `false` (see [Sandbox](sandbox.md#permission-auto-approval)). The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
+When sandboxing is configured, the sidebar displays the current session's msb state as `· MSB enabled/disabled/loading/failed` next to the Forge title. The `Toggle sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, flip the current session's sandbox preference directly, with no menu: the server reconciles the request, acknowledges the applied revision, and routes the session's shell, `glob`, and `grep` calls into the project's shared host-session sandbox (or back to the host). Other sessions of the project keep their own preference; the sandbox they share is the same one. The server's `sandbox.enabled` decides availability, so the indicator is hidden and the request is refused when the attached server has sandboxing disabled. With `sandbox.hostSessions` on (the default) the shared sandbox is already running, so a new session joins it without waiting; with it off, nothing is sandboxed until a session is toggled on. While the session is sandboxed, permission prompts in it and its subagents are resolved to allow or deny without prompting unless `sandbox.autoApprovePermissions` is `false` (see [Sandbox](sandbox.md#permission-auto-approval)). The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
 
 When auto-approve is on for the current session, including when it is inherited from a parent session, the sidebar displays `· AUTO` next to the Forge title. The `Toggle auto-approve` palette command, and optional `tui.keybinds.toggleAutoApprove` binding, turn it on or off for the current session and its Task subagents; in a subagent that inherits it, the toggle is refused and names the parent session to toggle instead. The TUI reads and changes the state through the Forge server RPC rather than the local Forge database, so it also works when the TUI is attached to a remote OpenCode server running Forge. It is applied server-side through OpenCode's `permission.evaluate` hook, so it follows the session and its subagents regardless of which TUI is showing it, and it expires after 15 days without session activity (prompts and auto-approved requests). While on, nothing prompts: a request OpenCode would `ask` is resolved to deny or allow. It is denied when it matches an `autoApprove.deny` rule (see [Configuration → Auto-Approve](configuration.md#auto-approve)); otherwise it is allowed, including requests that match an explicit OpenCode `ask` rule. OpenCode `deny` rules still deny. It is refused for loop sessions, whose ruleset already allows everything not denied, and enabling it while the host sandbox is off warns that approved commands run directly on the machine. Unlike OpenCode's built-in Auto mode (`session.permissions: "autoaccept"`), which approves requests from every session on the server, this is scoped to the one session and its subagents; keep the built-in setting at `"prompt"`.
 
@@ -35,7 +36,8 @@ When auto-approve is on for the current session, including when it is inherited 
 
 | Command | Description |
 |---------|-------------|
-| `Toggle sandbox` | Turn the sandbox on or off for the current session and set its CPUs, memory, and LAN access |
+| `Toggle sandbox` | Turn the shared host-session sandbox on or off for the current session |
+| `Sandbox settings` | Set the shared project sandbox's CPUs, memory, and LAN access |
 | `Toggle auto-approve` | Turn per-session auto-approve on or off for the current session |
 | `Build sandbox template` | Build, save, and load the sandbox template image |
 | `Open dashboard` | Open the Forge dashboard pages in the TUI |
@@ -44,17 +46,21 @@ When auto-approve is on for the current session, including when it is inherited 
 
 The dashboard lists every project's loops, findings, and plans, with search across projects, loops, and plans. Each loop has a page with Overview, Timeline (including a text state-machine diagram), Sections, Findings, Plan, and Usage tabs. It updates from `loopsChanged` and `plansChanged` pushes and refetches after a reconnect; it never polls. Those pushes come only from Forge plugin instances loaded in the same OpenCode server process, so changes written by another OpenCode process that shares the same Forge database appear after reopening the dashboard or pressing `r`. Every value arrives over RPC, so it also works against a remote server. See [Dashboard](dashboard.md) for keys and details.
 
-### Host Sandbox Menu
+### Host Sandbox
 
-The project has one host sandbox, bound to one session at a time. The menu shows:
+The project has one host-session sandbox, shared by every session that wants it; each session has its own preference for joining it, while the sandbox's CPUs, memory, and LAN access belong to the project.
 
-- **Sandbox** — on, off, starting, or failed for the current session. Pressing enter turns it on (moving it from another session if needed) or off, and sends any changed settings below in the same request, then closes the menu.
+`Toggle sandbox` (`forge.sandbox.toggleHost`, optional `tui.keybinds.toggleHostSandbox` binding) flips the current session's preference immediately, with no menu, for the session and its Task subagents: off runs it on the host while other sessions keep the shared sandbox, on joins the shared sandbox. The server acknowledges the applied revision. The command is refused when the attached server has `sandbox.enabled: false`, and with `sandbox.hostSessions: false` it is what opts a session in.
+
+`Sandbox settings` (`forge.sandbox.settings`, optional `tui.keybinds.sandboxSettings` binding) opens a dialog for the shared project sandbox:
+
 - **CPUs**, **Memory** — resource overrides, validated like the loop settings. Defaults come from the server's `sandbox.resources` and are marked `(default)`.
 - **LAN access** — whether the sandbox can reach private (LAN) address ranges, which msb blocks by default. The default is the server's `sandbox.network.allowLan`.
 - **Reset to defaults** — clears every override.
-- **Apply settings** — shown when a setting changed; sends the changes without turning the sandbox on or off. **Discard changes** closes without sending.
+- **Apply settings** — shown when a setting changed; sends the changes without changing any session's on/off preference.
+- **Done** — closes without sending anything.
 
-Edits are collected until the sandbox is turned on or off, or the settings are applied, so several edits cost one restart. The settings are saved for the project and survive restarts. On a running sandbox, a CPU or memory change restarts it in place: files, installed packages, and the Docker and cache disks are kept, but running processes stop. A LAN access change removes and recreates the sandbox, because msb sets network policy only when a sandbox is created. Host bind mounts survive, but the VM root filesystem, the Docker and cache disks, and all running processes are lost (the removal deletes the sandbox's named Docker and cache volumes), so the menu asks for confirmation first. Disk sizes are not offered because an existing sandbox cannot change them. The agent is told about the new resources, and that the sandbox restarted or was recreated, on its next request (see [Sandbox → Resource Defaults](sandbox.md#resource-defaults)).
+Edits are collected until they are applied, so several edits cost one restart. The settings are saved for the project, so they affect the shared sandbox and every session using it, and survive restarts. On a running sandbox, a CPU or memory change restarts it in place: files, installed packages, and the Docker and cache disks are kept, but running processes stop. A LAN access change removes and recreates the sandbox, because msb sets network policy only when a sandbox is created. Host bind mounts survive, but the VM root filesystem, the Docker and cache disks, and all running processes are lost (the removal deletes the sandbox's named Docker and cache volumes), so the dialog asks for confirmation first. Disk sizes are not offered because an existing sandbox cannot change them. The agent is told about the new resources, and that the sandbox restarted or was recreated, on its next request (see [Sandbox → Resource Defaults](sandbox.md#resource-defaults)).
 
 ## Execution Dialog
 
@@ -122,4 +128,4 @@ TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the 
 }
 ```
 
-Set `sidebar` to `false` to disable the widget and the plan-execution commands. Session-rotation following plus the dashboard, sandbox-template build, host-sandbox toggle, and auto-approve toggle commands remain available.
+Set `sidebar` to `false` to disable the widget and the plan-execution commands. Session-rotation following plus the dashboard, sandbox-template build, host-sandbox toggle and settings, and auto-approve toggle commands remain available.

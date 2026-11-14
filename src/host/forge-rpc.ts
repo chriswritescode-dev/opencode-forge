@@ -134,6 +134,7 @@ export type ForgeLoopRestartOutput = { sessionId: string } | ForgeRpcError
 
 export interface ForgeHostSandboxState {
   configEnabled: boolean
+  hostSessionsDefault: boolean
   desired: SessionSandboxDesiredState | null
   applied: SessionSandboxAppliedState | null
   controller: SessionSandboxControllerState | null
@@ -404,6 +405,7 @@ export const FORGE_RPC = {
         type: 'object',
         properties: {
           configEnabled: { type: 'boolean' },
+          hostSessionsDefault: { type: 'boolean' },
           desired: OBJECT,
           applied: OBJECT,
           controller: OBJECT,
@@ -655,6 +657,7 @@ export function readForgeLoopRestartOutput<P>(payload: P): ForgeLoopRestartOutpu
 
 const hostSandboxStateSchema = z.object({
   configEnabled: z.boolean(),
+  hostSessionsDefault: z.boolean().optional().catch(undefined),
   desired: desiredStateSchema.nullable().catch(null),
   applied: appliedStateSchema.nullable().catch(null),
   controller: controllerStateSchema.nullable().catch(null),
@@ -668,6 +671,7 @@ export function readForgeHostSandboxState<P>(payload: P): ForgeHostSandboxStateO
     const data = parsed.data
     const state: ForgeHostSandboxState = {
       configEnabled: data.configEnabled,
+      hostSessionsDefault: data.hostSessionsDefault ?? false,
       desired: data.desired,
       applied: data.applied,
       controller: data.controller,

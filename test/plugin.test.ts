@@ -146,8 +146,13 @@ describe('createForgeCore', () => {
     const fake = options.client || options.makeClient ? null : createFakeForgeClient()
     const client = options.client ?? (options.makeClient ? options.makeClient(projectId) : fake!.client)
     const calls: RecordedCall[] = fake?.calls ?? []
+    const requestedConfig = options.config ?? { dataDir: join(testDir, 'memory') }
+    const config: PluginConfig = {
+      ...requestedConfig,
+      sandbox: { hostSessions: false, ...(requestedConfig.sandbox ?? {}) },
+    }
     const core = await (options.createCore ?? createForgeCore)(
-      options.config ?? { dataDir: join(testDir, 'memory') },
+      config,
       {
         directory,
         projectId,
@@ -442,10 +447,9 @@ describe('createForgeCore', () => {
 
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r-init',
-      enabled: true,
-      sessionId: 'ses-root',
+      sessions: { 'ses-root': true },
       requestedAt: Date.now(),
     })
     closeDatabase(setupDb)
@@ -504,7 +508,7 @@ describe('createForgeCore', () => {
     db = initializeDatabase(config.dataDir!)
     const appliedAfterCleanup = createSessionSandboxPreferencesRepo(db).getApplied(projectId)
     expect(appliedAfterCleanup).not.toBeNull()
-    expect(appliedAfterCleanup!.enabled).toBe(false)
+    expect(appliedAfterCleanup!.running).toBe(false)
     expect(appliedAfterCleanup!.error).toBeNull()
     expect(appliedAfterCleanup!.revision).toBe('r-init')
     closeDatabase(db)
@@ -514,7 +518,7 @@ describe('createForgeCore', () => {
     const projectId = uniqueProjectId()
     const config: PluginConfig = {
       dataDir: join(testDir, 'memory'),
-      sandbox: { mode: 'msb' },
+      sandbox: { mode: 'msb', enabled: false, hostSessions: true },
     }
     const failingClient = createFakeForgeClient({
       session: {
@@ -524,7 +528,11 @@ describe('createForgeCore', () => {
       },
     }).client
 
-    const built = await buildCore({ config, projectId, client: failingClient })
+    const built = await buildCore({
+      config,
+      projectId,
+      client: failingClient,
+    })
 
     for (const tool of ['read', 'edit', 'write']) {
       await expect(
@@ -540,7 +548,7 @@ describe('createForgeCore', () => {
     const projectId = uniqueProjectId()
     const config: PluginConfig = {
       dataDir: join(testDir, 'memory'),
-      sandbox: { mode: 'msb' },
+      sandbox: { mode: 'msb', hostSessions: false },
     }
 
     const built = await buildCore({
@@ -554,19 +562,18 @@ describe('createForgeCore', () => {
     await expect(built.core.resolveShellSandbox('ses-unrelated')).resolves.toBeNull()
   })
 
-  test('a failed host-sandbox start makes the selected session fail closed while others stay host', async () => {
+  test('a failed host-sandbox start makes every host session fail closed', async () => {
     const projectId = uniqueProjectId()
     const config: PluginConfig = {
       dataDir: join(testDir, 'memory'),
-      sandbox: { mode: 'msb' },
+      sandbox: { mode: 'msb', hostSessions: true },
     }
 
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r-fail',
-      enabled: true,
-      sessionId: 'ses-selected',
+      sessions: { 'ses-selected': true },
       requestedAt: Date.now(),
     })
     closeDatabase(setupDb)
@@ -583,12 +590,10 @@ describe('createForgeCore', () => {
         makeClient: (id) => sessionResolvingClient(testDir, id),
       })
 
-      // The selected session's start failed, so its shell must fail closed rather than fall through to
-      // the host shell.
+      // The failed start refuses the shell for every host session of the project rather than falling
+      // through to the host shell.
       await expect(built.core.resolveShellSandbox('ses-selected')).rejects.toThrow(/unavailable/)
-
-      // An unrelated host session is unaffected and falls through to the host shell.
-      await expect(built.core.resolveShellSandbox('ses-unrelated')).resolves.toBeNull()
+      await expect(built.core.resolveShellSandbox('ses-unrelated')).rejects.toThrow(/unavailable/)
 
       // Permission auto-approval never applies when the sandbox cannot be resolved or is absent.
       await expect(built.core.autoApprovesPermissions('ses-selected')).resolves.toBe(false)
@@ -608,10 +613,9 @@ describe('createForgeCore', () => {
 
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r-shared',
-      enabled: true,
-      sessionId: 'ses-root',
+      sessions: { 'ses-root': true },
       requestedAt: Date.now(),
     })
     closeDatabase(setupDb)
@@ -641,7 +645,7 @@ describe('createForgeCore', () => {
     await second.core.cleanup()
     db = initializeDatabase(config.dataDir!)
     const applied = createSessionSandboxPreferencesRepo(db).getApplied(projectId)
-    expect(applied?.enabled).toBe(false)
+    expect(applied?.running).toBe(false)
     expect(applied?.error).toBeNull()
     closeDatabase(db)
   })
@@ -654,10 +658,9 @@ describe('createForgeCore', () => {
     }
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r-copies',
-      enabled: true,
-      sessionId: 'ses-root',
+      sessions: { 'ses-root': true },
       requestedAt: Date.now(),
     })
     closeDatabase(setupDb)
@@ -679,7 +682,7 @@ describe('createForgeCore', () => {
     await second.core.cleanup()
     db = initializeDatabase(config.dataDir!)
     const applied = createSessionSandboxPreferencesRepo(db).getApplied(projectId)
-    expect(applied?.enabled).toBe(false)
+    expect(applied?.running).toBe(false)
     expect(applied?.error).toBeNull()
     closeDatabase(db)
   })
@@ -695,10 +698,9 @@ describe('createForgeCore', () => {
 
     const setupDb = initializeDatabase(dataDir)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r-root',
-      enabled: true,
-      sessionId: 'ses-root',
+      sessions: { 'ses-root': true },
       requestedAt: Date.now(),
     })
     closeDatabase(setupDb)
@@ -742,10 +744,9 @@ describe('createForgeCore', () => {
 
     const writerDb = initializeDatabase(dataDir)
     createSessionSandboxPreferencesRepo(writerDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r-root-after-worktree',
-      enabled: true,
-      sessionId: 'ses-root',
+      sessions: { 'ses-root': true },
       requestedAt: Date.now(),
     })
     closeDatabase(writerDb)
@@ -768,10 +769,9 @@ describe('createForgeCore', () => {
 
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r1',
-      enabled: true,
-      sessionId: 'ses-1',
+      sessions: { 'ses-1': true },
       requestedAt: Date.now(),
     })
     closeDatabase(setupDb)
@@ -783,16 +783,15 @@ describe('createForgeCore', () => {
       makeClient: (id) => sessionResolvingClient(testDir, id),
     })
 
-    await expect(globBefore(survivor.core, 'ses-1', 'c1')).rejects.toThrow(/unavailable/)
-
     await first.core.cleanup()
+
+    await expect(globBefore(survivor.core, 'ses-1', 'c1')).rejects.toThrow(/unavailable/)
 
     const writerDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(writerDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r2',
-      enabled: true,
-      sessionId: 'ses-2',
+      sessions: { 'ses-2': true },
       requestedAt: Date.now(),
     })
     closeDatabase(writerDb)
@@ -813,11 +812,11 @@ describe('createForgeCore', () => {
     expect(applied?.error).toBeTruthy()
   })
 
-  test('unavailable sandbox runtime acknowledges a requested ON as OFF-with-error and blocks the selected session', async () => {
+  test('unavailable sandbox runtime acknowledges a requested ON as OFF-with-error and blocks host sessions', async () => {
     const projectId = uniqueProjectId()
     const config: PluginConfig = {
       dataDir: join(testDir, 'memory'),
-      sandbox: { mode: 'msb', enabled: false },
+      sandbox: { mode: 'msb', enabled: false, hostSessions: true },
     }
 
     // Persist a desired ON for a selected session. Sandbox routing is unavailable (disabled), so
@@ -825,10 +824,9 @@ describe('createForgeCore', () => {
     // OFF-with-error at the matching revision and blocks the selected session fail-closed.
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r-unavail',
-      enabled: true,
-      sessionId: 'ses-selected',
+      sessions: { 'ses-selected': true },
       requestedAt: Date.now(),
     })
     closeDatabase(setupDb)
@@ -847,11 +845,12 @@ describe('createForgeCore', () => {
     const applied = createSessionSandboxPreferencesRepo(db).getApplied(projectId)
     expect(applied).not.toBeNull()
     expect(applied!.revision).toBe('r-unavail')
-    expect(applied!.enabled).toBe(false)
+    expect(applied!.running).toBe(false)
     expect(applied!.error).toBeTruthy()
     closeDatabase(db)
 
-    // An unrelated host session is unaffected and falls through to the host shell.
+    // Sandboxing is disabled, so the host default is off: a session that did not opt in falls back to
+    // host execution instead of routing into the failed project sandbox.
     await expect(globBefore(built.core, 'ses-unrelated', 'c2')).resolves.toBeUndefined()
 
     await built.core.cleanup()
@@ -870,10 +869,9 @@ describe('createForgeCore', () => {
 
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
-      version: 1,
+      version: 2,
       revision: 'r-manager-fail',
-      enabled: true,
-      sessionId: 'ses-selected',
+      sessions: { 'ses-selected': true },
       requestedAt: Date.now(),
     })
     closeDatabase(setupDb)
@@ -892,7 +890,7 @@ describe('createForgeCore', () => {
     const applied = createSessionSandboxPreferencesRepo(db).getApplied(projectId)
     expect(applied).not.toBeNull()
     expect(applied!.revision).toBe('r-manager-fail')
-    expect(applied!.enabled).toBe(false)
+    expect(applied!.running).toBe(false)
     expect(applied!.error).toBeTruthy()
     closeDatabase(db)
 

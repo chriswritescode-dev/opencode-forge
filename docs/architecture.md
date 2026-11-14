@@ -66,7 +66,7 @@ The TUI plugin provides:
 - The current session's msb state next to the Forge title when sandboxing is configured
 - An execution dialog with plan paste, mode, model, variant, and per-loop settings (iterations, sandbox on/off, resources), also used to restart a loop
 - The full-screen dashboard: a searchable project list, Loops/Findings/Plans sections, and per-loop detail with Overview, Timeline, Sections, Findings, Plan, and Usage tabs
-- Command palette integration (`Execute plan`, `Open dashboard`, `Build sandbox template`, `Toggle sandbox`)
+- Command palette integration (`Execute plan`, `Open dashboard`, `Build sandbox template`, `Toggle sandbox`, `Sandbox settings`)
 - Model selection with recent-model tracking
 
 The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`): `executePlan` for plan launches (an optional `branch`/`baseRef` picks the worktree branch and its base commit, and a loop launch reports the resulting `branch`), `loopDefaults` for the execution dialog's default iterations and sandbox resources, and `autoApproveState`/`autoApproveSet` for per-session auto-approve (served by the core in `src/host/forge-core.ts`), and, served by `src/services/tui-rpc-service.ts`, `loops`/`loopSidebar` for the loop list and sidebar, `sessionPlan` for the stored plan (optionally another project's plan via `projectId`), `loopRestart` for loop restarts, `hostSandboxState`/`hostSandboxSet` for the host-session sandbox, and `worktrees` for the server's Forge worktree directories, plus, served by `src/host/forge-rpc-dashboard.ts` through `DashboardService` in `src/services/dashboard-service.ts`, `dashboardSummary`/`loopDetail`/`projectFindings`/`amendmentDiff`/`planDelete` for the dashboard; `version` reports the server plugin version. The server pushes `toast`, `sessionDelete`, `loopsChanged`, `plansChanged`, `autoApproveChanged`, and `hostSandboxChanged` events; the TUI never polls — it fetches at startup, when one of these events arrives for its project, when the open session changes, and on `server.connected` after a reconnect. The OpenCode client ends an RPC event subscription for good when its shared event connection closes or the subscriber overflows, so `followRpcEvent` (`src/tui/v2-client.ts`) resubscribes each event stream and re-reads the state that stream drives. The TUI holds no Forge database of its own: every value it shows, the dashboard included, arrives over `FORGE_RPC`, so it works attached to a remote OpenCode server running Forge.
@@ -120,8 +120,8 @@ Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with dr
 - **SandboxManager** (`sandbox/manager.ts`) - Sandbox lifecycle management
 - **SandboxContext** (`sandbox/context.ts`) - Tool call redirection
 - **SandboxTools** (`hooks/sandbox-tools.ts`) - Hooks for sandbox integration
-- **SandboxMessage** (`hooks/sandbox-message.ts`) - Adds the sandbox context note to every sandboxed request, and after the sandbox is turned off repeats the host note on every request until it is turned back on
-- **SessionSandboxController** (`sandbox/session-controller.ts`) - Host-session sandbox selection and reconciliation
+- **SandboxMessage** (`hooks/sandbox-message.ts`) - Adds the sandbox context note to every sandboxed request, and after a session's sandbox preference is turned off repeats the host note on every request until it is turned back on
+- **SessionSandboxController** (`sandbox/session-controller.ts`) - Shared host-session sandbox plus per-session preference reconciliation
 - **Shell shim** (`sandbox/shell-shim.ts`) - Generated shim routing the native `shell` tool through `msb exec`
 
 ### How It Works
@@ -229,7 +229,7 @@ All data access goes through typed repository interfaces created via factory fun
 | `PlanAmendmentsRepo` | Append-only audit trail of mid-loop plan amendments | `PlanAmendmentRow` |
 | `LoopSessionUsageRepo` | Per-session token/cost usage across rotated loop sessions | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `LoopAttemptsRepo` | Durable audit-attempt history | `LoopAttemptsRepo` |
-| `SessionSandboxPreferencesRepo` | Desired/applied host-session sandbox state (stored as `tui_preferences` JSON keys) | `SessionSandboxPreferencesRepo` |
+| `SessionSandboxPreferencesRepo` | Desired/applied per-session host-sandbox preference (stored as `tui_preferences` JSON keys) | `SessionSandboxPreferencesRepo` |
 | `SessionAutoApproveRepo` | Per-session auto-approve state (stored as TTL-scoped `tui_preferences` JSON keys) | `SessionAutoApproveRepo` |
 
 Each repository is project-scoped via `projectId` parameter.
@@ -249,7 +249,7 @@ The plugin follows this initialization sequence within `createForgeCore()`:
 5. **Database** - Initialize SQLite storage (`initializeDatabase()`)
 6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, transitions, planAmendments, attempts, sessionSandboxPreferences, sessionAutoApprove)
 7. **Loop Event Handler** - Connect loop runtime to events and state management
-8. **Session Sandbox Controller** - Reconcile the host-session sandbox selection
+8. **Session Sandbox Controller** - Start the shared host-session sandbox and reconcile per-session preferences
 9. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
 10. **Hooks** - Final registration of all hook points
 

@@ -8,6 +8,7 @@ import {
 } from '../host/forge-rpc'
 import {
   hostSandboxToggleBlocked,
+  isSessionSandboxWanted,
   type SessionSandboxPreference,
 } from './session-sandbox-store'
 import { createRefetchCoordinator } from './refetch-coordinator'
@@ -19,13 +20,14 @@ export interface HostSandboxToggleDeps {
   readState(): Promise<ForgeHostSandboxStateOutput>
   setState(input: ForgeHostSandboxSetInput): Promise<ForgeHostSandboxSetOutput>
   currentSessionId(): string | null
+  getParentSessionId?(sessionId: string): string | null | undefined
   toast(input: ForgeToastInput): void
 }
 
 export interface HostSandboxToggle {
   preference: Accessor<SessionSandboxPreference | null>
   refresh(): void
-  toggle(overrides?: SandboxOverrides): Promise<void>
+  toggle(): Promise<void>
   setOverrides(overrides: SandboxOverrides): Promise<void>
   dispose(): void
 }
@@ -36,21 +38,22 @@ const OVERRIDES_ACK_TIMEOUT_MS = 120_000
 function preferencesEqual(a: SessionSandboxPreference | null, b: SessionSandboxPreference | null): boolean {
   if (a === b) return true
   if (!a || !b) return false
-  return JSON.stringify([a.desired, a.applied, a.controller, a.activeLoopSandboxes])
-    === JSON.stringify([b.desired, b.applied, b.controller, b.activeLoopSandboxes])
+  return JSON.stringify([a.desired, a.applied, a.controller, a.activeLoopSandboxes, a.hostSessionsDefault])
+    === JSON.stringify([b.desired, b.applied, b.controller, b.activeLoopSandboxes, b.hostSessionsDefault])
 }
 
 function preferenceFrom(state: ForgeRpcError): SessionSandboxPreference
 function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPreference | null
 function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPreference | null {
   if ('error' in state) {
-    return { desired: null, applied: null, unavailable: true, unavailableReason: state.error }
+    return { desired: null, applied: null, hostSessionsDefault: false, unavailable: true, unavailableReason: state.error }
   }
   if (!state.configEnabled) return null
   const preference: SessionSandboxPreference = {
     desired: state.desired,
     applied: state.applied,
     controller: state.controller,
+    hostSessionsDefault: state.hostSessionsDefault,
   }
   if (state.activeLoopSandboxes) preference.activeLoopSandboxes = state.activeLoopSandboxes
   return preference
@@ -58,6 +61,7 @@ function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPrefe
 
 interface SandboxWaiter {
   revision: string
+  tolerateAppliedError: boolean
   cancelled: boolean
   resolve(applied: SessionSandboxAppliedState): void
   reject(error: Error): void
@@ -71,7 +75,7 @@ interface SandboxWaiterHandle {
 
 function createSandboxWaiter(
   revision: string,
-  options: { timeoutMs: number; signal: AbortSignal },
+  options: { timeoutMs: number; signal: AbortSignal; tolerateAppliedError?: boolean },
 ): SandboxWaiterHandle {
   let settled = false
   let resolvePromise: (applied: SessionSandboxAppliedState) => void = () => {}
@@ -97,6 +101,7 @@ function createSandboxWaiter(
   else options.signal.addEventListener('abort', onAbort, { once: true })
   const waiter: SandboxWaiter = {
     revision,
+    tolerateAppliedError: options.tolerateAppliedError === true,
     cancelled: false,
     resolve: (applied) => finish(applied),
     reject: (error) => finish(error),
@@ -119,7 +124,7 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     const applied = next?.applied
     if (applied && applied.revision === current.revision) {
       waiter = null
-      if (applied.error !== null) current.reject(new Error(applied.error))
+      if (applied.error !== null && !current.tolerateAppliedError) current.reject(new Error(applied.error))
       else current.resolve(applied)
       return
     }
@@ -140,12 +145,18 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
   const coordinator = createRefetchCoordinator(refresh)
   coordinator.trigger()
 
+  const loadedPreference = (): SessionSandboxPreference | null => {
+    const loaded = preference()
+    return loaded && loaded.unavailable !== true ? loaded : null
+  }
+
   interface HostSandboxRequest {
     build(current: SessionSandboxPreference, sessionId: string): Omit<ForgeHostSandboxSetInput, 'sessionId'> | null
     label: string
     timeoutMs: number
     success(applied: SessionSandboxAppliedState): string
     guidance(): string
+    tolerateAppliedError?(): boolean
   }
 
   const request = async (spec: HostSandboxRequest): Promise<void> => {
@@ -154,19 +165,22 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
       deps.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
       return
     }
-    const state = await deps.readState()
-    if (lifecycle.signal.aborted) return
-    if ('error' in state) {
-      setPreference(preferenceFrom(state))
-      deps.toast({ message: `${spec.label} unavailable: ${state.error}`, variant: 'warning', duration: 5000 })
-      return
+    let current = loadedPreference()
+    if (!current) {
+      const state = await deps.readState()
+      if (lifecycle.signal.aborted) return
+      if ('error' in state) {
+        setPreference(preferenceFrom(state))
+        deps.toast({ message: `${spec.label} unavailable: ${state.error}`, variant: 'warning', duration: 5000 })
+        return
+      }
+      const blocked = hostSandboxToggleBlocked(state.configEnabled)
+      if (blocked) {
+        deps.toast({ message: blocked, variant: 'warning', duration: 5000 })
+        return
+      }
+      current = preferenceFrom(state)
     }
-    const blocked = hostSandboxToggleBlocked(state.configEnabled)
-    if (blocked) {
-      deps.toast({ message: blocked, variant: 'warning', duration: 5000 })
-      return
-    }
-    const current = preferenceFrom(state)
     if (!current) return
     const change = spec.build(current, sessionId)
     if (!change) return
@@ -182,7 +196,11 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
         return
       }
       revision = result.revision
-      const created = createSandboxWaiter(revision, { timeoutMs: spec.timeoutMs, signal: lifecycle.signal })
+      const created = createSandboxWaiter(revision, {
+        timeoutMs: spec.timeoutMs,
+        signal: lifecycle.signal,
+        tolerateAppliedError: spec.tolerateAppliedError?.() === true,
+      })
       pending = created.waiter
       waiter = created.waiter
       coordinator.trigger()
@@ -200,21 +218,20 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     }
   }
 
-  const toggle = async (overrides?: SandboxOverrides): Promise<void> => {
+  const toggle = async (): Promise<void> => {
     let enabling = true
     await request({
       label: 'Sandbox toggle',
-      timeoutMs: overrides ? OVERRIDES_ACK_TIMEOUT_MS : TOGGLE_ACK_TIMEOUT_MS,
+      timeoutMs: TOGGLE_ACK_TIMEOUT_MS,
       build: (current, sessionId) => {
-        enabling = !(current.desired?.enabled === true && current.desired.sessionId === sessionId)
-        const input: Omit<ForgeHostSandboxSetInput, 'sessionId'> = { enabled: enabling }
-        if (overrides) input.overrides = overrides
-        return input
+        enabling = !isSessionSandboxWanted(current, sessionId, deps.getParentSessionId)
+        return { enabled: enabling }
       },
-      success: (applied) => applied.enabled
-        ? 'Host sandbox enabled for this session. Agent shell, glob, and grep calls run in the sandbox; commands you run yourself stay on the host.'
-        : 'Host sandbox disabled for this session',
+      success: () => enabling
+        ? 'Sandbox on for this session. Agent shell, glob, and grep calls run in the project\'s shared sandbox; commands you run yourself stay on the host.'
+        : 'Sandbox off for this session; its agent shell, glob, and grep calls run on the host. Other sessions keep the shared sandbox.',
       guidance: () => enabling ? 'Toggle off, then on to retry.' : 'Toggle again to retry disabling.',
+      tolerateAppliedError: () => !enabling,
     })
   }
 
@@ -222,9 +239,9 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     label: 'Sandbox settings',
     timeoutMs: OVERRIDES_ACK_TIMEOUT_MS,
     build: () => ({ overrides }),
-    success: (applied) => applied.enabled
-      ? 'Host sandbox settings applied'
-      : 'Host sandbox settings saved; they apply when the sandbox is next turned on',
+    success: (applied) => applied.running
+      ? 'Shared sandbox settings applied'
+      : 'Sandbox settings saved; they apply when the shared sandbox next starts',
     guidance: () => 'Change the setting again to retry.',
   })
 
