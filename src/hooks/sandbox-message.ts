@@ -1,6 +1,11 @@
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
-import { buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
+import {
+  buildSandboxContextNote,
+  buildSandboxHostEnvironmentNote,
+  buildSandboxOffNote,
+  detectSandboxChange,
+} from '../sandbox/context'
 import type { EnvironmentProbe } from '../sandbox/env-probe'
 import type { ResolveSandboxForSessionOpts } from '../services/unified-sandbox-resolver'
 import { LRUCache } from '../utils/lru-cache'
@@ -54,12 +59,18 @@ export interface CreateSandboxMessageHookDeps {
 type SystemTransformInput = { sessionID?: string }
 type SystemTransformOutput = { system: string[] }
 
+type TrackedSession =
+  | { sandbox: SandboxContext; env: string | null }
+  | { hostEnv: string | null }
+
+function inSandboxEntry(tracked: TrackedSession | undefined): { sandbox: SandboxContext; env: string | null } | null {
+  return tracked && 'sandbox' in tracked ? tracked : null
+}
+
 export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
   const { resolveSandboxForSession, probe, logger } = deps
 
-  const trackedSessions = new LRUCache<
-    { sandbox: SandboxContext; env: string | null } | { offNote: string }
-  >(SANDBOX_TRACKED_SESSION_LIMIT)
+  const trackedSessions = new LRUCache<TrackedSession>(SANDBOX_TRACKED_SESSION_LIMIT)
 
   return async (input: SystemTransformInput, output: SystemTransformOutput): Promise<void> => {
     const sessionID = input?.sessionID
@@ -73,32 +84,40 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
       return
     }
 
+    const tracked = trackedSessions.get(sessionID)
+
     if (sandbox) {
-      const [hostEnv, containerEnv] = await Promise.all([
-        probe ? probe.describeHost() : null,
-        probe ? probe.describeSandbox(sandbox) : null,
-      ])
-      const previous = trackedSessions.get(sessionID)
-      const change = detectSandboxChange(previous && 'sandbox' in previous ? previous.sandbox : undefined, sandbox)
+      const containerEnv = probe ? await probe.describeSandbox(sandbox) : null
+      const previous = inSandboxEntry(tracked)
+      if (previous) {
+        applySandboxSystemNote(
+          output.system,
+          buildSandboxContextNote(
+            { switched: false, to: containerEnv },
+            { settings: sandbox.settings, change: detectSandboxChange(previous.sandbox, sandbox) },
+          ),
+        )
+      } else {
+        const hostEnv = probe ? await probe.describeHost() : null
+        applySandboxSystemNote(
+          output.system,
+          buildSandboxContextNote({ switched: true, from: hostEnv, to: containerEnv }, { settings: sandbox.settings }),
+        )
+      }
       trackedSessions.set(sessionID, { sandbox, env: containerEnv })
-      applySandboxSystemNote(
-        output.system,
-        buildSandboxContextNote({ from: hostEnv, to: containerEnv }, { settings: sandbox.settings, change }),
-      )
       return
     }
 
-    const tracked = trackedSessions.get(sessionID)
     if (!tracked) {
       applySandboxSystemNote(output.system, null)
       return
     }
-    if ('offNote' in tracked) {
-      applySandboxSystemNote(output.system, tracked.offNote)
+    if ('sandbox' in tracked) {
+      const hostEnv = probe ? await probe.describeHost() : null
+      applySandboxSystemNote(output.system, buildSandboxOffNote({ from: tracked.env, to: hostEnv }))
+      trackedSessions.set(sessionID, { hostEnv })
       return
     }
-    const offNote = buildSandboxOffNote({ from: tracked.env, to: probe ? await probe.describeHost() : null })
-    trackedSessions.set(sessionID, { offNote })
-    applySandboxSystemNote(output.system, offNote)
+    applySandboxSystemNote(output.system, buildSandboxHostEnvironmentNote(tracked.hostEnv))
   }
 }

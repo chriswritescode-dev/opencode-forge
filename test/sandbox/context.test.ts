@@ -5,6 +5,9 @@ import { join, resolve } from 'path'
 import {
   SANDBOX_CONTEXT_NOTE,
   SANDBOX_OFF_NOTE,
+  SANDBOX_SWITCHED_ON_NOTE,
+  buildSandboxContextNote,
+  buildSandboxHostEnvironmentNote,
   isSandboxEnabled,
   isSandboxConfigEnabled,
   isHostSessionsDefaultEnabled,
@@ -61,6 +64,76 @@ describe('SANDBOX_OFF_NOTE', () => {
     expect(SANDBOX_OFF_NOTE).toMatch(/install or reinstall/i)
     expect(SANDBOX_OFF_NOTE).toMatch(/host tooling/i)
     expect(SANDBOX_OFF_NOTE).toMatch(/rerun/i)
+  })
+})
+
+describe('buildSandboxContextNote', () => {
+  const settings = { cpus: 4, memoryMib: 8192, allowLan: false }
+
+  it('announces a switch with the transition, the switched-on note, settings, and the container guidance', () => {
+    const note = buildSandboxContextNote(
+      { switched: true, from: 'Darwin 24.6.0 arm64', to: 'Linux 6.1.0 aarch64' },
+      { settings, change: 'recreated' },
+    )
+
+    expect(note.split('\n').slice(0, 3)).toEqual([
+      '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64) -> container (Linux 6.1.0 aarch64).',
+      SANDBOX_SWITCHED_ON_NOTE,
+      '[Sandbox] Resources: 4 CPUs, 8 GiB memory. LAN (private network) access: blocked.',
+    ])
+    expect(note).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(note).not.toContain('was recreated')
+  })
+
+  it('still announces the switch when neither environment could be probed', () => {
+    const note = buildSandboxContextNote({ switched: true, from: null, to: null })
+
+    expect(note).not.toContain('Environment changed')
+    expect(note.split('\n')[0]).toBe(SANDBOX_SWITCHED_ON_NOTE)
+    expect(note).toContain(SANDBOX_CONTEXT_NOTE)
+  })
+
+  it('reports a partially probed switch with an unknown side', () => {
+    const note = buildSandboxContextNote({ switched: true, from: null, to: 'Linux 6.1.0 aarch64' })
+
+    expect(note.split('\n')[0]).toBe(
+      '[Sandbox] Environment changed: host (unknown) -> container (Linux 6.1.0 aarch64).'
+    )
+    expect(note).toContain(SANDBOX_SWITCHED_ON_NOTE)
+  })
+
+  it('describes steady state with the container environment, a change, settings, and the guidance', () => {
+    const note = buildSandboxContextNote({ switched: false, to: 'Linux 6.1.0 aarch64' }, { settings, change: 'restarted' })
+
+    expect(note.split('\n').slice(0, 3)).toEqual([
+      '[Sandbox] Environment: container (Linux 6.1.0 aarch64).',
+      '[Sandbox] The sandbox was restarted to apply new resource settings. Its files and disks are unchanged, but processes started earlier (including the Docker daemon and any containers) are no longer running; restart the ones you still need.',
+      '[Sandbox] Resources: 4 CPUs, 8 GiB memory. LAN (private network) access: blocked.',
+    ])
+    expect(note).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(note).not.toContain('Environment changed')
+    expect(note).not.toContain(SANDBOX_SWITCHED_ON_NOTE)
+  })
+
+  it('omits the container line in steady state when the container probe is null', () => {
+    const note = buildSandboxContextNote({ switched: false, to: null })
+
+    expect(note.split('\n')[0]).not.toContain('[Sandbox] Environment:')
+    expect(note.split('\n')[0]).toBe('[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.')
+    expect(note).toContain(SANDBOX_CONTEXT_NOTE)
+  })
+})
+
+describe('buildSandboxHostEnvironmentNote', () => {
+  it('describes the host environment in steady state', () => {
+    expect(buildSandboxHostEnvironmentNote('Darwin 24.6.0 arm64 | macOS 15.6')).toBe(
+      '[Sandbox] Environment: host (Darwin 24.6.0 arm64 | macOS 15.6).'
+    )
+  })
+
+  it('emits nothing when the host probe is null or blank', () => {
+    expect(buildSandboxHostEnvironmentNote(null)).toBeNull()
+    expect(buildSandboxHostEnvironmentNote('   ')).toBeNull()
   })
 })
 
