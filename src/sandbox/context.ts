@@ -61,6 +61,8 @@ function formatTransitionLine(
   return `[Sandbox] Environment changed: ${from ? `${fromLabel} (${from})` : `${fromLabel} (unknown)`} -> ${to ? `${toLabel} (${to})` : `${toLabel} (unknown)`}.`
 }
 
+export const SANDBOX_SWITCHED_ON_NOTE = '[Sandbox] Earlier command output in this session may come from the host and does not describe the container.'
+
 export type SandboxChange = 'restarted' | 'recreated'
 
 const SANDBOX_CHANGE_NOTES = {
@@ -87,16 +89,38 @@ export function detectSandboxChange(previous: SandboxContext | undefined, next: 
   return undefined
 }
 
+export type SandboxEnvironmentState =
+  | { switched: true; from?: string | null; to?: string | null }
+  | { switched: false; to?: string | null }
+
+function formatEnvironmentLine(label: string, value: string | null | undefined): string | null {
+  const trimmed = value?.trim()
+  if (!trimmed) return null
+  return `[Sandbox] Environment: ${label} (${trimmed}).`
+}
+
+export function buildSandboxHostEnvironmentNote(hostEnv: string | null): string | null {
+  return formatEnvironmentLine('host', hostEnv)
+}
+
 export function buildSandboxContextNote(
-  transition?: SandboxEnvironmentTransition,
+  environment: SandboxEnvironmentState,
   sandbox?: { settings?: SandboxRuntimeSettings; change?: SandboxChange },
 ): string {
-  const lines = [
-    formatTransitionLine(transition, 'host', 'container'),
-    sandbox?.change ? SANDBOX_CHANGE_NOTES[sandbox.change] : null,
-    sandbox?.settings ? formatSandboxSettingsLine(sandbox.settings) : null,
-    SANDBOX_CONTEXT_NOTE,
-  ]
+  const settings = sandbox?.settings ? formatSandboxSettingsLine(sandbox.settings) : null
+  const lines = environment.switched
+    ? [
+        formatTransitionLine({ from: environment.from, to: environment.to }, 'host', 'container'),
+        SANDBOX_SWITCHED_ON_NOTE,
+        settings,
+        SANDBOX_CONTEXT_NOTE,
+      ]
+    : [
+        formatEnvironmentLine('container', environment.to),
+        sandbox?.change ? SANDBOX_CHANGE_NOTES[sandbox.change] : null,
+        settings,
+        SANDBOX_CONTEXT_NOTE,
+      ]
   return lines.filter((line): line is string => line !== null).join('\n')
 }
 

@@ -5,7 +5,7 @@ import {
   SANDBOX_BLOCK_OPEN,
   SANDBOX_TRACKED_SESSION_LIMIT,
 } from '../../src/hooks/sandbox-message'
-import { SANDBOX_CONTEXT_NOTE, SANDBOX_OFF_NOTE } from '../../src/sandbox/context'
+import { SANDBOX_CONTEXT_NOTE, SANDBOX_OFF_NOTE, SANDBOX_SWITCHED_ON_NOTE } from '../../src/sandbox/context'
 import type { SandboxContext } from '../../src/sandbox/context'
 import type { Logger } from '../../src/types'
 
@@ -43,6 +43,7 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     const hook = makeHook(null)
     const output = { system: ['base'] }
 
+    await hook({ sessionID: 'ses_1' }, output)
     await hook({ sessionID: 'ses_1' }, output)
 
     expect(output.system).toEqual(['base'])
@@ -120,7 +121,7 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(systemText(output)).not.toContain('was recreated')
   })
 
-  test('keeps the sandbox-off note on every request until the sandbox is re-enabled, probing the host once', async () => {
+  test('emits the sandbox-off note once, then the host environment line with the probed host', async () => {
     let state: SandboxContext | null = context
     const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
     const hook = createSandboxMessageHook({
@@ -132,24 +133,52 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     const sandboxed = { system: ['base'] }
     await hook({ sessionID: 'ses_1' }, sandboxed)
     expect(systemText(sandboxed)).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(describeHost).toHaveBeenCalledTimes(1)
 
     state = null
     const firstOff = { system: ['base'] }
     await hook({ sessionID: 'ses_1' }, firstOff)
     expect(systemText(firstOff)).toContain(SANDBOX_OFF_NOTE)
+    expect(systemText(firstOff)).toContain(
+      '[Sandbox] Environment changed: container (Linux 6.1.0 aarch64) -> host (Darwin 24.6.0 arm64 | macOS 15.6).'
+    )
     expect(systemText(firstOff)).not.toContain(SANDBOX_CONTEXT_NOTE)
+    expect(describeHost).toHaveBeenCalledTimes(2)
 
     describeHost.mockClear()
     const secondOff = { system: ['base'] }
     await hook({ sessionID: 'ses_1' }, secondOff)
-    expect(systemText(secondOff)).toBe(systemText(firstOff))
+    expect(systemText(secondOff)).toContain('[Sandbox] Environment: host (Darwin 24.6.0 arm64 | macOS 15.6).')
+    expect(systemText(secondOff)).not.toContain(SANDBOX_OFF_NOTE)
     expect(describeHost).not.toHaveBeenCalled()
 
     state = context
     const reEnabled = { system: ['base'] }
     await hook({ sessionID: 'ses_1' }, reEnabled)
+    expect(systemText(reEnabled)).toContain(SANDBOX_SWITCHED_ON_NOTE)
     expect(systemText(reEnabled)).toContain(SANDBOX_CONTEXT_NOTE)
     expect(systemText(reEnabled)).not.toContain(SANDBOX_OFF_NOTE)
+  })
+
+  test('drops the owned block on the request after an off note when the host probe is null', async () => {
+    let state: SandboxContext | null = context
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => state,
+      probe: { describeHost: async () => null, describeSandbox: async () => 'Linux 6.1.0 aarch64' },
+      logger,
+    })
+
+    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
+
+    state = null
+    const off = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, off)
+    expect(systemText(off)).toContain(SANDBOX_OFF_NOTE)
+
+    const steady = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, steady)
+    expect(systemText(steady)).not.toContain(SANDBOX_OFF_NOTE)
+    expect(steady.system[0]).not.toContain(SANDBOX_BLOCK_OPEN)
   })
 
   test('re-enabling then disabling the sandbox emits the off note again', async () => {
@@ -166,7 +195,22 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
       await hook({ sessionID: 'ses_1' }, output)
       emittedOff.push(systemText(output).includes(SANDBOX_OFF_NOTE))
     }
-    expect(emittedOff).toEqual([false, true, false, true, true])
+    expect(emittedOff).toEqual([false, true, false, true, false])
+  })
+
+  test('probes the host only for switch events, not on steady-state requests', async () => {
+    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => context,
+      probe: { describeHost, describeSandbox: async () => 'Linux 6.1.0 aarch64' },
+      logger,
+    })
+
+    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
+    expect(describeHost).toHaveBeenCalledTimes(1)
+
+    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
+    expect(describeHost).toHaveBeenCalledTimes(1)
   })
 
   test('tracks each session independently', async () => {
@@ -217,7 +261,26 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(systemText(afterError)).toContain(SANDBOX_OFF_NOTE)
   })
 
-  test('leads the container note with the probed host -> container change, on every request', async () => {
+  test('treats a sandboxed session with no observed history as switched on', async () => {
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => context,
+      probe: { describeHost: async () => null, describeSandbox: async () => null },
+      logger,
+    })
+
+    const output = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, output)
+
+    expect(output.system[0]).toContain(SANDBOX_SWITCHED_ON_NOTE)
+    expect(output.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
+
+    const second = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, second)
+    expect(second.system[0]).not.toContain(SANDBOX_SWITCHED_ON_NOTE)
+    expect(second.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
+  })
+
+  test('shows the host -> container change on the first request after the switch, then the container environment', async () => {
     const hook = createSandboxMessageHook({
       resolveSandboxForSession: async () => context,
       probe: {
@@ -227,14 +290,20 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
       logger,
     })
 
-    for (const _ of [0, 1]) {
-      const output = { system: ['base'] }
-      await hook({ sessionID: 'ses_1' }, output)
-      expect(output.system[0]).toContain(
-        '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64 | macOS 15.6) -> container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).'
-      )
-      expect(output.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-    }
+    const first = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, first)
+    expect(first.system[0]).toContain(
+      '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64 | macOS 15.6) -> container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).'
+    )
+    expect(first.system[0]).toContain(SANDBOX_SWITCHED_ON_NOTE)
+    expect(first.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
+
+    const second = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, second)
+    expect(second.system[0]).toContain('[Sandbox] Environment: container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).')
+    expect(second.system[0]).not.toContain('Environment changed')
+    expect(second.system[0]).not.toContain(SANDBOX_SWITCHED_ON_NOTE)
+    expect(second.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
   })
 
   test('leads the off note with the container it left -> the probed host', async () => {
@@ -334,7 +403,7 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(countBlock(output.system[1]!, SANDBOX_BLOCK_CLOSE)).toBe(1)
   })
 
-  test('replaces the on guidance with the off note on a reused array, then keeps exactly one off block', async () => {
+  test('replaces the on guidance with the off note on a reused array, then drops the block on the steady request', async () => {
     let state: SandboxContext | null = context
     const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
     const output = { system: ['base'] }
@@ -347,10 +416,10 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(output.system[0]).toContain(SANDBOX_OFF_NOTE)
     expect(output.system[0]).not.toContain(SANDBOX_CONTEXT_NOTE)
     expect(countBlock(output.system[0]!, SANDBOX_BLOCK_OPEN)).toBe(1)
-    const offEntry = output.system[0]
 
     await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system).toEqual([offEntry])
+    expect(output.system[0]).not.toContain(SANDBOX_OFF_NOTE)
+    expect(countBlock(output.system[0]!, SANDBOX_BLOCK_OPEN)).toBe(0)
   })
 
   test('removes only the owned block on cleanup, preserving prefix and suffix byte-for-byte', async () => {
@@ -366,7 +435,7 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(output.system).toEqual([`${prefix}${suffix}`])
   })
 
-  test('preserves a same-entry suffix written by another plugin across on, off, and a repeated off', async () => {
+  test('preserves a same-entry suffix written by another plugin across on, off, and the following steady request', async () => {
     let state: SandboxContext | null = context
     const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
     const output = { system: ['base', 'mode instructions'] }
@@ -385,9 +454,10 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(output.system[1]!.endsWith('another plugin suffix')).toBe(true)
     expect(countBlock(output.system[1]!, SANDBOX_BLOCK_OPEN)).toBe(1)
 
-    const offEntry = output.system[1]
     await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[1]).toBe(offEntry)
+    expect(output.system[1]).not.toContain(SANDBOX_OFF_NOTE)
+    expect(output.system[1]!.endsWith('another plugin suffix')).toBe(true)
+    expect(countBlock(output.system[1]!, SANDBOX_BLOCK_OPEN)).toBe(0)
   })
 
   test('preserves a project-md-context block in the same entry', async () => {
