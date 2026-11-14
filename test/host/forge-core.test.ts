@@ -50,7 +50,11 @@ describe('createForgeCore', () => {
     })
     const adapters: unknown[] = []
     core = await createForgeCore(
-      { dataDir: join(testDir, 'memory'), ...config },
+      {
+        dataDir: join(testDir, 'memory'),
+        ...config,
+        sandbox: { hostSessions: false, ...(config.sandbox ?? {}) },
+      },
       {
         directory: testDir,
         projectId,
@@ -128,7 +132,7 @@ describe('createForgeCore', () => {
   })
 
   test('resolveShellSandbox skips session lookups while no loop or host sandbox is active', async () => {
-    const built = await buildCore()
+    const built = await buildCore({ sandbox: { hostSessions: false } })
 
     await expect(built.core.resolveShellSandbox('ses_host_1')).resolves.toBeNull()
     expect(built.calls.some((call) => call.method === 'session.get')).toBe(false)

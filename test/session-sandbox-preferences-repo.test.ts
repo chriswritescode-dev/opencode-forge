@@ -6,17 +6,18 @@ import {
   SESSION_SANDBOX_APPLIED_KEY,
   SESSION_SANDBOX_CONTROLLER_KEY,
 } from '../src/storage'
+import type { SessionSandboxAppliedState, SessionSandboxDesiredState } from '../src/storage'
 import { createTestDb } from './helpers/test-db'
 
 const PROJECT_A = 'project-a'
 const PROJECT_B = 'project-b'
 
-function makeDesired(overrides: Partial<import('../src/storage').SessionSandboxDesiredState> = {}): import('../src/storage').SessionSandboxDesiredState {
-  return { version: 1, revision: 'rev-1', enabled: true, sessionId: 'sess-1', requestedAt: 1000, ...overrides }
+function makeDesired(overrides: Partial<SessionSandboxDesiredState> = {}): SessionSandboxDesiredState {
+  return { version: 2, revision: 'rev-1', sessions: { 'sess-1': true }, requestedAt: 1000, ...overrides }
 }
 
-function makeApplied(overrides: Partial<import('../src/storage').SessionSandboxAppliedState> = {}): import('../src/storage').SessionSandboxAppliedState {
-  return { version: 1, revision: 'rev-1', enabled: true, sessionId: 'sess-1', error: null, appliedAt: 2000, ...overrides }
+function makeApplied(overrides: Partial<SessionSandboxAppliedState> = {}): SessionSandboxAppliedState {
+  return { version: 2, revision: 'rev-1', running: true, error: null, appliedAt: 2000, ...overrides }
 }
 
 describe('SessionSandboxPreferencesRepo', () => {
@@ -40,7 +41,13 @@ describe('SessionSandboxPreferencesRepo', () => {
     })
 
     test('round-trips a full desired state', () => {
-      const state = makeDesired({ revision: 'abc', enabled: false, sessionId: 'sess-2', requestedAt: 999 })
+      const state = makeDesired({ revision: 'abc', sessions: { 'sess-2': false, 'sess-3': true }, requestedAt: 999 })
+      repo.setDesired(PROJECT_A, state)
+      expect(repo.getDesired(PROJECT_A)).toEqual(state)
+    })
+
+    test('round-trips an empty session map', () => {
+      const state = makeDesired({ sessions: {} })
       repo.setDesired(PROJECT_A, state)
       expect(repo.getDesired(PROJECT_A)).toEqual(state)
     })
@@ -61,23 +68,98 @@ describe('SessionSandboxPreferencesRepo', () => {
     test('updateDesired builds the new row from the current one', () => {
       repo.setDesired(PROJECT_A, makeDesired({ overrides: { allowLan: true } }))
 
-      const next = repo.updateDesired(PROJECT_A, (current) => makeDesired({ revision: 'rev-2', enabled: false, overrides: current?.overrides }))
+      const next = repo.updateDesired(PROJECT_A, (current) => makeDesired({
+        revision: 'rev-2',
+        sessions: { ...(current?.sessions ?? {}), 'sess-9': false },
+        overrides: current?.overrides,
+      }))
 
       expect(next.revision).toBe('rev-2')
-      expect(repo.getDesired(PROJECT_A)).toEqual(makeDesired({ revision: 'rev-2', enabled: false, overrides: { allowLan: true } }))
-      expect(repo.updateDesired(PROJECT_B, (current) => makeDesired({ sessionId: current?.sessionId ?? 'fresh' })).sessionId).toBe('fresh')
-    })
-
-    test('round-trips nullable sessionId', () => {
-      const state = makeDesired({ sessionId: null })
-      repo.setDesired(PROJECT_A, state)
-      expect(repo.getDesired(PROJECT_A)).toEqual(state)
+      expect(repo.getDesired(PROJECT_A)).toEqual(makeDesired({
+        revision: 'rev-2',
+        sessions: { 'sess-1': true, 'sess-9': false },
+        overrides: { allowLan: true },
+      }))
+      expect(repo.updateDesired(PROJECT_B, (current) => makeDesired({ sessions: current?.sessions ?? {} })).sessions).toEqual({})
     })
 
     test('replacement overwrites prior value under the same key', () => {
       repo.setDesired(PROJECT_A, makeDesired({ revision: 'v1' }))
-      repo.setDesired(PROJECT_A, makeDesired({ revision: 'v2', enabled: false }))
-      expect(repo.getDesired(PROJECT_A)).toEqual(makeDesired({ revision: 'v2', enabled: false }))
+      repo.setDesired(PROJECT_A, makeDesired({ revision: 'v2', sessions: {} }))
+      expect(repo.getDesired(PROJECT_A)).toEqual(makeDesired({ revision: 'v2', sessions: {} }))
+    })
+  })
+
+  describe('legacy desired rows', () => {
+    function writeRaw(projectId: string, key: string, data: string): void {
+      db.run(
+        'INSERT OR REPLACE INTO tui_preferences (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, NULL, ?)',
+        [projectId, key, data, Date.now()],
+      )
+    }
+
+    test('a legacy enabled row with a session parses into a single session entry', () => {
+      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({
+        version: 1,
+        revision: 'legacy-1',
+        enabled: true,
+        sessionId: 'sess-legacy',
+        requestedAt: 500,
+      }))
+
+      expect(repo.getDesired(PROJECT_A)).toEqual({
+        version: 2,
+        revision: 'legacy-1',
+        sessions: { 'sess-legacy': true },
+        requestedAt: 500,
+      })
+    })
+
+    test('a legacy disabled row with a session parses into a false session entry', () => {
+      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({
+        version: 1,
+        revision: 'legacy-2',
+        enabled: false,
+        sessionId: 'sess-legacy',
+        requestedAt: 500,
+      }))
+
+      expect(repo.getDesired(PROJECT_A)).toEqual({
+        version: 2,
+        revision: 'legacy-2',
+        sessions: { 'sess-legacy': false },
+        requestedAt: 500,
+      })
+    })
+
+    test('a legacy row without a session parses into an empty session map', () => {
+      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({
+        version: 1,
+        revision: 'legacy-3',
+        enabled: true,
+        sessionId: null,
+        requestedAt: 500,
+      }))
+
+      expect(repo.getDesired(PROJECT_A)).toEqual({
+        version: 2,
+        revision: 'legacy-3',
+        sessions: {},
+        requestedAt: 500,
+      })
+    })
+
+    test('a legacy applied row no longer parses and reads as absent', () => {
+      writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, JSON.stringify({
+        version: 1,
+        revision: 'legacy-1',
+        enabled: true,
+        sessionId: 'sess-legacy',
+        error: null,
+        appliedAt: 500,
+      }))
+
+      expect(repo.getApplied(PROJECT_A)).toBeNull()
     })
   })
 
@@ -87,13 +169,13 @@ describe('SessionSandboxPreferencesRepo', () => {
     })
 
     test('round-trips a full applied state', () => {
-      const state = makeApplied({ revision: 'abc', enabled: false, sessionId: null, error: 'boom', appliedAt: 555 })
+      const state = makeApplied({ revision: 'abc', running: false, error: 'boom', appliedAt: 555 })
       repo.setApplied(PROJECT_A, state)
       expect(repo.getApplied(PROJECT_A)).toEqual(state)
     })
 
-    test('round-trips null error and nullable sessionId', () => {
-      const state = makeApplied({ sessionId: 'sess-x', error: null })
+    test('round-trips null error', () => {
+      const state = makeApplied({ error: null })
       repo.setApplied(PROJECT_A, state)
       expect(repo.getApplied(PROJECT_A)).toEqual(state)
     })
@@ -111,10 +193,16 @@ describe('SessionSandboxPreferencesRepo', () => {
     })
 
     test('round-trips controller readiness', () => {
-      const state = { version: 1 as const, phase: 'loading' as const, revision: 'rev-1', sessionId: 'sess-1' }
+      const state = { version: 1 as const, phase: 'loading' as const, revision: 'rev-1' }
       repo.setControllerState(PROJECT_A, state)
       expect(repo.getControllerState(PROJECT_A)).toEqual(state)
       expect(repo.getPair(PROJECT_A).controller).toEqual(state)
+    })
+
+    test('round-trips a null revision', () => {
+      const state = { version: 1 as const, phase: 'ready' as const, revision: null }
+      repo.setControllerState(PROJECT_A, state)
+      expect(repo.getControllerState(PROJECT_A)).toEqual(state)
     })
   })
 
@@ -128,7 +216,6 @@ describe('SessionSandboxPreferencesRepo', () => {
       expect(repo.getDesired(PROJECT_A)).toEqual(desired)
       expect(repo.getApplied(PROJECT_A)).toEqual(applied)
 
-      // Update one, the other stays intact
       repo.setDesired(PROJECT_A, makeDesired({ revision: 'd2' }))
       expect(repo.getDesired(PROJECT_A)).toEqual(makeDesired({ revision: 'd2' }))
       expect(repo.getApplied(PROJECT_A)).toEqual(applied)
@@ -138,7 +225,7 @@ describe('SessionSandboxPreferencesRepo', () => {
   describe('project isolation', () => {
     test('states under different project ids are independent', () => {
       const desiredA = makeDesired({ revision: 'a' })
-      const desiredB = makeDesired({ revision: 'b' })
+      const desiredB = makeDesired({ revision: 'b', sessions: {} })
       repo.setDesired(PROJECT_A, desiredA)
       repo.setDesired(PROJECT_B, desiredB)
 
@@ -168,20 +255,20 @@ describe('SessionSandboxPreferencesRepo', () => {
     })
 
     test('rejects malformed controller state', () => {
-      writeRaw(PROJECT_A, SESSION_SANDBOX_CONTROLLER_KEY, JSON.stringify({ version: 1, phase: 'unknown', revision: 'rev-1', sessionId: 'sess-1' }))
+      writeRaw(PROJECT_A, SESSION_SANDBOX_CONTROLLER_KEY, JSON.stringify({ version: 1, phase: 'unknown', revision: 'rev-1' }))
       expect(repo.getControllerState(PROJECT_A)).toBeNull()
     })
 
     test('treats wrong version as absent', () => {
-      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(makeDesired({ version: 2 as never })))
-      writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, JSON.stringify(makeApplied({ version: 0 as never })))
+      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({ ...makeDesired(), version: 3 }))
+      writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, JSON.stringify({ ...makeApplied(), version: 1 }))
       expect(repo.getDesired(PROJECT_A)).toBeNull()
       expect(repo.getApplied(PROJECT_A)).toBeNull()
     })
 
-    test('treats non-boolean enabled as absent', () => {
-      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({ ...makeDesired(), enabled: 'yes' }))
-      writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, JSON.stringify({ ...makeApplied(), enabled: 1 }))
+    test('treats non-boolean session values and running flag as absent', () => {
+      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({ ...makeDesired(), sessions: { 'sess-1': 'yes' } }))
+      writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, JSON.stringify({ ...makeApplied(), running: 1 }))
       expect(repo.getDesired(PROJECT_A)).toBeNull()
       expect(repo.getApplied(PROJECT_A)).toBeNull()
     })
@@ -193,25 +280,19 @@ describe('SessionSandboxPreferencesRepo', () => {
       expect(repo.getApplied(PROJECT_A)).toBeNull()
     })
 
-    test('treats wrong-type nullable fields as absent', () => {
-      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({ ...makeDesired(), sessionId: 42 }))
+    test('treats wrong-type nullable error as absent', () => {
       writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, JSON.stringify({ ...makeApplied(), error: 42 }))
-      expect(repo.getDesired(PROJECT_A)).toBeNull()
       expect(repo.getApplied(PROJECT_A)).toBeNull()
     })
 
-    test('treats empty or whitespace-only revision as absent', () => {
-      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({ ...makeDesired(), revision: '' }))
+    test('treats empty or whitespace-only revision and session id as absent', () => {
+      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({ ...makeDesired({ sessions: { '  ': true } }) }))
       writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, JSON.stringify({ ...makeApplied(), revision: '   ' }))
       expect(repo.getDesired(PROJECT_A)).toBeNull()
       expect(repo.getApplied(PROJECT_A)).toBeNull()
-    })
 
-    test('treats empty or whitespace-only non-null session identifier as absent', () => {
-      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({ ...makeDesired(), sessionId: '' }))
-      writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, JSON.stringify({ ...makeApplied(), sessionId: '  ' }))
+      writeRaw(PROJECT_A, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify({ ...makeDesired(), revision: '' }))
       expect(repo.getDesired(PROJECT_A)).toBeNull()
-      expect(repo.getApplied(PROJECT_A)).toBeNull()
     })
 
     test('a malformed desired row does not mask a valid applied row', () => {

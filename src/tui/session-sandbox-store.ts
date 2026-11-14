@@ -10,6 +10,7 @@ export interface SessionSandboxPreference {
   applied: SessionSandboxAppliedState | null
   controller?: SessionSandboxControllerState | null
   activeLoopSandboxes?: Record<string, boolean>
+  hostSessionsDefault: boolean
   unavailable?: boolean
   unavailableReason?: string
 }
@@ -19,22 +20,17 @@ export function hostSandboxToggleBlocked(configEnabled: boolean): string | null 
   return null
 }
 
-export function deriveSessionSandboxAcknowledged(
-  pref: SessionSandboxPreference,
-): SessionSandboxAppliedState | null {
+export function isHostSandboxRunning(pref: SessionSandboxPreference): boolean {
   const { desired, applied } = pref
-  if (
-    desired &&
-    applied &&
-    desired.revision === applied.revision &&
-    desired.enabled &&
-    applied.enabled &&
-    desired.sessionId === applied.sessionId &&
-    applied.error == null
-  ) {
-    return applied
-  }
-  return null
+  return !!desired
+    && !!applied
+    && desired.revision === applied.revision
+    && applied.running
+    && applied.error === null
+}
+
+export function isSessionSandboxWanted(pref: SessionSandboxPreference, sessionId: string): boolean {
+  return pref.desired?.sessions[sessionId] ?? pref.hostSessionsDefault
 }
 
 export function isSessionSandboxPreferenceSettled(pref: SessionSandboxPreference): boolean {
@@ -54,25 +50,13 @@ export function deriveSessionSandboxDisplayStatus(
   if (pref.activeLoopSandboxes && Object.hasOwn(pref.activeLoopSandboxes, sessionId)) {
     return pref.activeLoopSandboxes[sessionId] ? 'enabled' : 'disabled'
   }
+  if (!isSessionSandboxWanted(pref, sessionId)) return 'disabled'
   const controller = pref.controller
-  if (
-    controller &&
-    controller.revision === pref.desired?.revision &&
-    controller.sessionId === sessionId
-  ) {
-    if (controller.phase === 'loading' && pref.desired?.enabled) return 'loading'
+  if (controller && controller.revision === pref.desired?.revision) {
+    if (controller.phase === 'loading') return 'loading'
     if (controller.phase === 'failed') return 'failed'
   }
-  const acknowledged = deriveSessionSandboxAcknowledged(pref)
-  if (acknowledged?.sessionId === sessionId) return 'enabled'
-  if (
-    pref.desired?.sessionId === sessionId &&
-    pref.desired.enabled &&
-    isSessionSandboxPreferenceSettled(pref)
-  ) {
-    return 'failed'
-  }
-  if (pref.desired?.sessionId === sessionId && !isSessionSandboxPreferenceSettled(pref)) return 'loading'
-  return 'disabled'
+  if (isHostSandboxRunning(pref)) return 'enabled'
+  if (isSessionSandboxPreferenceSettled(pref) && pref.applied?.error) return 'failed'
+  return 'loading'
 }
-

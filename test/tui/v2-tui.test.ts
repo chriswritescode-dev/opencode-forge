@@ -120,11 +120,16 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const loopSidebar = vi.fn(async () => ({ loops: [] }))
   const hostSandboxState = vi.fn(async (): Promise<ForgeHostSandboxState> => ({
     configEnabled: true,
+    hostSessionsDefault: true,
     desired: null,
     applied: null,
     controller: null,
   }))
   const hostSandboxSet = vi.fn(async (_input: ForgeHostSandboxSetInput) => ({ revision: 'rev-1' }))
+  const loopDefaults = vi.fn(async () => ({
+    maxIterations: 0,
+    sandbox: { available: true, resources: { cpus: '4', memory: '8g', dockerDisk: '16g', cacheDisk: '16g' }, allowLan: false },
+  }))
   const autoApproveState = vi.fn(async () => ({ enabled: false, inherited: false }))
   const autoApproveSet = vi.fn(async () => ({ enabled: true, inherited: false }))
   const version = vi.fn(async () => fakeOptions.version ?? { version: VERSION })
@@ -142,6 +147,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
       loopSidebar,
       hostSandboxState,
       hostSandboxSet,
+      loopDefaults,
       autoApproveState,
       autoApproveSet,
       version,
@@ -273,6 +279,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     loopSidebar,
     hostSandboxState,
     hostSandboxSet,
+    loopDefaults,
     autoApproveState,
     autoApproveSet,
     version,
@@ -553,14 +560,19 @@ describe('V2 TUI setup', () => {
     fake.locationGet.mockImplementation(async (input) => ({
       project: { id: projects[input?.location?.directory ?? ''] ?? 'unknown' },
     }))
-    const serverState: ForgeHostSandboxState = { configEnabled: true, desired: null, applied: null, controller: null }
+    const serverState: ForgeHostSandboxState = {
+      configEnabled: true,
+      hostSessionsDefault: false,
+      desired: null,
+      applied: null,
+      controller: null,
+    }
     fake.hostSandboxState.mockImplementation(async () => serverState)
     fake.hostSandboxSet.mockImplementation(async (input) => {
       serverState.desired = {
-        version: 1,
+        version: 2,
         revision: 'rev-b',
-        enabled: input.enabled === true,
-        sessionId: input.sessionId,
+        sessions: { [input.sessionId]: input.enabled === true },
         requestedAt: Date.now(),
       }
       return { revision: 'rev-b' }
@@ -577,16 +589,14 @@ describe('V2 TUI setup', () => {
     await vi.waitFor(() => expect(fake.hostSandboxState.mock.calls.length).toBeGreaterThan(statesBeforeSwitch))
     expect(fake.hostSandboxState.mock.calls.at(-1)?.[1]).toEqual({ location: { directory: '/work/b' } })
 
-    const dialogSelect = (fake.ctx.ui as unknown as { dialog: { select: ReturnType<typeof vi.fn> } }).dialog.select
-    dialogSelect.mockResolvedValueOnce('toggle')
     findCommand(fake, 'forge.sandbox.toggleHost').run?.()
     await vi.waitFor(() => expect(fake.hostSandboxSet).toHaveBeenCalledTimes(1))
+    expect(fake.hostSandboxSet.mock.calls[0]?.[0]).toEqual({ sessionId: 'ses_b', enabled: true })
 
     serverState.applied = {
-      version: 1,
+      version: 2,
       revision: 'rev-b',
-      enabled: true,
-      sessionId: 'ses_b',
+      running: true,
       error: null,
       appliedAt: Date.now(),
     }
@@ -595,8 +605,27 @@ describe('V2 TUI setup', () => {
     try {
       await vi.waitFor(() => expect(fake.toasts).toContainEqual(expect.objectContaining({
         variant: 'success',
-        message: expect.stringContaining('Host sandbox enabled for this session'),
+        message: expect.stringContaining('Sandbox on for this session'),
       })))
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('the sandbox settings command opens the settings dialog without toggling', async () => {
+    const fake = createFakeV2TuiContext({ route: { type: 'session', sessionID: 'ses_1' } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(1))
+
+    findCommand(fake, 'forge.sandbox.settings').run?.()
+
+    const dialogSelect = (fake.ctx.ui as unknown as { dialog: { select: ReturnType<typeof vi.fn> } }).dialog.select
+    try {
+      await vi.waitFor(() => expect(dialogSelect).toHaveBeenCalled())
+      expect(dialogSelect.mock.calls[0]?.[0]).toMatchObject({ title: 'Sandbox settings' })
+      expect(fake.loopDefaults).toHaveBeenCalled()
+      expect(fake.hostSandboxSet).not.toHaveBeenCalled()
     } finally {
       cleanup()
     }
@@ -888,7 +917,7 @@ describe('resolveTuiOptions', () => {
     expect(resolveTuiOptions(undefined)).toEqual({
       sidebar: true,
       showVersion: true,
-      keybinds: { executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '', toggleAutoApprove: '' },
+      keybinds: { executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '', sandboxSettings: '', toggleAutoApprove: '' },
     })
   })
 
@@ -910,7 +939,7 @@ describe('resolveTuiOptions', () => {
 
     expect(opts.sidebar).toBe(false)
     expect(opts.showVersion).toBe(true)
-    expect(opts.keybinds).toEqual({ executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '', toggleAutoApprove: '' })
+    expect(opts.keybinds).toEqual({ executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '', sandboxSettings: '', toggleAutoApprove: '' })
   })
 
   test('later layers win and keybinds merge key by key', () => {
@@ -925,6 +954,7 @@ describe('resolveTuiOptions', () => {
       executePlan: '<leader>c',
       dashboard: '<leader>D',
       toggleHostSandbox: '',
+      sandboxSettings: '',
       toggleAutoApprove: '',
     })
   })

@@ -96,6 +96,7 @@ export interface SandboxConfig {
   mounts?: SandboxMountConfig[]
   network?: SandboxNetworkConfig
   autoApprovePermissions?: boolean
+  hostSessions?: boolean
 }
 
 export interface AutoApproveDenyRule {

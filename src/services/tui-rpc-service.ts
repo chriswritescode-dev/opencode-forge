@@ -5,7 +5,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage/repos/session-sandbox-preferences-repo'
 import { getRestartability } from '../loop/restartability'
 import { forgeWorktreesRoot, listForgeWorktreeDirs, loopBranchExists } from '../workspace/forge-naming'
-import { isSandboxConfigEnabled } from '../sandbox/context'
+import { isHostSessionsDefaultEnabled, isSandboxConfigEnabled } from '../sandbox/context'
 import { readSandboxOverrides } from '../sandbox/loop-settings'
 import { errorMessage } from '../utils/error-message'
 import type { LoopInfo } from '../utils/tui-models'
@@ -124,6 +124,7 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
         const pair = deps.sandboxPreferences.getPair(deps.projectId)
         const state: ForgeHostSandboxState = {
           configEnabled: isSandboxConfigEnabled(deps.config),
+          hostSessionsDefault: isHostSessionsDefaultEnabled(deps.config),
           desired: pair.desired,
           applied: pair.applied,
           controller: pair.controller,
@@ -149,14 +150,13 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
       try {
         revision = randomUUID()
         deps.sandboxPreferences.updateDesired(deps.projectId, (current) => {
-          const binding = request.enabled !== undefined
-            ? { enabled: request.enabled, sessionId: request.sessionId }
-            : { enabled: current?.enabled ?? false, sessionId: current?.sessionId ?? request.sessionId }
+          const sessions = { ...(current?.sessions ?? {}) }
+          if (request.enabled !== undefined) sessions[request.sessionId] = request.enabled
           const overrides = request.overrides !== undefined ? readSandboxOverrides(request.overrides) : current?.overrides
           const desired: SessionSandboxDesiredState = {
-            version: 1,
+            version: 2,
             revision,
-            ...binding,
+            sessions,
             requestedAt: Date.now(),
           }
           if (overrides) desired.overrides = overrides

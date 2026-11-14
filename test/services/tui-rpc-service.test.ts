@@ -230,12 +230,11 @@ describe('createTuiRpcService', () => {
   })
 
   describe('getHostSandboxState', () => {
-    test('reports config, preference pair, and running loop sandboxes', () => {
+    test('reports config, the project default, preference pair, and running loop sandboxes', () => {
       const desired: SessionSandboxDesiredState = {
-        version: 1,
+        version: 2,
         revision: 'rev-1',
-        enabled: true,
-        sessionId: 'session-1',
+        sessions: { 'session-1': true },
         requestedAt: 1,
       }
       sandboxPreferences.setDesired(PROJECT, desired)
@@ -245,10 +244,19 @@ describe('createTuiRpcService', () => {
       if ('error' in result) throw new Error(result.error)
 
       expect(result.configEnabled).toBe(true)
+      expect(result.hostSessionsDefault).toBe(true)
       expect(result.desired).toEqual(desired)
       expect(result.applied).toBeNull()
       expect(result.controller).toBeNull()
       expect(result.activeLoopSandboxes).toEqual({ 'session-loop': true })
+    })
+
+    test('reports a disabled project default for host sessions', () => {
+      const result = createService({ config: { sandbox: { hostSessions: false } } }).getHostSandboxState()
+      if ('error' in result) throw new Error(result.error)
+
+      expect(result.configEnabled).toBe(true)
+      expect(result.hostSessionsDefault).toBe(false)
     })
 
     test('omits activeLoopSandboxes when no loop is running and honors a disabled config', () => {
@@ -269,16 +277,28 @@ describe('createTuiRpcService', () => {
       expect(sandboxPreferences.getDesired(PROJECT)).toBeNull()
     })
 
-    test('writes a fresh desired revision when sandboxing is enabled', () => {
+    test('writes a fresh desired revision with the per-session preference', () => {
       const result = createService().requestHostSandbox({ sessionId: 'session-1', enabled: true })
       if ('error' in result) throw new Error(result.error)
 
       expect(typeof result.revision).toBe('string')
       expect(sandboxPreferences.getDesired(PROJECT)).toMatchObject({
-        version: 1,
+        version: 2,
         revision: result.revision,
-        enabled: true,
-        sessionId: 'session-1',
+        sessions: { 'session-1': true },
+      })
+    })
+
+    test('keeps other sessions entries when one session opts out', () => {
+      const service = createService()
+      service.requestHostSandbox({ sessionId: 'session-1', enabled: true })
+      service.requestHostSandbox({ sessionId: 'session-2', enabled: true })
+
+      service.requestHostSandbox({ sessionId: 'session-1', enabled: false })
+
+      expect(sandboxPreferences.getDesired(PROJECT)).toMatchObject({
+        version: 2,
+        sessions: { 'session-1': false, 'session-2': true },
       })
     })
 
@@ -289,19 +309,18 @@ describe('createTuiRpcService', () => {
       service.requestHostSandbox({ sessionId: 'session-1', enabled: false })
 
       expect(sandboxPreferences.getDesired(PROJECT)).toMatchObject({
-        enabled: false,
+        sessions: { 'session-1': false },
         overrides: { resources: { cpus: '6' }, allowLan: true },
       })
     })
 
-    test('an overrides change keeps the binding, validates, and {} resets', () => {
+    test('an overrides change keeps the session entries, validates, and {} resets', () => {
       const service = createService()
       service.requestHostSandbox({ sessionId: 'session-a', enabled: true })
 
       service.requestHostSandbox({ sessionId: 'session-b', overrides: { resources: { cpus: '8', memory: 'lots' } } })
       expect(sandboxPreferences.getDesired(PROJECT)).toMatchObject({
-        enabled: true,
-        sessionId: 'session-a',
+        sessions: { 'session-a': true },
         overrides: { resources: { cpus: '8' } },
       })
 

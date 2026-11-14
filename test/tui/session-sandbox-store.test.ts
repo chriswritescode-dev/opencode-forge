@@ -1,19 +1,20 @@
 import { describe, test, expect } from 'vitest'
 import {
-  deriveSessionSandboxAcknowledged,
   deriveSessionSandboxDisplayStatus,
   hostSandboxToggleBlocked,
+  isHostSandboxRunning,
   isSessionSandboxPreferenceSettled,
+  isSessionSandboxWanted,
   type SessionSandboxPreference,
 } from '../../src/tui/session-sandbox-store'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState } from '../../src/storage/repos/session-sandbox-preferences-repo'
 
 function desired(overrides: Partial<SessionSandboxDesiredState> = {}): SessionSandboxDesiredState {
-  return { version: 1, revision: 'r1', enabled: true, sessionId: 'sess-1', requestedAt: 1, ...overrides }
+  return { version: 2, revision: 'r1', sessions: {}, requestedAt: 1, ...overrides }
 }
 
 function appliedState(overrides: Partial<SessionSandboxAppliedState> = {}): SessionSandboxAppliedState {
-  return { version: 1, revision: 'r1', enabled: true, sessionId: 'sess-1', error: null, appliedAt: 1, ...overrides }
+  return { version: 2, revision: 'r1', running: true, error: null, appliedAt: 1, ...overrides }
 }
 
 describe('session-sandbox-store', () => {
@@ -27,67 +28,74 @@ describe('session-sandbox-store', () => {
     })
   })
 
-  describe('deriveSessionSandboxAcknowledged', () => {
-    test('derives ON only for a matching, error-free applied row', () => {
-      const row = appliedState({ revision: 'r1', enabled: true, error: null })
-      expect(deriveSessionSandboxAcknowledged({ desired: desired(), applied: row })).toEqual(row)
+  describe('isHostSandboxRunning', () => {
+    test('is running only for a matching, error-free applied row that reports running', () => {
+      const row = appliedState({ revision: 'r1', running: true, error: null })
+      expect(isHostSandboxRunning({ desired: desired(), applied: row, hostSessionsDefault: true })).toBe(true)
     })
 
-    test('derives OFF while the matching applied row has not arrived yet', () => {
-      expect(deriveSessionSandboxAcknowledged({ desired: desired(), applied: null })).toBeNull()
+    test('is not running without a desired state or before the applied revision arrives', () => {
+      expect(isHostSandboxRunning({ desired: null, applied: appliedState(), hostSessionsDefault: true })).toBe(false)
+      expect(isHostSandboxRunning({ desired: desired(), applied: null, hostSessionsDefault: true })).toBe(false)
     })
 
-    test('derives the matching applied row when it arrives after an earlier read', () => {
-      expect(deriveSessionSandboxAcknowledged({ desired: desired(), applied: null })).toBeNull()
-      const row = appliedState({ revision: 'r1', enabled: true, error: null })
-      expect(deriveSessionSandboxAcknowledged({ desired: desired(), applied: row })).toEqual(row)
+    test('is not running for a stale revision, a non-running row, or an error', () => {
+      expect(isHostSandboxRunning({
+        desired: desired(),
+        applied: appliedState({ revision: 'old-rev' }),
+        hostSessionsDefault: true,
+      })).toBe(false)
+      expect(isHostSandboxRunning({
+        desired: desired(),
+        applied: appliedState({ running: false }),
+        hostSessionsDefault: true,
+      })).toBe(false)
+      expect(isHostSandboxRunning({
+        desired: desired(),
+        applied: appliedState({ error: 'msb failed' }),
+        hostSessionsDefault: true,
+      })).toBe(false)
+    })
+  })
+
+  describe('isSessionSandboxWanted', () => {
+    test('uses the project default when the session has no explicit entry', () => {
+      const pref = { desired: desired({ sessions: { 'sess-2': false } }), applied: null, hostSessionsDefault: true }
+      expect(isSessionSandboxWanted(pref, 'sess-1')).toBe(true)
+      expect(isSessionSandboxWanted({ ...pref, hostSessionsDefault: false }, 'sess-1')).toBe(false)
     })
 
-    test('derives OFF for a mismatched or stale applied revision', () => {
-      const stale = appliedState({ revision: 'old-rev', enabled: true, error: null })
-      expect(deriveSessionSandboxAcknowledged({ desired: desired(), applied: stale })).toBeNull()
-      const wrongSession = appliedState({ revision: 'r1', enabled: true, sessionId: 'sess-other', error: null })
-      expect(deriveSessionSandboxAcknowledged({ desired: desired(), applied: wrongSession })).toBeNull()
+    test('an explicit per-session entry wins over the project default', () => {
+      const on = { desired: desired({ sessions: { 'sess-1': true } }), applied: null, hostSessionsDefault: false }
+      expect(isSessionSandboxWanted(on, 'sess-1')).toBe(true)
+      const off = { desired: desired({ sessions: { 'sess-1': false } }), applied: null, hostSessionsDefault: true }
+      expect(isSessionSandboxWanted(off, 'sess-1')).toBe(false)
     })
 
-    test('derives OFF for a matching revision carrying an error or disabled desired', () => {
-      const errored = appliedState({ revision: 'r1', enabled: true, error: 'msb failed' })
-      expect(deriveSessionSandboxAcknowledged({ desired: desired(), applied: errored })).toBeNull()
-      expect(deriveSessionSandboxAcknowledged({ desired: desired({ enabled: false }), applied: errored })).toBeNull()
-    })
-
-    test('derives OFF when an ON acknowledgement is superseded by a newer desired revision', () => {
-      const staleOn = appliedState({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null })
-      expect(deriveSessionSandboxAcknowledged({
-        desired: desired({ revision: 'r2', enabled: false, sessionId: 'sess-1' }),
-        applied: staleOn,
-      })).toBeNull()
-    })
-
-    test('an unavailable read is never derived as ON', () => {
-      expect(deriveSessionSandboxAcknowledged({ desired: null, applied: null, unavailable: true })).toBeNull()
+    test('falls back to the project default without a persisted desired state', () => {
+      expect(isSessionSandboxWanted({ desired: null, applied: null, hostSessionsDefault: true }, 'sess-1')).toBe(true)
     })
   })
 
   describe('isSessionSandboxPreferenceSettled', () => {
     test('is settled with no persisted desired state', () => {
-      expect(isSessionSandboxPreferenceSettled({ desired: null, applied: null })).toBe(true)
+      expect(isSessionSandboxPreferenceSettled({ desired: null, applied: null, hostSessionsDefault: true })).toBe(true)
     })
 
     test('is pending while a desired state awaits its matching applied revision', () => {
-      expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: null })).toBe(false)
+      expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: null, hostSessionsDefault: true })).toBe(false)
     })
 
     test('is pending while the applied row carries a stale revision', () => {
-      const stale = appliedState({ revision: 'old-rev', enabled: true, error: null })
-      expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: stale })).toBe(false)
+      const stale = appliedState({ revision: 'old-rev' })
+      expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: stale, hostSessionsDefault: true })).toBe(false)
     })
 
-    test('is settled once the applied revision matches, including OFF and error', () => {
-      const off = appliedState({ revision: 'r1', enabled: false, error: null })
-      expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: off })).toBe(true)
-      const errored = appliedState({ revision: 'r1', enabled: false, error: 'msb failed to start' })
-      expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: errored })).toBe(true)
+    test('is settled once the applied revision matches, including an error', () => {
+      const off = appliedState({ revision: 'r1', running: false, error: null })
+      expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: off, hostSessionsDefault: true })).toBe(true)
+      const errored = appliedState({ revision: 'r1', running: false, error: 'msb failed to start' })
+      expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: errored, hostSessionsDefault: true })).toBe(true)
     })
   })
 
@@ -97,70 +105,100 @@ describe('session-sandbox-store', () => {
         desired: null,
         applied: null,
         activeLoopSandboxes: { 'sess-1': true },
+        hostSessionsDefault: false,
       }, 'sess-1')).toBe('enabled')
     })
 
-    test('uses loop sandbox state before a stale host acknowledgement', () => {
+    test('uses loop sandbox state before the per-session preference', () => {
       expect(deriveSessionSandboxDisplayStatus({
-        desired: desired(),
-        applied: appliedState({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null }),
+        desired: desired({ sessions: { 'sess-1': true } }),
+        applied: appliedState(),
         activeLoopSandboxes: { 'sess-1': false },
+        hostSessionsDefault: true,
       }, 'sess-1')).toBe('disabled')
     })
 
-    test('shows loading only for the selected session while acknowledgement is pending', () => {
-      const pref = { desired: desired(), applied: null }
-      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
-      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-other')).toBe('disabled')
-    })
-
-    test('shows enabled only for a matching acknowledged session', () => {
-      const pref = { desired: desired(), applied: appliedState({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null }) }
+    test('shows enabled for a session inheriting an enabled project default', () => {
+      const pref = { desired: desired(), applied: appliedState(), hostSessionsDefault: true }
       expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('enabled')
-      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-other')).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-2')).toBe('enabled')
     })
 
-    test('shows loading while startup revalidates a previously acknowledged sandbox', () => {
+    test('shows disabled for a session that opted out while the shared sandbox runs', () => {
+      const pref = {
+        desired: desired({ sessions: { 'sess-1': false } }),
+        applied: appliedState(),
+        hostSessionsDefault: true,
+      }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-2')).toBe('enabled')
+    })
+
+    test('shows disabled for every session when the project default is off and none opted in', () => {
+      const pref = { desired: desired(), applied: null, hostSessionsDefault: false }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus({
+        desired: desired({ sessions: { 'sess-1': true } }),
+        applied: appliedState(),
+        hostSessionsDefault: false,
+      }, 'sess-1')).toBe('enabled')
+    })
+
+    test('shows loading while the controller is loading at the desired revision', () => {
       const pref = {
         desired: desired(),
-        applied: appliedState({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null }),
-        controller: { version: 1 as const, phase: 'loading' as const, revision: 'r1', sessionId: 'sess-1' },
+        applied: appliedState(),
+        controller: { version: 1 as const, phase: 'loading' as const, revision: 'r1' },
+        hostSessionsDefault: true,
       }
       expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
-      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-other')).toBe('disabled')
       expect(deriveSessionSandboxDisplayStatus({ ...pref, controller: { ...pref.controller, phase: 'ready' } }, 'sess-1')).toBe('enabled')
     })
 
-    test('shows loading while a newer disable request supersedes acknowledged ON', () => {
-      const pref = {
-        desired: desired({ revision: 'r2', enabled: false }),
-        applied: appliedState({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null }),
-      }
-      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
+    test('shows loading before the shared sandbox is running', () => {
+      expect(deriveSessionSandboxDisplayStatus({
+        desired: desired(),
+        applied: appliedState({ revision: 'r1', running: false }),
+        hostSessionsDefault: true,
+      }, 'sess-1')).toBe('loading')
+      expect(deriveSessionSandboxDisplayStatus({
+        desired: null,
+        applied: null,
+        hostSessionsDefault: true,
+      }, 'sess-1')).toBe('loading')
     })
 
-    test('shows failed for a settled desired ON that was applied OFF or with an error', () => {
-      const off = appliedState({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: null })
-      expect(deriveSessionSandboxDisplayStatus({ desired: desired(), applied: off }, 'sess-1')).toBe('failed')
-      const errored = appliedState({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: 'unavailable' })
-      expect(deriveSessionSandboxDisplayStatus({ desired: desired(), applied: errored }, 'sess-1')).toBe('failed')
-      expect(deriveSessionSandboxDisplayStatus({ desired: desired(), applied: off }, 'sess-other')).toBe('disabled')
+    test('shows loading while a newer request supersedes the applied revision', () => {
+      const pref = {
+        desired: desired({ revision: 'r2' }),
+        applied: appliedState({ revision: 'r1', running: true, error: null }),
+        hostSessionsDefault: true,
+      }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
     })
 
     test('shows failed for a matching failed controller state', () => {
       const pref = {
         desired: desired(),
-        applied: appliedState({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: 'unavailable' }),
-        controller: { version: 1 as const, phase: 'failed' as const, revision: 'r1', sessionId: 'sess-1' },
+        applied: appliedState({ error: 'unavailable', running: false }),
+        controller: { version: 1 as const, phase: 'failed' as const, revision: 'r1' },
+        hostSessionsDefault: true,
       }
       expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('failed')
-      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-other')).toBe('disabled')
     })
 
-    test('shows disabled for a clean settled OFF and for no persisted state', () => {
-      const off = appliedState({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: null })
-      expect(deriveSessionSandboxDisplayStatus({ desired: desired({ enabled: false }), applied: off }, 'sess-1')).toBe('disabled')
+    test('shows failed for a settled applied revision carrying an error', () => {
+      const pref: SessionSandboxPreference = {
+        desired: desired(),
+        applied: appliedState({ running: false, error: 'msb failed to start' }),
+        hostSessionsDefault: true,
+      }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('failed')
+    })
+
+    test('shows disabled without a session or preference', () => {
       expect(deriveSessionSandboxDisplayStatus(null, 'sess-1')).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus({ desired: null, applied: null, hostSessionsDefault: true })).toBe('disabled')
     })
   })
 })

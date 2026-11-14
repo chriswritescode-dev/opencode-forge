@@ -14,7 +14,7 @@ import { createLogger, slugify } from '../utils/logger'
 import { createMsbRuntime, describeMsbUnavailable } from '../sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from '../sandbox/config-warnings'
 import { defaultGitService } from '../utils/git-service'
-import { resolveSandboxContextForLoop, isSandboxConfigEnabled, isSandboxEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
+import { resolveSandboxContextForLoop, isSandboxConfigEnabled, isSandboxEnabled, isHostSessionsDefaultEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
 import { readLoopSandboxSettings, readSandboxOverrides, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
 import { createEnvironmentProbe } from '../sandbox/env-probe'
 import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-paths'
@@ -25,7 +25,7 @@ import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } 
 import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
-import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, deriveManagerKey, type ResolveActiveLoopForSession, type SessionSandboxController } from '../sandbox/session-controller'
+import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, deriveManagerKey, type SessionSandboxController } from '../sandbox/session-controller'
 import type { PluginConfig, CompactionConfig, AutoApproveDenyRule, Logger } from '../types'
 import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
 import { createTools } from '../tools'
@@ -283,9 +283,7 @@ export function createLoopChangeNotifier(deps: LoopChangeNotifierDeps): LoopChan
 type SessionSandboxProvider = {
   worktree: boolean
   getParentSessionId: (sessionId: string) => Promise<string | null>
-  getSessionDirectory: (sessionId: string) => Promise<string | null>
   getSessionIdentity: (sessionId: string) => Promise<SessionSandboxIdentity | null>
-  resolveActiveLoopForSession: ResolveActiveLoopForSession
 }
 
 export type SharedSessionSandboxController = {
@@ -306,12 +304,10 @@ function preferredSessionSandboxProvider(providers: Set<SessionSandboxProvider>)
 
 function sessionSandboxProviderForwarding(
   getCurrent: () => SessionSandboxProvider,
-): Pick<SessionSandboxProvider, 'getParentSessionId' | 'getSessionDirectory' | 'getSessionIdentity' | 'resolveActiveLoopForSession'> {
+): Pick<SessionSandboxProvider, 'getParentSessionId' | 'getSessionIdentity'> {
   return {
     getParentSessionId: (sessionId) => getCurrent().getParentSessionId(sessionId),
-    getSessionDirectory: (sessionId) => getCurrent().getSessionDirectory(sessionId),
     getSessionIdentity: (sessionId) => getCurrent().getSessionIdentity(sessionId),
-    resolveActiveLoopForSession: (sessionId) => getCurrent().resolveActiveLoopForSession(sessionId),
   }
 }
 
@@ -719,9 +715,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const hostSessionProvider: SessionSandboxProvider = {
     worktree: isForgeWorktreeDir(dataDir, directory),
     getParentSessionId: parentSessionLookup,
-    getSessionDirectory: sessionDirectoryLookup,
     getSessionIdentity: sessionIdentityLookup,
-    resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
   }
   const sharedSessionSandbox = acquireSessionSandboxController(projectId, hostSessionProvider, (getCurrent) => {
     const forwarding = sessionSandboxProviderForwarding(getCurrent)
@@ -733,10 +727,9 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         directory: projectRoot,
         preferences: createSessionSandboxPreferencesRepo(controllerDb),
         sandboxManager: sandboxManager ?? createUnavailableSandboxLifecycleManager(runtime),
+        hostSessionsDefault: isHostSessionsDefaultEnabled(config),
         getParentSessionId: forwarding.getParentSessionId,
-        getSessionDirectory: forwarding.getSessionDirectory,
         getSessionIdentity: forwarding.getSessionIdentity,
-        resolveActiveLoopForSession: forwarding.resolveActiveLoopForSession,
         onChange: () => emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId }),
         logger,
       }),

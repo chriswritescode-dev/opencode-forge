@@ -21,6 +21,7 @@ import {
   readForgeSessionPlan,
   readForgeVersion,
   readForgeWorktrees,
+  type ForgeLoopDefaults,
   type ForgeToastEvent,
   type ForgeWorktreesOutput,
 } from '../host/forge-rpc'
@@ -43,7 +44,7 @@ import { attachV2LoopSessionFollower } from './session-follow'
 import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort, type ForgeWorktreeList } from './loop-session-cleanup'
 import { createForgeRpcCaller, createV2ForgeProjectClient, followRpcEvent } from './v2-client'
 import { createHostSandboxToggle } from './host-sandbox'
-import { editHostSandbox } from './host-sandbox-dialog'
+import { editHostSandboxSettings } from './host-sandbox-dialog'
 import { createLoopSidebarStore, type LoopSidebarStore } from './loop-sidebar'
 import { createSessionAutoApproveToggle } from './session-auto-approve'
 import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
@@ -360,6 +361,11 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     toast: (input) => host.toast(input),
   })
 
+  const loadSandboxDefaults = async (): Promise<ForgeLoopDefaults | null> => {
+    const defaults = await call(async (rpc, location) => await rpc.loopDefaults({}, location), readForgeLoopDefaults)
+    return 'error' in defaults ? null : defaults
+  }
+
   const autoApprove = createSessionAutoApproveToggle({
     currentSessionId,
     readState: (sessionId) => call(async (rpc, location) => await rpc.autoApproveState({ sessionId }, location), readForgeAutoApproveState),
@@ -425,21 +431,26 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           withKeybind({
             id: 'forge.sandbox.toggleHost',
             title: 'Toggle sandbox',
-            description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox or on the host, and set its CPUs, memory, and LAN access',
+            description: 'Turn the shared sandbox on or off for this session\'s agent shell, glob, and grep calls',
+            group: 'Forge',
+            palette: true,
+            run: () => { void hostSandbox.toggle() },
+          }, opts.keybinds.toggleHostSandbox),
+          withKeybind({
+            id: 'forge.sandbox.settings',
+            title: 'Sandbox settings',
+            description: 'Set the shared project sandbox\'s CPUs, memory, and LAN access',
             group: 'Forge',
             palette: true,
             run: () => {
-              void editHostSandbox({
+              void editHostSandboxSettings({
                 host,
                 sandbox: hostSandbox,
                 currentSessionId,
-                loadDefaults: async () => {
-                  const defaults = await call(async (rpc, location) => await rpc.loopDefaults({}, location), readForgeLoopDefaults)
-                  return 'error' in defaults ? null : defaults
-                },
+                loadDefaults: loadSandboxDefaults,
               })
             },
-          }, opts.keybinds.toggleHostSandbox),
+          }, opts.keybinds.sandboxSettings),
           withKeybind({
             id: 'forge.permissions.toggleAutoApprove',
             title: 'Toggle auto-approve',

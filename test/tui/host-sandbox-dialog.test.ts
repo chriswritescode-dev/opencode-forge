@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest'
 import type { ForgeLoopDefaults } from '../../src/host/forge-rpc'
 import type { ForgeTuiHost } from '../../src/tui/host'
 import type { HostSandboxToggle } from '../../src/tui/host-sandbox'
-import { buildHostSandboxOptions, editHostSandbox } from '../../src/tui/host-sandbox-dialog'
+import { buildHostSandboxSettingsOptions, editHostSandboxSettings } from '../../src/tui/host-sandbox-dialog'
 import type { SessionSandboxPreference } from '../../src/tui/session-sandbox-store'
 import type { SandboxOverrides } from '../../src/types'
 
@@ -15,25 +15,25 @@ const defaults: ForgeLoopDefaults = {
 
 function preference(options: { running?: boolean; overrides?: SandboxOverrides } = {}): SessionSandboxPreference {
   const desired = {
-    version: 1 as const,
+    version: 2 as const,
     revision: 'rev-1',
-    enabled: options.running === true,
-    sessionId: SESSION,
+    sessions: {},
     requestedAt: 1,
     ...(options.overrides ? { overrides: options.overrides } : {}),
   }
   return {
     desired,
-    applied: { version: 1, revision: 'rev-1', enabled: options.running === true, sessionId: SESSION, error: null, appliedAt: 1 },
+    applied: { version: 2, revision: 'rev-1', running: options.running === true, error: null, appliedAt: 1 },
+    hostSessionsDefault: true,
   }
 }
 
-function setup(pref: SessionSandboxPreference, selects: Array<string | undefined>, prompts: Array<string | undefined> = []) {
-  const toasts: Array<{ message: string }> = []
+function setup(pref: SessionSandboxPreference | null, selects: Array<string | undefined>, prompts: Array<string | undefined> = []) {
+  const toasts: Array<{ message: string; variant?: string }> = []
   const host = {
     select: vi.fn(async () => selects.shift()),
     prompt: vi.fn(async () => prompts.shift()),
-    toast: (input: { message: string }) => toasts.push(input),
+    toast: (input: { message: string; variant?: string }) => toasts.push(input),
   } as unknown as ForgeTuiHost
   const sandbox = {
     preference: () => pref,
@@ -42,7 +42,7 @@ function setup(pref: SessionSandboxPreference, selects: Array<string | undefined
     setOverrides: vi.fn(async () => {}),
     dispose: vi.fn(),
   } satisfies HostSandboxToggle
-  const run = (sessionId: string | null = SESSION) => editHostSandbox({
+  const run = (sessionId: string | null = SESSION) => editHostSandboxSettings({
     host,
     sandbox,
     currentSessionId: () => sessionId,
@@ -51,13 +51,12 @@ function setup(pref: SessionSandboxPreference, selects: Array<string | undefined
   return { host, sandbox, toasts, run }
 }
 
-describe('buildHostSandboxOptions', () => {
-  test('shows the on/off row, CPUs, memory, and LAN access with their defaults', () => {
-    const options = buildHostSandboxOptions(preference(), SESSION, undefined, defaults)
+describe('buildHostSandboxSettingsOptions', () => {
+  test('shows CPUs, memory, and LAN access with their defaults and no toggle row', () => {
+    const options = buildHostSandboxSettingsOptions(preference(), undefined, defaults)
 
-    expect(options.map((o) => o.value)).toEqual(['toggle', 'resource:cpus', 'resource:memory', 'allowLan', 'done'])
+    expect(options.map((o) => o.value)).toEqual(['resource:cpus', 'resource:memory', 'allowLan', 'done'])
     expect(options.map((o) => o.title)).toEqual([
-      'Sandbox: off',
       'CPUs: 4 (default)',
       'Memory: 8g (default)',
       'LAN access: blocked (default)',
@@ -66,34 +65,32 @@ describe('buildHostSandboxOptions', () => {
   })
 
   test('offers Apply and Reset only for a changed draft, and warns what a running sandbox pays', () => {
-    const options = buildHostSandboxOptions(preference({ running: true }), SESSION, { resources: { cpus: '6' } }, defaults)
+    const options = buildHostSandboxSettingsOptions(preference({ running: true }), { resources: { cpus: '6' } }, defaults)
 
-    expect(options.map((o) => o.value)).toEqual(['toggle', 'resource:cpus', 'resource:memory', 'allowLan', 'reset', 'apply', 'done'])
-    expect(options[0]?.title).toBe('Sandbox: on')
-    expect(options[1]?.title).toBe('CPUs: 6')
-    expect(options[1]?.description).toContain('restarts the sandbox')
-    expect(options[3]?.description).toContain('recreates the sandbox')
+    expect(options.map((o) => o.value)).toEqual(['resource:cpus', 'resource:memory', 'allowLan', 'reset', 'apply', 'done'])
+    expect(options[0]?.title).toBe('CPUs: 6')
+    expect(options[0]?.description).toContain('restarts the shared sandbox for every session in this project')
+    expect(options[2]?.description).toContain('recreates the shared sandbox for every session in this project')
     expect(options.at(-1)?.title).toBe('Discard changes')
+  })
+
+  test('describes stopped-sandbox changes as applying at the next start', () => {
+    const options = buildHostSandboxSettingsOptions(preference(), { resources: { cpus: '6' } }, defaults)
+
+    expect(options[0]?.description).toBe('Press enter to change; applied when the shared sandbox next starts')
+    expect(options.at(-2)?.title).toBe('Apply settings')
   })
 })
 
-describe('editHostSandbox', () => {
-  test('several settings edits and the toggle go out as one request', async () => {
-    const { sandbox, run } = setup(preference(), ['resource:cpus', 'resource:memory', 'toggle'], ['6', '12G'])
+describe('editHostSandboxSettings', () => {
+  test('several settings edits go out as one request', async () => {
+    const { sandbox, run } = setup(preference(), ['resource:cpus', 'resource:memory', 'apply'], ['6', '12G'])
 
     await run()
 
-    expect(sandbox.toggle).toHaveBeenCalledTimes(1)
-    expect(sandbox.toggle).toHaveBeenCalledWith({ resources: { cpus: '6', memory: '12g' } })
-    expect(sandbox.setOverrides).not.toHaveBeenCalled()
-  })
-
-  test('a plain toggle sends no overrides', async () => {
-    const { sandbox, run } = setup(preference({ overrides: { allowLan: true } }), ['toggle'])
-
-    await run()
-
-    expect(sandbox.toggle).toHaveBeenCalledWith(undefined)
+    expect(sandbox.setOverrides).toHaveBeenCalledTimes(1)
+    expect(sandbox.setOverrides).toHaveBeenCalledWith({ resources: { cpus: '6', memory: '12g' } })
+    expect(sandbox.toggle).not.toHaveBeenCalled()
   })
 
   test('applying a resource change to a running sandbox needs no confirmation', async () => {
@@ -132,7 +129,30 @@ describe('editHostSandbox', () => {
     const dismissed = setup(preference(), ['resource:cpus', undefined], ['6'])
     await dismissed.run()
     expect(dismissed.sandbox.setOverrides).not.toHaveBeenCalled()
-    expect(dismissed.sandbox.toggle).not.toHaveBeenCalled()
+  })
+
+  test('warns with the unavailable reason instead of toggling', async () => {
+    const { host, toasts, sandbox, run } = setup({
+      desired: null,
+      applied: null,
+      hostSessionsDefault: true,
+      unavailable: true,
+      unavailableReason: 'rpc.unavailable',
+    }, [])
+
+    await run()
+
+    expect(toasts).toEqual([{ message: 'Sandbox settings unavailable: rpc.unavailable', variant: 'warning', duration: 5000 }])
+    expect(host.select).not.toHaveBeenCalled()
+    expect(sandbox.toggle).not.toHaveBeenCalled()
+  })
+
+  test('warns that the sandbox is unavailable when no preference is loaded', async () => {
+    const { toasts, run } = setup(null, [])
+
+    await run()
+
+    expect(toasts).toEqual([{ message: 'Sandbox is unavailable', variant: 'warning', duration: 5000 }])
   })
 
   test('asks for a session when none is open', async () => {

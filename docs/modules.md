@@ -55,7 +55,7 @@ Source: [src/index.ts](../src/index.ts)
 The TUI plugin entry, providing the sidebar widget and dialog system. It talks to the server plugin through the V2 plugin RPC port.
 
 - Exports `{ id: 'oc-forge', setup: setupForgeTuiV2 }`
-- Registers commands: `Execute plan`, `Open dashboard`, `Build sandbox template`, and `Toggle sandbox`
+- Registers commands: `Execute plan`, `Open dashboard`, `Build sandbox template`, `Toggle sandbox`, and `Sandbox settings`
 - Provides the loop sidebar, session-rotation following, and the missing-build-context toast
 - `src/tui/dashboard/` holds the dashboard: `store.ts` keeps all state, performs every `FORGE_RPC` fetch, and tracks staleness because pages remount on navigation; `view-model.ts` and `machine-diagram.ts` hold pure computations; `pages.tsx` renders the `forge-dashboard` and `forge-dashboard-loop` pages. Every value comes from `FORGE_RPC`; nothing is read from a local database.
 
@@ -156,7 +156,7 @@ Translates OpenCode events into loop actions and manages lifecycle side-effects.
 | `forge-session-attach.ts` | Auto-attach loops on `session.created` and `chat.message` events |
 | `loop-permission.ts` | Patches subagent permission rulesets on `session.created` for active-loop sessions |
 | `sandbox-tools.ts` | Sandbox tool before/after redirection hooks |
-| `sandbox-message.ts` | Adds the container note to every sandboxed request and, once the sandbox is turned off, the host note to every request until it is turned back on |
+| `sandbox-message.ts` | Adds the container note to every sandboxed request and, once a session's sandbox preference is turned off, the host note to every request until it is turned back on |
 | `tool-hook-types.ts` | Shared tool before/after hook types |
 
 ### Public API (barrel exports from `hooks/index.ts`)
@@ -359,7 +359,7 @@ Drives the `msb` CLI to provision isolated sandboxes for loop execution.
 | `path.ts` | Sandbox path utilities |
 | `exec-fs.ts` | Filesystem operations through `msb exec` |
 | `shell-shim.ts` | Generated shim routing the native `shell` tool through `msb exec` |
-| `session-controller.ts` | Per-project host sandbox selection and ownership |
+| `session-controller.ts` | Shared project host-session sandbox and per-session preference reconciliation |
 | `loop-settings.ts` | Per-loop sandbox overrides: validation, workspace `extra` carrier, and the effective-resource resolver shared by creation and the TUI |
 | `env-probe.ts` | Bounded environment probe for the container note |
 
@@ -434,7 +434,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `PlanAmendmentsRepo` | `plan_amendments` | `PlanAmendmentRow` — append-only plan-amendment audit trail |
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `LoopAttemptsRepo` | `loop_attempts` | `LoopAttemptsRepo` — durable audit-attempt history |
-| `SessionSandboxPreferencesRepo` | `tui_preferences` (JSON keys `session-sandbox.desired` / `.applied` / `.controller`) | `SessionSandboxPreferencesRepo` — host-session sandbox desired/applied state |
+| `SessionSandboxPreferencesRepo` | `tui_preferences` (JSON keys `session-sandbox.desired` / `.applied` / `.controller`) | `SessionSandboxPreferencesRepo` — per-session host-sandbox preference and applied state |
 | `SessionAutoApproveRepo` | `tui_preferences` (TTL-scoped JSON keys `session-auto-approve.<sessionId>`) | `SessionAutoApproveRepo` — per-session auto-approve state |
 
 ### Migrations

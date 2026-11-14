@@ -3,19 +3,17 @@ import { readSandboxOverrides } from '../sandbox/loop-settings'
 import type { SandboxOverrides } from '../types'
 
 export interface SessionSandboxDesiredState {
-  version: 1
+  version: 2
   revision: string
-  enabled: boolean
-  sessionId: string | null
+  sessions: Record<string, boolean>
   requestedAt: number
   overrides?: SandboxOverrides
 }
 
 export interface SessionSandboxAppliedState {
-  version: 1
+  version: 2
   revision: string
-  enabled: boolean
-  sessionId: string | null
+  running: boolean
   error: string | null
   appliedAt: number
   overrides?: SandboxOverrides
@@ -25,7 +23,6 @@ export interface SessionSandboxControllerState {
   version: 1
   phase: 'loading' | 'ready' | 'failed'
   revision: string | null
-  sessionId: string | null
 }
 
 function withOverrides<T extends object>(state: T, overrides: SandboxOverrides | undefined): T & { overrides?: SandboxOverrides } {
@@ -34,7 +31,15 @@ function withOverrides<T extends object>(state: T, overrides: SandboxOverrides |
 
 const nonBlankString = z.string().refine((value) => value.trim().length > 0)
 
-export const desiredStateSchema = z
+const desiredStateV2Schema = z.object({
+  version: z.literal(2),
+  revision: nonBlankString,
+  sessions: z.record(nonBlankString, z.boolean()),
+  requestedAt: z.number(),
+  overrides: z.unknown().optional(),
+})
+
+const legacyDesiredStateSchema = z
   .object({
     version: z.literal(1),
     revision: nonBlankString,
@@ -43,23 +48,33 @@ export const desiredStateSchema = z
     requestedAt: z.number(),
     overrides: z.unknown().optional(),
   })
-  .transform(({ overrides, ...state }) => withOverrides(state, readSandboxOverrides(overrides)))
+  .transform(({ enabled, sessionId, ...state }) => ({
+    ...state,
+    version: 2 as const,
+    sessions: sessionId ? { [sessionId]: enabled } : {},
+  }))
+
+export const desiredStateSchema = z
+  .union([desiredStateV2Schema, legacyDesiredStateSchema])
+  .transform(({ overrides, ...state }): SessionSandboxDesiredState => withOverrides(state, readSandboxOverrides(overrides)))
 
 export const appliedStateSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     revision: nonBlankString,
-    enabled: z.boolean(),
-    sessionId: nonBlankString.nullable(),
+    running: z.boolean(),
     error: z.string().nullable(),
     appliedAt: z.number(),
     overrides: z.unknown().optional(),
   })
-  .transform(({ overrides, ...state }) => withOverrides(state, readSandboxOverrides(overrides)))
+  .transform(({ overrides, ...state }): SessionSandboxAppliedState => withOverrides(state, readSandboxOverrides(overrides)))
 
 export const controllerStateSchema = z.object({
   version: z.literal(1),
   phase: z.enum(['loading', 'ready', 'failed']),
   revision: nonBlankString.nullable(),
-  sessionId: nonBlankString.nullable(),
 })
+
+export function isHostSandboxWanted(desired: SessionSandboxDesiredState | null, hostSessionsDefault: boolean): boolean {
+  return hostSessionsDefault || Object.values(desired?.sessions ?? {}).some(Boolean)
+}

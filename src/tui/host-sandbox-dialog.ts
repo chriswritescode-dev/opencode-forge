@@ -4,11 +4,9 @@ import { readSandboxOverrides, resolveSandboxAllowLan, resolveSandboxResources }
 import type { ForgeTuiHost, ForgeTuiSelectOption } from './host'
 import type { HostSandboxToggle } from './host-sandbox'
 import { DEFAULT_SUFFIX, RESOURCE_FIELDS, formatLanAccess, promptResourceOverride } from './loop-settings-dialog'
-import { deriveSessionSandboxAcknowledged, deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
+import { isHostSandboxRunning, type SessionSandboxPreference } from './session-sandbox-store'
 
 const HOST_RESOURCE_FIELDS = RESOURCE_FIELDS.filter((field) => field.key === 'cpus' || field.key === 'memory')
-
-const STATUS_LABELS = { enabled: 'on', disabled: 'off', loading: 'starting', failed: 'failed' } as const
 
 export interface HostSandboxDialogDeps {
   host: ForgeTuiHost
@@ -25,43 +23,30 @@ function effectiveAllowLan(overrides: SandboxOverrides | undefined, defaults: Fo
   return resolveSandboxAllowLan(defaults?.sandbox.allowLan, overrides)
 }
 
-function isHostSandboxRunning(preference: SessionSandboxPreference): boolean {
-  return deriveSessionSandboxAcknowledged(preference) !== null
-}
-
-export function buildHostSandboxOptions(
+export function buildHostSandboxSettingsOptions(
   preference: SessionSandboxPreference,
-  sessionId: string,
   draft: SandboxOverrides | undefined,
   defaults: ForgeLoopDefaults | null,
 ): ForgeTuiSelectOption<string>[] {
-  const status = deriveSessionSandboxDisplayStatus(preference, sessionId)
-  const on = status === 'enabled' || status === 'loading'
   const running = isHostSandboxRunning(preference)
   const saved = preference.desired?.overrides
   const changed = !overridesEqual(draft, saved)
-  const options: ForgeTuiSelectOption<string>[] = [{
-    title: `Sandbox: ${STATUS_LABELS[status]}`,
-    value: 'toggle',
-    description: on
-      ? 'Press enter to run this session\'s agent shell, glob, and grep calls back on the host'
-      : `Press enter to run this session's agent shell, glob, and grep calls in the sandbox${changed ? ' with the settings below' : ''}`,
-  }]
+  const options: ForgeTuiSelectOption<string>[] = []
   const resources = resolveSandboxResources(defaults?.sandbox.resources, draft?.resources)
   for (const field of HOST_RESOURCE_FIELDS) {
     options.push({
       title: `${field.label}: ${resources[field.key]}${draft?.resources?.[field.key] === undefined ? DEFAULT_SUFFIX : ''}`,
       value: `resource:${field.key}`,
       description: running
-        ? 'Press enter to change; applying restarts the sandbox (files kept, running processes stop)'
-        : 'Press enter to change; applied when the sandbox is turned on',
+        ? 'Press enter to change; applying restarts the shared sandbox for every session in this project (files kept, running processes stop)'
+        : 'Press enter to change; applied when the shared sandbox next starts',
     })
   }
   options.push({
     title: `LAN access: ${formatLanAccess(effectiveAllowLan(draft, defaults))}${draft?.allowLan === undefined ? DEFAULT_SUFFIX : ''}`,
     value: 'allowLan',
     description: running
-      ? 'Press enter to change; applying recreates the sandbox (in-sandbox state is lost)'
+      ? 'Press enter to change; applying recreates the shared sandbox for every session in this project (in-sandbox state is lost)'
       : 'Press enter to change whether the sandbox can reach private (LAN) addresses',
   })
   if (readSandboxOverrides(draft)) {
@@ -71,7 +56,7 @@ export function buildHostSandboxOptions(
     options.push({
       title: 'Apply settings',
       value: 'apply',
-      description: running ? 'Apply the changed settings to the running sandbox now' : 'Save the changed settings for the next time the sandbox is turned on',
+      description: running ? 'Apply the changed settings to the running sandbox now' : 'Save the changed settings for the next time the shared sandbox starts',
     })
   }
   options.push({ title: changed ? 'Discard changes' : 'Done', value: 'done', description: 'Close without sending anything' })
@@ -96,7 +81,7 @@ async function confirmRecreate(
   return choice === 'recreate'
 }
 
-export async function editHostSandbox(deps: HostSandboxDialogDeps): Promise<void> {
+export async function editHostSandboxSettings(deps: HostSandboxDialogDeps): Promise<void> {
   const { host, sandbox } = deps
   const sessionId = deps.currentSessionId()
   if (!sessionId) {
@@ -109,22 +94,26 @@ export async function editHostSandbox(deps: HostSandboxDialogDeps): Promise<void
   for (;;) {
     const preference = sandbox.preference()
     if (!preference || preference.unavailable) {
-      await sandbox.toggle()
+      const reason = preference?.unavailableReason
+      host.toast({
+        message: reason ? `Sandbox settings unavailable: ${reason}` : 'Sandbox is unavailable',
+        variant: 'warning',
+        duration: 5000,
+      })
       return
     }
     const choice = await host.select({
-      title: 'Toggle sandbox',
-      options: buildHostSandboxOptions(preference, sessionId, draft, defaults),
+      title: 'Sandbox settings',
+      options: buildHostSandboxSettingsOptions(preference, draft, defaults),
       current,
     })
     if (choice === undefined || choice === 'done') return
     current = choice
-    if (choice === 'toggle' || choice === 'apply') {
+    if (choice === 'apply') {
       const changed = !overridesEqual(draft, preference.desired?.overrides)
       if (changed && !(await confirmRecreate(host, preference, draft, defaults))) continue
       const overrides = changed ? (readSandboxOverrides(draft) ?? {}) : undefined
-      if (choice === 'toggle') await sandbox.toggle(overrides)
-      else if (overrides) await sandbox.setOverrides(overrides)
+      if (overrides) await sandbox.setOverrides(overrides)
       return
     }
     if (choice === 'reset') {

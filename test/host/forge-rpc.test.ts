@@ -518,41 +518,54 @@ describe('FORGE_RPC', () => {
   })
 
   test('toForgeRpcJson omits top-level null rows and readForgeHostSandboxState restores them', () => {
-    expect(toForgeRpcJson({ configEnabled: true, desired: null, applied: null, controller: null }))
-      .toEqual({ configEnabled: true })
+    expect(toForgeRpcJson({ configEnabled: true, hostSessionsDefault: true, desired: null, applied: null, controller: null }))
+      .toEqual({ configEnabled: true, hostSessionsDefault: true })
     expect(toForgeRpcJson({
       configEnabled: true,
-      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
+      hostSessionsDefault: true,
+      desired: { version: 2, revision: 'rev-1', sessions: { ses_1: true }, requestedAt: 1 },
       applied: null,
       controller: null,
       activeLoopSandboxes: { ses_loop: true },
     })).toEqual({
       configEnabled: true,
-      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
+      hostSessionsDefault: true,
+      desired: { version: 2, revision: 'rev-1', sessions: { ses_1: true }, requestedAt: 1 },
       activeLoopSandboxes: { ses_loop: true },
     })
 
     expect(readForgeHostSandboxState({
       configEnabled: true,
-      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
+      hostSessionsDefault: false,
+      desired: { version: 2, revision: 'rev-1', sessions: { ses_1: true }, requestedAt: 1 },
       activeLoopSandboxes: { ses_loop: true },
     })).toEqual({
       configEnabled: true,
-      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
+      hostSessionsDefault: false,
+      desired: { version: 2, revision: 'rev-1', sessions: { ses_1: true }, requestedAt: 1 },
       applied: null,
       controller: null,
       activeLoopSandboxes: { ses_loop: true },
     })
     expect(readForgeHostSandboxState({
       configEnabled: true,
-      desired: { version: 1, revision: 'rev-1' },
-      applied: { version: 1, revision: 'rev-2', enabled: false, sessionId: null, error: null, appliedAt: 2 },
-      controller: { version: 1, phase: 'ready', revision: 'rev-3', sessionId: null },
+      desired: { version: 2, revision: 'rev-1', sessions: { ses_1: true }, requestedAt: 1 },
+      applied: { version: 2, revision: 'rev-2', running: false, error: null, appliedAt: 2 },
+      controller: { version: 1, phase: 'ready', revision: 'rev-3' },
     })).toEqual({
       configEnabled: true,
-      desired: null,
-      applied: { version: 1, revision: 'rev-2', enabled: false, sessionId: null, error: null, appliedAt: 2 },
-      controller: { version: 1, phase: 'ready', revision: 'rev-3', sessionId: null },
+      hostSessionsDefault: true,
+      desired: { version: 2, revision: 'rev-1', sessions: { ses_1: true }, requestedAt: 1 },
+      applied: { version: 2, revision: 'rev-2', running: false, error: null, appliedAt: 2 },
+      controller: { version: 1, phase: 'ready', revision: 'rev-3' },
+    })
+    expect(readForgeHostSandboxState({
+      configEnabled: true,
+      hostSessionsDefault: true,
+      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
+    })).toMatchObject({
+      hostSessionsDefault: true,
+      desired: { version: 2, revision: 'rev-1', sessions: { ses_1: true } },
     })
     expect(readForgeHostSandboxState({ configEnabled: 'yes' }))
       .toEqual({ error: 'Forge returned an invalid host sandbox state' })
