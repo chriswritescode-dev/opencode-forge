@@ -46,7 +46,7 @@ function preferenceFrom(state: ForgeRpcError): SessionSandboxPreference
 function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPreference | null
 function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPreference | null {
   if ('error' in state) {
-    return { desired: null, applied: null, hostSessionsDefault: true, unavailable: true, unavailableReason: state.error }
+    return { desired: null, applied: null, hostSessionsDefault: false, unavailable: true, unavailableReason: state.error }
   }
   if (!state.configEnabled) return null
   const preference: SessionSandboxPreference = {

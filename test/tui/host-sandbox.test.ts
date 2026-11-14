@@ -7,6 +7,7 @@ import type {
   ForgeToastInput,
 } from '../../src/host/forge-rpc'
 import { createHostSandboxToggle, type HostSandboxToggle } from '../../src/tui/host-sandbox'
+import { deriveSessionSandboxDisplayStatus } from '../../src/tui/session-sandbox-store'
 
 describe('createHostSandboxToggle', () => {
   const toggles: HostSandboxToggle[] = []
@@ -294,6 +295,7 @@ describe('createHostSandboxToggle', () => {
     await toggle.toggle()
 
     expect(toasts.at(-1)?.message).toBe('Sandbox toggle unavailable: rpc.unavailable')
-    expect(toggle.preference()).toMatchObject({ desired: null, applied: null, unavailable: true, hostSessionsDefault: true })
+    expect(toggle.preference()).toMatchObject({ desired: null, applied: null, unavailable: true, hostSessionsDefault: false })
+    expect(deriveSessionSandboxDisplayStatus(toggle.preference(), 'ses_1')).toBe('disabled')
   })
 })
