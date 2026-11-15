@@ -419,8 +419,9 @@ describe('SessionSandboxController', () => {
     await expect(
       controller.resolveSandboxForSession('session-restore-fail', { throwOnRestoreError: true }),
     ).rejects.toThrow(/folder create failed/)
+    await expect(controller.resolveSandboxForSession('session-restore-fail')).rejects.toThrow(/folder create failed/)
 
-    expect(manager.stopCalls).toEqual([folderKey])
+    expect(manager.stopCalls).toEqual([folderKey, folderKey])
     expect(manager.getActive(MANAGER_KEY)).not.toBeNull()
     expect(repo.getApplied(PROJECT)).toMatchObject({ running: true, error: null })
 

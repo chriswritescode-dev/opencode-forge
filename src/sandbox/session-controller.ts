@@ -464,6 +464,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
             logger.log(`[session-sandbox] stop failed for folder sandbox ${key}: ${errorMessage(stopErr)}`)
           }
           trackedSandboxes.delete(key)
+          throw err
         }
         if (opts?.throwOnRestoreError) throw err
         return null
