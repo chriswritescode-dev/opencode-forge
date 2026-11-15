@@ -188,6 +188,7 @@ export function buildMsbCreateArgs(
     env?: string[]
     secrets?: SandboxSecretConfig[]
     allowLan?: boolean
+    idleTimeout?: string
   },
 ): string[] {
   if (workspaces.length === 0) {
@@ -196,6 +197,7 @@ export function buildMsbCreateArgs(
   const args = ['create', opts.image, '--name', name, '--quiet', '--root-disk', SANDBOX_ROOT_DISK]
   if (opts.cpus !== undefined) args.push('-c', String(opts.cpus))
   if (opts.memory) args.push('-m', opts.memory)
+  if (opts.idleTimeout) args.push('--idle-timeout', opts.idleTimeout)
   for (const ws of workspaces) {
     args.push('-v', ws.readOnly ? `${ws.hostDir}:${ws.containerDir}:ro` : `${ws.hostDir}:${ws.containerDir}`)
   }
@@ -466,6 +468,7 @@ export interface CreateSandboxOpts {
   env?: string[]
   secrets?: SandboxSecretConfig[]
   allowLan?: boolean
+  idleTimeout?: string
 }
 
 export interface SandboxExecOpts {
@@ -538,6 +541,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
       env: opts.env,
       secrets: opts.secrets,
       allowLan: opts.allowLan,
+      idleTimeout: opts.idleTimeout,
     })
     const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
     if (result.exitCode === 0) return

@@ -228,8 +228,8 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
         return { enabled: enabling }
       },
       success: () => enabling
-        ? 'Sandbox on for this session. Agent shell, glob, and grep calls run in the project\'s shared sandbox; commands you run yourself stay on the host.'
-        : 'Sandbox off for this session; its agent shell, glob, and grep calls run on the host. Other sessions keep the shared sandbox.',
+        ? 'Sandbox on for this session. Agent shell, glob, and grep calls run in the sandbox for this session\'s folder; commands you run yourself stay on the host.'
+        : 'Sandbox off for this session; its agent shell, glob, and grep calls run on the host. Other sessions keep the sandbox for their folder.',
       guidance: () => enabling ? 'Toggle off, then on to retry.' : 'Toggle again to retry disabling.',
       tolerateAppliedError: () => !enabling,
     })
@@ -240,8 +240,8 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     timeoutMs: OVERRIDES_ACK_TIMEOUT_MS,
     build: () => ({ overrides }),
     success: (applied) => applied.running
-      ? 'Shared sandbox settings applied'
-      : 'Sandbox settings saved; they apply when the shared sandbox next starts',
+      ? 'Host sandbox settings applied'
+      : 'Sandbox settings saved; they apply when a host-session sandbox next starts',
     guidance: () => 'Change the setting again to retry.',
   })
 

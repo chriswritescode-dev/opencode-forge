@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { resolve } from 'path'
+import { existsSync } from 'fs'
 import type { Logger } from '../types'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage'
 import { isHostSandboxWanted } from '../storage/session-sandbox-state'
@@ -8,11 +8,13 @@ import type { SandboxRuntime } from './msb'
 import type { ActiveSandbox, ApplyOverridesOutcome } from './manager'
 import { findSessionAncestor } from '../utils/session-ancestry'
 import { errorMessage } from '../utils/error-message'
-import { isWithinDir } from '../workspace/forge-naming'
+import { canonicalizePath, isSameOrDescendantPath } from './path'
 
 export const DEFAULT_POLL_INTERVAL_MS = 500
 
 export const OWNERSHIP_LOOKUP_TIMEOUT_MS = 5_000
+
+export const FOLDER_SANDBOX_IDLE_TIMEOUT = '30m'
 
 const UNAVAILABLE_SANDBOX_ERROR = 'host-session sandbox is unavailable (sandbox runtime not initialized)'
 
@@ -73,6 +75,21 @@ export function deriveManagerKey(projectId: string): string {
   return `host-session-${digest.slice(0, 12)}`
 }
 
+export function deriveFolderManagerKey(projectId: string, projectRoot: string, directory: string): string {
+  const rootKey = deriveManagerKey(projectId)
+  const folder = canonicalizePath(directory)
+  if (isSameOrDescendantPath(folder, canonicalizePath(projectRoot))) return rootKey
+  return `${rootKey}-${createHash('sha256').update(folder).digest('hex').slice(0, 12)}`
+}
+
+export function isFolderManagerKey(projectId: string, key: string): boolean {
+  return key.startsWith(`${deriveManagerKey(projectId)}-`)
+}
+
+export function isHostSessionManagerKey(projectId: string, key: string): boolean {
+  return key === deriveManagerKey(projectId) || isFolderManagerKey(projectId, key)
+}
+
 function freshRevision(): string {
   return randomUUID()
 }
@@ -95,6 +112,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
   const { projectId, directory, preferences, sandboxManager, logger } = deps
   const pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const managerKey = deriveManagerKey(projectId)
+  const trackedSandboxes = new Map<string, string>()
 
   let cachedDesired: SessionSandboxDesiredState | null = null
   let lastValidatedRevision: string | null = null
@@ -173,17 +191,83 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
   }
 
   function sandboxActive(): boolean {
-    return hostActive || sandboxManager.getActive(managerKey) !== null
+    if (hostActive) return true
+    const keys = new Set<string>([managerKey, ...trackedSandboxes.keys()])
+    for (const key of keys) {
+      if (sandboxManager.getActive(key) !== null) return true
+    }
+    return false
+  }
+
+  async function stopAllTracked(): Promise<{ stopped: boolean; error: string | null }> {
+    const keys = new Set<string>([managerKey, ...trackedSandboxes.keys()])
+    let error: string | null = null
+    let stopped = true
+    for (const key of keys) {
+      try {
+        await sandboxManager.stop(key)
+        trackedSandboxes.delete(key)
+      } catch (err) {
+        const msg = errorMessage(err)
+        logger.log(`[session-sandbox] stop failed for ${key}: ${msg}`)
+        error ??= msg
+        stopped = false
+      }
+    }
+    if (stopped) hostActive = false
+    return { stopped, error }
   }
 
   async function bestEffortStop(): Promise<boolean> {
+    return (await stopAllTracked()).stopped
+  }
+
+  async function stopFolderSandbox(key: string): Promise<void> {
     try {
-      await sandboxManager.stop(managerKey)
-      hostActive = false
-      return true
+      await sandboxManager.stop(key)
     } catch (err) {
-      logger.log(`[session-sandbox] best-effort stop failed: ${errorMessage(err)}`)
-      return false
+      logger.log(`[session-sandbox] stop failed for folder sandbox ${key}: ${errorMessage(err)}`)
+      return
+    }
+    trackedSandboxes.delete(key)
+  }
+
+  async function pruneMissingFolders(): Promise<void> {
+    for (const [key, folder] of [...trackedSandboxes]) {
+      if (key === managerKey || existsSync(folder)) continue
+      await stopFolderSandbox(key)
+    }
+  }
+
+  async function removeStaleFolderSandboxes(): Promise<void> {
+    try {
+      const names = await sandboxManager.runtime.listSandboxesByPrefix(`forge-${managerKey}-`)
+      let removed = 0
+      for (const name of names) {
+        try {
+          await sandboxManager.runtime.removeSandbox(name)
+          removed += 1
+        } catch (err) {
+          logger.log(`[session-sandbox] failed to remove leftover folder sandbox ${name}: ${errorMessage(err)}`)
+        }
+      }
+      if (removed > 0) {
+        logger.log(`[session-sandbox] removed ${removed} leftover folder sandbox(es)`)
+      }
+    } catch (err) {
+      logger.log(`[session-sandbox] failed to list leftover folder sandboxes: ${errorMessage(err)}`)
+    }
+  }
+
+  async function applyOverridesToTrackedFolders(): Promise<void> {
+    for (const [key, folder] of [...trackedSandboxes]) {
+      if (key === managerKey) continue
+      try {
+        await sandboxManager.applyOverrides(key, folder)
+      } catch (err) {
+        logger.log(`[session-sandbox] applyOverrides failed for folder sandbox ${key}: ${errorMessage(err)}`)
+        await stopFolderSandbox(key)
+      }
     }
   }
 
@@ -244,16 +328,17 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         return desired.revision
       }
       hostActive = true
+      trackedSandboxes.set(managerKey, directory)
+      await applyOverridesToTrackedFolders()
       lastValidatedRevision = desired.revision
       clearFailure()
       writeApplied(appliedState(desired.revision, true, null, desired.overrides))
       return desired.revision
     }
 
-    try {
-      await sandboxManager.stop(managerKey)
-    } catch (err) {
-      const msg = errorMessage(err)
+    const stopOutcome = await stopAllTracked()
+    if (!stopOutcome.stopped) {
+      const msg = stopOutcome.error ?? 'session sandbox stop failed'
       hostActive = true
       lastValidatedRevision = null
       recordFailure(desired.revision, msg)
@@ -288,7 +373,10 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     if (disposed || reconciling) return
     reconciling = true
     try {
-      await serialized(() => reconcile())
+      await serialized(async () => {
+        await pruneMissingFolders()
+        await reconcile()
+      })
     } catch (err) {
       logger.error(`[session-sandbox] reconcile failed: ${errorMessage(err)}`)
     } finally {
@@ -341,7 +429,6 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       )
     }
     if (identity.projectId !== projectId) return null
-    if (!isWithinDir(resolve(directory), resolve(identity.directory))) return null
     if (disposed) return null
 
     const failure = recordedFailure
@@ -351,26 +438,36 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       )
     }
 
+    const key = deriveFolderManagerKey(projectId, directory, identity.directory)
+    const targetDir = key === managerKey ? directory : identity.directory
+
     return serialized(async () => {
       if (disposed) return null
       try {
-        await sandboxManager.ensureRunning(managerKey, directory)
+        await sandboxManager.ensureRunning(key, targetDir)
       } catch (err) {
         const msg = errorMessage(err)
         logger.log(`[session-sandbox] ensureRunning failed during restore: ${msg}`)
-        const current = readDesired()
-        lastValidatedRevision = null
-        recordFailure(current?.revision ?? desired?.revision ?? '', msg)
-        const stopped = await bestEffortStop()
-        if (!stopped) hostActive = true
-        if (current) {
-          writeApplied(appliedState(current.revision, false, msg, current.overrides))
+        if (key === managerKey) {
+          const current = readDesired()
+          lastValidatedRevision = null
+          recordFailure(current?.revision ?? desired?.revision ?? '', msg)
+          const stopped = await bestEffortStop()
+          if (!stopped) hostActive = true
+          if (current) {
+            writeApplied(appliedState(current.revision, false, msg, current.overrides))
+          }
+        } else {
+          trackedSandboxes.set(key, targetDir)
+          await stopFolderSandbox(key)
+          throw err
         }
         if (opts?.throwOnRestoreError) throw err
         return null
       }
+      trackedSandboxes.set(key, targetDir)
       if (disposed) return null
-      const active = sandboxManager.getActive(managerKey)
+      const active = sandboxManager.getActive(key)
       if (!active) return null
       return sandboxContextFromActive(sandboxManager.runtime, active)
     })
@@ -391,7 +488,10 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
               requestedAt: Date.now(),
             })
             cachedDesired = seeded
-            await serialized(() => reconcile())
+            await serialized(async () => {
+              await removeStaleFolderSandboxes()
+              await reconcile()
+            })
           }
         } catch (err) {
           try {
@@ -434,12 +534,10 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         }
         let stopped = true
         if (sandboxActive()) {
-          try {
-            await sandboxManager.stop(managerKey)
-            hostActive = false
-          } catch (err) {
-            stopped = false
-            logger.log(`[session-sandbox] stop failed during dispose: ${errorMessage(err)}`)
+          const outcome = await stopAllTracked()
+          stopped = outcome.stopped
+          if (!stopped) {
+            logger.log(`[session-sandbox] stop failed during dispose: ${outcome.error ?? 'unknown error'}`)
           }
         }
         if (desired) {

@@ -69,15 +69,15 @@ describe('buildHostSandboxSettingsOptions', () => {
 
     expect(options.map((o) => o.value)).toEqual(['resource:cpus', 'resource:memory', 'allowLan', 'reset', 'apply', 'done'])
     expect(options[0]?.title).toBe('CPUs: 6')
-    expect(options[0]?.description).toContain('restarts the shared sandbox for every session in this project')
-    expect(options[2]?.description).toContain('recreates the shared sandbox for every session in this project')
+    expect(options[0]?.description).toContain('restarts the host-session sandboxes in use in this project')
+    expect(options[2]?.description).toContain('recreates the host-session sandboxes in use in this project')
     expect(options.at(-1)?.title).toBe('Discard changes')
   })
 
   test('describes stopped-sandbox changes as applying at the next start', () => {
     const options = buildHostSandboxSettingsOptions(preference(), { resources: { cpus: '6' } }, defaults)
 
-    expect(options[0]?.description).toBe('Press enter to change; applied when the shared sandbox next starts')
+    expect(options[0]?.description).toBe('Press enter to change; applied when a host-session sandbox next starts')
     expect(options.at(-2)?.title).toBe('Apply settings')
   })
 })

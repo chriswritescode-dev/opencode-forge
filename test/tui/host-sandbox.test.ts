@@ -112,7 +112,7 @@ describe('createHostSandboxToggle', () => {
     expect(toggle.preference()).toBeNull()
   })
 
-  test('opts the session out of the shared sandbox when the project default is on', async () => {
+  test('opts the session out of the host sandbox when the project default is on', async () => {
     const { toasts, toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
 
     const pending = toggle.toggle()
@@ -125,11 +125,11 @@ describe('createHostSandboxToggle', () => {
     expect(toggle.preference()?.desired?.sessions).toEqual({ ses_1: false })
     expect(toasts.at(-1)).toMatchObject({
       variant: 'success',
-      message: 'Sandbox off for this session; its agent shell, glob, and grep calls run on the host. Other sessions keep the shared sandbox.',
+      message: 'Sandbox off for this session; its agent shell, glob, and grep calls run on the host. Other sessions keep the sandbox for their folder.',
     })
   })
 
-  test('joins the shared sandbox when the project default is off', async () => {
+  test('joins the host sandbox when the project default is off', async () => {
     const { toasts, toggle, setState, acknowledge } = setup({ sessionId: 'ses_1', hostSessionsDefault: false })
 
     const pending = toggle.toggle()
@@ -141,11 +141,11 @@ describe('createHostSandboxToggle', () => {
     expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', enabled: true })
     expect(toasts.at(-1)).toMatchObject({
       variant: 'success',
-      message: 'Sandbox on for this session. Agent shell, glob, and grep calls run in the project\'s shared sandbox; commands you run yourself stay on the host.',
+      message: 'Sandbox on for this session. Agent shell, glob, and grep calls run in the sandbox for this session\'s folder; commands you run yourself stay on the host.',
     })
   })
 
-  test('toggles a child of an opted-out parent back into the shared sandbox', async () => {
+  test('toggles a child of an opted-out parent back into the host sandbox', async () => {
     const { toasts, toggle, setState, acknowledge } = setup({
       sessionId: 'ses_child',
       hostSessionsDefault: true,
@@ -163,7 +163,7 @@ describe('createHostSandboxToggle', () => {
     expect(toggle.preference()?.desired?.sessions).toEqual({ ses_parent: false, ses_child: true })
     expect(toasts.at(-1)).toMatchObject({
       variant: 'success',
-      message: 'Sandbox on for this session. Agent shell, glob, and grep calls run in the project\'s shared sandbox; commands you run yourself stay on the host.',
+      message: 'Sandbox on for this session. Agent shell, glob, and grep calls run in the sandbox for this session\'s folder; commands you run yourself stay on the host.',
     })
   })
 
@@ -229,7 +229,7 @@ describe('createHostSandboxToggle', () => {
     expect(toggle.preference()?.desired?.sessions).toEqual({ ses_1: false })
   })
 
-  test('acknowledges an opt-out even when the shared sandbox reports an error', async () => {
+  test('acknowledges an opt-out even when the host sandbox reports an error', async () => {
     const { toasts, toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
 
     const pending = toggle.toggle()
@@ -242,7 +242,7 @@ describe('createHostSandboxToggle', () => {
     expect(toasts.at(-1)?.message).toContain('Sandbox off for this session')
   })
 
-  test('rejects when joining the shared sandbox fails to start', async () => {
+  test('rejects when joining the host sandbox fails to start', async () => {
     const { toasts, toggle, setState, acknowledge } = setup({ sessionId: 'ses_1', hostSessionsDefault: false })
 
     const pending = toggle.toggle()
@@ -255,7 +255,7 @@ describe('createHostSandboxToggle', () => {
     expect(toasts.at(-1)?.message).toContain('Sandbox toggle failed: msb failed to start')
   })
 
-  test('setOverrides reports the shared sandbox settings as applied', async () => {
+  test('setOverrides reports the host sandbox settings as applied', async () => {
     const { toasts, toggle, setState, acknowledge, awaitInitialState } = setup({ sessionId: 'ses_1' })
     await awaitInitialState()
 
@@ -267,10 +267,10 @@ describe('createHostSandboxToggle', () => {
 
     expect(setState).toHaveBeenLastCalledWith({ sessionId: 'ses_1', overrides: { resources: { memory: '12g' }, allowLan: true } })
     expect(toggle.preference()?.desired).toMatchObject({ sessions: {}, overrides: { allowLan: true } })
-    expect(toasts.at(-1)).toMatchObject({ variant: 'success', message: 'Shared sandbox settings applied' })
+    expect(toasts.at(-1)).toMatchObject({ variant: 'success', message: 'Host sandbox settings applied' })
   })
 
-  test('setOverrides saves settings for the next shared sandbox start when it is not running', async () => {
+  test('setOverrides saves settings for the next host sandbox start when it is not running', async () => {
     const { toasts, toggle, setState, acknowledge, awaitInitialState } = setup({
       sessionId: 'ses_1',
       hostSessionsDefault: false,
@@ -285,7 +285,7 @@ describe('createHostSandboxToggle', () => {
 
     expect(toasts.at(-1)).toMatchObject({
       variant: 'success',
-      message: 'Sandbox settings saved; they apply when the shared sandbox next starts',
+      message: 'Sandbox settings saved; they apply when a host-session sandbox next starts',
     })
   })
 

@@ -447,7 +447,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           withKeybind({
             id: 'forge.sandbox.toggleHost',
             title: 'Toggle sandbox',
-            description: 'Turn the shared sandbox on or off for this session\'s agent shell, glob, and grep calls',
+            description: 'Turn the host-session sandbox on or off for this session\'s agent shell, glob, and grep calls',
             group: 'Forge',
             palette: true,
             run: () => { void hostSandbox.toggle() },
@@ -455,7 +455,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           withKeybind({
             id: 'forge.sandbox.settings',
             title: 'Sandbox settings',
-            description: 'Set the shared project sandbox\'s CPUs, memory, and LAN access',
+            description: 'Set CPUs, memory, and LAN access for the project\'s host-session sandboxes',
             group: 'Forge',
             palette: true,
             run: () => {
