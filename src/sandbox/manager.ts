@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import type { SandboxRuntime, SandboxWorkspace, CreateSandboxOpts } from './msb'
-import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, resolveSandboxSecret, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
+import type { SandboxRuntime, SandboxWorkspace, CreateSandboxOpts, SandboxState } from './msb'
+import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
+import { fetchSandboxSecretValues, resolveSandboxSecret } from './secrets'
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, basename, dirname, posix as posixPath } from 'path'
@@ -11,6 +12,7 @@ import { formatTemplateBuildCommands } from './template'
 
 export interface SandboxManagerConfig {
   image: string
+  projectId?: string
   resources?: SandboxResources
   resolveOverrides?: (worktreeName: string) => SandboxOverrides | undefined
   sourceProjectDir?: string
@@ -499,8 +501,30 @@ export function createSandboxManager(
     })
   }
 
-  function resolveSandboxSecrets(): SandboxSecretConfig[] {
-    const resolved: SandboxSecretConfig[] = []
+  function warnUnsetSecretEnv(env: string): void {
+    if (warnedUnsetSecretEnv.has(env)) return
+    warnedUnsetSecretEnv.add(env)
+    logger.log(`Sandbox: skipping secret ${env}: host variable is not set; sandboxed shell commands will fail until the variable is exported in the environment that launches opencode (configured under sandbox.network.secrets)`)
+  }
+
+  async function resolveSandboxSecrets(
+    worktreeName: string,
+    projectDir: string,
+    overrides?: SandboxOverrides,
+  ): Promise<{ secrets: SandboxSecretConfig[]; egressSecrets: SandboxSecretConfig[]; secretEnv?: Record<string, string> }> {
+    const effective = overrides ?? config.resolveOverrides?.(worktreeName)
+    const perSandbox: SandboxSecretConfig[] = []
+    for (const raw of effective?.secrets ?? []) {
+      const outcome = resolveSandboxSecret(raw)
+      if ('reason' in outcome) {
+        logger.log(`Sandbox: skipping secret${outcome.env ? ` ${outcome.env}` : ''}: ${outcome.reason}`)
+        continue
+      }
+      perSandbox.push(outcome.secret)
+    }
+    const perSandboxEnvs = new Set(perSandbox.map((secret) => secret.env))
+
+    const fromConfig: SandboxSecretConfig[] = []
     for (const raw of config.network?.secrets ?? []) {
       const outcome = resolveSandboxSecret(raw)
       if ('reason' in outcome) {
@@ -508,33 +532,61 @@ export function createSandboxManager(
         continue
       }
       const env = outcome.secret.env
+      if (perSandboxEnvs.has(env)) continue
       if (process.env[env] === undefined) {
-        if (!warnedUnsetSecretEnv.has(env)) {
-          warnedUnsetSecretEnv.add(env)
-          logger.log(`Sandbox: skipping secret ${env}: host variable is not set; sandboxed shell commands will fail until the variable is exported in the environment that launches opencode (configured under sandbox.network.secrets)`)
-        }
+        warnUnsetSecretEnv(env)
         continue
       }
-      resolved.push(outcome.secret)
+      fromConfig.push(outcome.secret)
     }
-    return resolved
+
+    const providerId = effective?.secretProvider?.trim()
+    let keptPerSandbox = perSandbox
+    let secretEnv: Record<string, string> | undefined
+    if (providerId && perSandbox.length > 0) {
+      secretEnv = await fetchSandboxSecretValues(providerId, {
+        projectId: config.projectId ?? '',
+        sandbox: worktreeName,
+        directory: resolve(projectDir),
+        names: perSandbox.map((secret) => secret.env),
+      })
+    } else if (perSandbox.length > 0) {
+      keptPerSandbox = perSandbox.filter((secret) => {
+        if (process.env[secret.env] !== undefined) return true
+        warnUnsetSecretEnv(secret.env)
+        return false
+      })
+    }
+
+    return { secrets: [...fromConfig, ...keptPerSandbox], egressSecrets: fromConfig, secretEnv }
   }
 
-  async function refreshSecrets(containerName: string): Promise<void> {
-    if (convergedSecrets.has(containerName)) return
-    const secrets = resolveSandboxSecrets()
-    if (secrets.length === 0) {
-      convergedSecrets.add(containerName)
-      return
+  async function adoptSecrets(
+    worktreeName: string,
+    projectDir: string,
+    containerName: string,
+    state: SandboxState,
+    overrides?: SandboxOverrides,
+  ): Promise<void> {
+    if (convergedSecrets.has(containerName) && state !== 'stopped') return
+    const resolved = await resolveSandboxSecrets(worktreeName, projectDir, overrides)
+    if (!convergedSecrets.has(containerName)) {
+      if (resolved.secrets.length === 0) {
+        convergedSecrets.add(containerName)
+      } else {
+        warnUncoveredSecretHosts(containerName, resolved.secrets)
+        const result = await runtime.refreshSandboxSecrets(containerName, resolved.secrets, resolved.secretEnv)
+        if (!result.ok) {
+          logger.log(`Sandbox: failed to refresh secrets for ${containerName}: ${result.reason}`)
+          throw new Error(`Failed to refresh secrets for sandbox ${containerName}: ${result.reason}; refusing to adopt`)
+        }
+        convergedSecrets.add(containerName)
+        recordHandledSecretEnvs(containerName, resolved.secrets)
+      }
     }
-    warnUncoveredSecretHosts(containerName, secrets)
-    const result = await runtime.refreshSandboxSecrets(containerName, secrets)
-    if (!result.ok) {
-      logger.log(`Sandbox: failed to refresh secrets for ${containerName}: ${result.reason}`)
-      throw new Error(`Failed to refresh secrets for sandbox ${containerName}: ${result.reason}; refusing to adopt`)
+    if (state === 'stopped' && resolved.secretEnv !== undefined) {
+      await runtime.startSandbox(containerName, resolved.secretEnv)
     }
-    convergedSecrets.add(containerName)
-    recordHandledSecretEnvs(containerName, secrets)
   }
 
   function recordHandledSecretEnvs(containerName: string, secrets: SandboxSecretConfig[]): void {
@@ -577,7 +629,7 @@ export function createSandboxManager(
     }
     if (state !== 'missing') {
       logger.log(`Sandbox ${containerName} already exists (${state}), adopting`)
-      await refreshSecrets(containerName)
+      await adoptSecrets(worktreeName, absoluteProjectDir, containerName, state, overrides)
       await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       await learnSettings(worktreeName)
@@ -587,17 +639,20 @@ export function createSandboxManager(
     const { mounts } = buildMountPlan(absoluteProjectDir)
     const workspaces = buildSandboxWorkspaces(mounts, logger)
     const target = resolveTargetSettings(worktreeName, overrides)
-    const secrets = resolveSandboxSecrets()
+    const resolvedSecrets = await resolveSandboxSecrets(worktreeName, absoluteProjectDir, overrides)
+    const secrets = resolvedSecrets.secrets
+    const restrictEgress = egressRestrictionRequested(config.network?.allow, resolvedSecrets.egressSecrets)
     logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${target.resources.memory} cpus=${target.resources.cpus} lan=${target.allowLan} workspaces=${workspaces.length})`)
     const createOpts: CreateSandboxOpts = {
       image: config.image,
       resources: target.resources,
-      networkAllow: buildNetworkAllow(config.network?.allow, secrets, logger),
-      restrictEgress: egressRestrictionRequested(config.network?.allow, secrets),
+      networkAllow: buildNetworkAllow(config.network?.allow, restrictEgress ? secrets : resolvedSecrets.egressSecrets, logger),
+      restrictEgress,
       env: resolvePassthroughEnv(),
       secrets,
       allowLan: target.allowLan,
     }
+    if (resolvedSecrets.secretEnv !== undefined) createOpts.secretEnv = resolvedSecrets.secretEnv
     const idleTimeout = config.resolveIdleTimeout?.(worktreeName)
     if (idleTimeout) createOpts.idleTimeout = idleTimeout
     await runtime.createSandbox(containerName, workspaces, createOpts)
@@ -733,7 +788,7 @@ export function createSandboxManager(
     const state = await runtime.getSandboxState(containerName)
 
     if (state === 'running' || state === 'stopped') {
-      await refreshSecrets(containerName)
+      await adoptSecrets(worktreeName, projectDir, containerName, state)
       await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       await learnSettings(worktreeName)

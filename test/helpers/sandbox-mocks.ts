@@ -2,20 +2,26 @@ import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/s
 import type { SandboxResources, SandboxSecretConfig } from '../../src/types'
 import type { SandboxRuntimeSettings } from '../../src/sandbox/loop-settings'
 
+type MockCreateSandboxOpts = {
+  image?: string
+  resources?: SandboxResources
+  networkAllow?: string[]
+  env?: string[]
+  secrets?: SandboxSecretConfig[]
+  secretEnv?: Record<string, string>
+  restrictEgress?: boolean
+  idleTimeout?: string
+}
+
 /**
  * Mock SandboxRuntime plus the test helpers used by the manager suites. Extending
  * `SandboxRuntime` keeps the object statically checked against the real runtime interface
  * while exposing recording/control methods that the production type does not have.
  */
 export interface MockSandboxRuntime extends SandboxRuntime {
-  getCreateSandboxCalls(): Array<
-    [
-      string,
-      SandboxWorkspace[],
-      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[]; idleTimeout?: string } | undefined,
-    ]
-  >
-  getRefreshSecretCalls(): Array<[string, SandboxSecretConfig[]]>
+  getCreateSandboxCalls(): Array<[string, SandboxWorkspace[], MockCreateSandboxOpts | undefined]>
+  getRefreshSecretCalls(): Array<[string, SandboxSecretConfig[], Record<string, string> | undefined]>
+  getStartSandboxCalls(): Array<[string, Record<string, string> | undefined]>
   getRemoveSandboxCalls(): string[]
   getResizeCalls(): Array<[string, Pick<SandboxResources, 'cpus' | 'memory'>]>
   /** Sets what `readSandboxSettings` reports for a sandbox; `null` simulates an unreadable one. */
@@ -33,15 +39,10 @@ export interface MockSandboxRuntime extends SandboxRuntime {
  * Tracks createSandbox/removeSandbox calls and maintains a running-sandboxes set.
  */
 export function createMockSandboxRuntime(): MockSandboxRuntime {
-  const createSandboxCalls: Array<
-    [
-      string,
-      SandboxWorkspace[],
-      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[]; idleTimeout?: string } | undefined,
-    ]
-  > = []
+  const createSandboxCalls: Array<[string, SandboxWorkspace[], MockCreateSandboxOpts | undefined]> = []
   const removeSandboxCalls: string[] = []
-  const refreshSecretCalls: Array<[string, SandboxSecretConfig[]]> = []
+  const refreshSecretCalls: Array<[string, SandboxSecretConfig[], Record<string, string> | undefined]> = []
+  const startSandboxCalls: Array<[string, Record<string, string> | undefined]> = []
   const resizeCalls: Array<[string, Pick<SandboxResources, 'cpus' | 'memory'>]> = []
   const sandboxSettings = new Map<string, SandboxRuntimeSettings | null>()
   let sandboxes = ['forge-foo', 'forge-bar']
@@ -59,7 +60,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     createSandbox: async (
       name: string,
       workspaces: SandboxWorkspace[],
-      opts?: { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[]; idleTimeout?: string },
+      opts?: MockCreateSandboxOpts,
     ) => {
       createSandboxCalls.push([name, workspaces, opts])
       sandboxStates.set(name, 'running')
@@ -76,9 +77,17 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     getSandboxState: async (name: string) => sandboxStates.get(name) ?? 'missing',
     sandboxContainerName: (worktreeName: string) => `forge-${worktreeName}`,
     listSandboxesByPrefix: async (prefix: string) => sandboxes.filter((n) => n.startsWith(prefix)),
-    refreshSandboxSecrets: async (name: string, secrets: SandboxSecretConfig[]) => {
-      refreshSecretCalls.push([name, secrets])
+    refreshSandboxSecrets: async (
+      name: string,
+      secrets: SandboxSecretConfig[],
+      secretEnv?: Record<string, string>,
+    ) => {
+      refreshSecretCalls.push([name, secrets, secretEnv])
       return { ok: true as const }
+    },
+    startSandbox: async (name: string, secretEnv?: Record<string, string>) => {
+      startSandboxCalls.push([name, secretEnv])
+      sandboxStates.set(name, 'running')
     },
     readSandboxSettings: async (name: string) => sandboxSettings.has(name)
       ? sandboxSettings.get(name)!
@@ -88,6 +97,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     },
     getCreateSandboxCalls: () => createSandboxCalls,
     getRefreshSecretCalls: () => refreshSecretCalls,
+    getStartSandboxCalls: () => startSandboxCalls,
     getRemoveSandboxCalls: () => removeSandboxCalls,
     getResizeCalls: () => resizeCalls,
     setSandboxSettings: (name: string, settings: SandboxRuntimeSettings | null) => {

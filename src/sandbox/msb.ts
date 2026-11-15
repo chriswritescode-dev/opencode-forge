@@ -6,11 +6,11 @@ import type {
   Logger,
   SandboxResources,
   SandboxSecretConfig,
-  SandboxSecretSubstitution,
   SandboxSecretViolationAction,
 } from '../types'
 import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
 import { MSB_SIZE_RE, SANDBOX_RESOURCE_DEFAULTS, type SandboxRuntimeSettings } from './loop-settings'
+import { resolveSandboxSecret } from './secrets'
 
 export function sanitizeMsbName(raw: string): string {
   const name = raw
@@ -84,80 +84,7 @@ export function msbSizeToMib(size: string): number | undefined {
   return Math.round(Number(amount) * factor)
 }
 
-const sandboxSecretViolationActionSchema = z.enum(['block', 'block-and-log', 'block-and-terminate'])
-
 const MSB_DEFAULT_SECRET_VIOLATION_ACTION: SandboxSecretViolationAction = 'block-and-log'
-
-const sandboxSecretSubstitutionSchema = z.object({
-  headers: z.boolean().optional(),
-  headerFields: z.array(z.string()).optional(),
-  query: z.boolean().optional(),
-  body: z.boolean().optional(),
-})
-
-const sandboxSecretSchema = z.object({
-  env: z.string(),
-  hosts: z.array(z.string()).optional(),
-  substitution: sandboxSecretSubstitutionSchema.optional(),
-  passthrough: z.array(z.string()).optional(),
-  violationAction: sandboxSecretViolationActionSchema.optional(),
-  requireTlsIdentity: z.boolean().optional(),
-})
-
-const SECRET_ENTRY_RE = /^[^\s,@[\]]+$/
-
-const secretEnvProbeSchema = z.looseObject({ env: z.string() })
-
-function trimmedEntries(entries: string[] | undefined): string[] {
-  return (entries ?? []).map((entry) => entry.trim()).filter(Boolean)
-}
-
-export function resolveSandboxSecret(
-  raw: SandboxSecretConfig,
-): { secret: SandboxSecretConfig } | { env: string; reason: string } {
-  const envProbe = secretEnvProbeSchema.safeParse(raw)
-  const rawEnv = envProbe.success ? envProbe.data.env.trim() : ''
-  const parsed = sandboxSecretSchema.safeParse(raw)
-  if (!parsed.success) return { env: rawEnv, reason: 'invalid definition' }
-  const env = parsed.data.env.trim()
-  if (!env) return { env, reason: 'missing env name' }
-  if (env.includes('=')) return { env, reason: 'env name must not contain =' }
-  if (env.includes(':') || !SECRET_ENTRY_RE.test(env)) {
-    return { env, reason: 'env name must not contain whitespace, commas, colons, @, or brackets' }
-  }
-  const hosts = trimmedEntries(parsed.data.hosts)
-  if (hosts.length === 0) return { env, reason: 'no allowed hosts' }
-  if (hosts.some((host) => !SECRET_ENTRY_RE.test(host))) {
-    return { env, reason: 'hosts entries must not contain whitespace, commas, @, or brackets' }
-  }
-  const substitution = parsed.data.substitution
-  const headerFields = trimmedEntries(substitution?.headerFields)
-  if (headerFields.length > 0 && substitution?.headers === false) {
-    return { env, reason: 'substitution.headerFields requires substitution.headers' }
-  }
-  const passthrough = trimmedEntries(parsed.data.passthrough)
-  for (const entry of [...headerFields, ...passthrough]) {
-    if (!SECRET_ENTRY_RE.test(entry)) {
-      return {
-        env,
-        reason: 'substitution.headerFields and passthrough entries must not contain whitespace, commas, @, or brackets',
-      }
-    }
-  }
-  const secret: SandboxSecretConfig = { env, hosts }
-  if (substitution !== undefined) {
-    const resolvedSubstitution: SandboxSecretSubstitution = {}
-    if (substitution.headers !== undefined) resolvedSubstitution.headers = substitution.headers
-    if (headerFields.length > 0) resolvedSubstitution.headerFields = headerFields
-    if (substitution.query !== undefined) resolvedSubstitution.query = substitution.query
-    if (substitution.body !== undefined) resolvedSubstitution.body = substitution.body
-    secret.substitution = resolvedSubstitution
-  }
-  if (passthrough.length > 0) secret.passthrough = passthrough
-  if (parsed.data.violationAction !== undefined) secret.violationAction = parsed.data.violationAction
-  if (parsed.data.requireTlsIdentity !== undefined) secret.requireTlsIdentity = parsed.data.requireTlsIdentity
-  return { secret }
-}
 
 function normalizeSecrets(secrets: SandboxSecretConfig[] | undefined): SandboxSecretConfig[] {
   const out: SandboxSecretConfig[] = []
@@ -558,7 +485,7 @@ export type MsbAvailability =
 
 export type CommandRunner = (
   args: string[],
-  opts?: { timeout?: number; stdin?: string; abort?: AbortSignal },
+  opts?: { timeout?: number; stdin?: string; abort?: AbortSignal; env?: Record<string, string> },
 ) => Promise<CommandResult>
 
 export const MSB_INSTALL_COMMAND = 'curl -fsSL https://install.microsandbox.dev | sh'
@@ -612,6 +539,7 @@ export interface CreateSandboxOpts {
   restrictEgress?: boolean
   env?: string[]
   secrets?: SandboxSecretConfig[]
+  secretEnv?: Record<string, string>
   allowLan?: boolean
   idleTimeout?: string
 }
@@ -634,7 +562,12 @@ export interface SandboxRuntime {
   getSandboxState(name: string): Promise<SandboxState>
   sandboxContainerName(worktreeName: string): string
   listSandboxesByPrefix(prefix: string): Promise<string[]>
-  refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<SecretRefreshResult>
+  refreshSandboxSecrets(
+    name: string,
+    secrets: SandboxSecretConfig[],
+    secretEnv?: Record<string, string>,
+  ): Promise<SecretRefreshResult>
+  startSandbox(name: string, secretEnv?: Record<string, string>): Promise<void>
   readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null>
   resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
@@ -647,7 +580,12 @@ const MSB_CREATE_EXISTS_RE = /already exists/i
 
 export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner }): SandboxRuntime {
   const run: CommandRunner =
-    opts?.run ?? ((args, o) => runCommand('msb', args, { ...o, logger, logLabel: 'msb' }))
+    opts?.run ?? ((args, o) => runCommand('msb', args, {
+      ...o,
+      env: o?.env ? { ...process.env, ...o.env } : undefined,
+      logger,
+      logLabel: 'msb',
+    }))
 
   async function checkAvailable(): Promise<MsbAvailability> {
     return checkMsbAvailability(run)
@@ -702,7 +640,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
         allowLan: opts.allowLan,
         idleTimeout: opts.idleTimeout,
       })
-      const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
+      const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT, env: opts.secretEnv })
       if (result.exitCode !== 0) {
         if (!MSB_CREATE_EXISTS_RE.test(`${result.stdout}\n${result.stderr}`)) {
           throw new Error(`Failed to create sandbox: ${result.stderr}`)
@@ -710,7 +648,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
         logger.log(
           `Sandbox: msb reports ${name} already exists but it was not reusable (orphaned state); recreating with --replace`,
         )
-        const replaced = await run([...args, '--replace'], { timeout: MSB_DEFAULT_TIMEOUT })
+        const replaced = await run([...args, '--replace'], { timeout: MSB_DEFAULT_TIMEOUT, env: opts.secretEnv })
         if (replaced.exitCode !== 0) {
           throw new Error(`Failed to create sandbox: ${replaced.stderr}`)
         }
@@ -777,6 +715,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
   async function refreshSandboxSecrets(
     name: string,
     secrets: SandboxSecretConfig[],
+    secretEnv?: Record<string, string>,
   ): Promise<SecretRefreshResult> {
     const inspectFailure: SecretRefreshResult = {
       ok: false,
@@ -821,13 +760,20 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
       ...buildSecretFlags(secrets),
     ]
     try {
-      const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
+      const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT, env: secretEnv })
       if (result.exitCode !== 0) {
         return { ok: false, reason: (result.stderr || result.stdout).trim() || 'msb modify failed' }
       }
       return { ok: true }
     } catch (err) {
       return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  async function startSandbox(name: string, secretEnv?: Record<string, string>): Promise<void> {
+    const result = await run(['start', name, '--quiet'], { timeout: MSB_DEFAULT_TIMEOUT, env: secretEnv })
+    if (result.exitCode !== 0) {
+      throw new Error(`Failed to start sandbox ${name}: ${result.stderr || result.stdout}`)
     }
   }
 
@@ -864,6 +810,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     sandboxContainerName,
     listSandboxesByPrefix,
     refreshSandboxSecrets,
+    startSandbox,
     readSandboxSettings,
     resizeSandbox,
   }

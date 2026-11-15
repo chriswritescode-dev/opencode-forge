@@ -89,6 +89,8 @@ export interface SandboxResources {
 export interface SandboxOverrides {
   resources?: SandboxResources
   allowLan?: boolean
+  secrets?: SandboxSecretConfig[]
+  secretProvider?: string
 }
 
 export interface LoopSandboxSettings extends SandboxOverrides {

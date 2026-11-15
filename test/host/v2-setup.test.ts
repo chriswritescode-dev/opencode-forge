@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { FORGE_EVENT_TYPES, V2_EVENT_TYPES } from '../../src/host/v2-events'
 import { FORGE_RPC } from '../../src/host/forge-rpc'
+import { sandboxSecretProviders } from '../../src/sandbox/secrets'
 import { VERSION } from '../../src/version'
 import { isPromptQueued, hasSuppressedIdle, recordSuppressedIdle, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { ForgeClient } from '../../src/client/port'
@@ -338,6 +339,65 @@ describe('V2 server setup', () => {
     const worktrees = await handlers.worktrees()
     expect(typeof worktrees.root).toBe('string')
     expect(worktrees.dirs).toEqual([])
+  })
+
+  test('the executePlan and loopRestart RPCs accept sandbox secret definitions', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      executePlan: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+      loopRestart: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+
+    await expect(handlers.executePlan({
+      sessionId: 'ses_host',
+      mode: 'execute-here',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      sandbox: {
+        secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }],
+        secretProvider: 'test-provider',
+      },
+    })).resolves.toEqual({ error: 'Sandbox secrets are only supported for loop executions' })
+
+    sandboxSecretProviders().set('test-provider', () => ({ LOOP_TOKEN: 'value' }))
+    try {
+      await expect(handlers.loopRestart({
+        loopName: 'missing-loop',
+        auditorModel: 'anthropic/claude',
+        auditorVariant: '',
+        sandbox: {
+          secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'], violationAction: 'block' }],
+          secretProvider: 'test-provider',
+        },
+      })).resolves.toMatchObject({ error: expect.stringContaining('missing-loop') })
+    } finally {
+      sandboxSecretProviders().delete('test-provider')
+    }
+  })
+
+  test('the hostSandboxSet RPC cannot carry sandbox secret definitions', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      hostSandboxSet: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+      hostSandboxState: () => Promise<Record<string, unknown>>
+    }
+
+    await expect(handlers.hostSandboxSet({
+      sessionId: 'ses_host',
+      enabled: true,
+      overrides: {
+        allowLan: true,
+        secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }],
+        secretProvider: 'test-provider',
+      },
+    })).resolves.toMatchObject({ revision: expect.any(String) })
+
+    const state = await handlers.hostSandboxState()
+    expect(state.desired).toMatchObject({ overrides: { allowLan: true } })
+    expect((state.desired as { overrides: Record<string, unknown> }).overrides).not.toHaveProperty('secrets')
+    expect((state.desired as { overrides: Record<string, unknown> }).overrides).not.toHaveProperty('secretProvider')
   })
 
   test('a registration failure does not reject setup and drops toasts', async () => {

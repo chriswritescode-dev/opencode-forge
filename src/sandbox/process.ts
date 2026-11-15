@@ -9,7 +9,7 @@ export interface CommandResult {
 
 export interface RunCommandOpts {
   cwd?: string
-  env?: Record<string, string>
+  env?: NodeJS.ProcessEnv
   timeout?: number
   abort?: AbortSignal
   stdin?: string

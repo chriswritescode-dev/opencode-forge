@@ -5,6 +5,7 @@ import type { SharedSessionSandboxController } from '../host/forge-core'
 import type { ForgeTuiEventEmitter } from '../host/tui-events'
 import type { IdleGateStore } from '../loop/idle-gate'
 import type { InFlightEntry } from '../loop/in-flight-guard'
+import type { SandboxSecretProvider } from '../sandbox/secrets'
 import type { LRUCache } from './lru-cache'
 
 export interface ForgeSharedRegistries {
@@ -19,6 +20,7 @@ export interface ForgeSharedRegistries {
   'pending-shell-sandboxes.v1': Map<string, SandboxContext>
   'v2-session-status.v1': LRUCache<SessionStatusEntry>
   'loop-registry.v2': Map<string, Set<string>>
+  'sandbox-secret-providers.v1': Map<string, SandboxSecretProvider>
 }
 
 declare global {

@@ -1842,7 +1842,12 @@ describe('handleLoopRestart restartability rules', () => {
     workspaceId: string | null
     hostSessionId: string | null
     startedAt: number
-    sandboxSettings: { enabled?: boolean; resources?: { memory?: string; cpus?: string; dockerDisk?: string; cacheDisk?: string } } | null
+    sandboxSettings: {
+      enabled?: boolean
+      resources?: { memory?: string; cpus?: string; dockerDisk?: string; cacheDisk?: string }
+      secrets?: Array<{ env: string; hosts: string[] }>
+      secretProvider?: string
+    } | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -1860,7 +1865,12 @@ describe('handleLoopRestart restartability rules', () => {
       workspaceId: null as string | null,
       hostSessionId: null as string | null,
       startedAt: Date.now(),
-      sandboxSettings: null as { enabled?: boolean; resources?: { memory?: string; cpus?: string; dockerDisk?: string; cacheDisk?: string } } | null,
+      sandboxSettings: null as {
+        enabled?: boolean
+        resources?: { memory?: string; cpus?: string; dockerDisk?: string; cacheDisk?: string }
+        secrets?: Array<{ env: string; hosts: string[] }>
+        secretProvider?: string
+      } | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -2356,6 +2366,161 @@ describe('handleLoopRestart restartability rules', () => {
     expect(newState?.active).toBe(true)
     expect(newState?.sandbox).toBe(false)
     expect(newState?.sandboxSettings).toEqual({ enabled: false })
+  })
+
+  test('restart replaces the stored sandbox secret definitions and uses them for the sandbox', async () => {
+    const loopName = 'sandbox-secrets-replace'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: false,
+      phase: 'coding',
+      sandboxSettings: {
+        secrets: [{ env: 'OLD_TOKEN', hosts: ['old.example.com'] }],
+        secretProvider: 'old-provider',
+      },
+    })
+
+    const sandboxStartSpy = vi.fn().mockResolvedValue({ containerName: 'forge-sandbox' })
+    const sandboxManager = {
+      start: sandboxStartSpy,
+      runtime: { sandboxContainerName: () => 'forge-sandbox' },
+    }
+
+    const { service } = await createMockService({ sandboxManager })
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+        sandboxSecrets: {
+          secrets: [{ env: 'NEW_TOKEN', hosts: ['new.example.com'] }],
+          secretProvider: 'new-provider',
+        },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const expectedSettings = {
+      secrets: [{ env: 'NEW_TOKEN', hosts: ['new.example.com'] }],
+      secretProvider: 'new-provider',
+    }
+    expect(sandboxStartSpy).toHaveBeenCalledWith(loopName, '/tmp/test-worktree', undefined, expectedSettings)
+    expect(loopService.getActiveState(loopName)?.sandboxSettings).toEqual(expectedSettings)
+  })
+
+  test('restart with an empty sandbox secret list clears the stored definitions', async () => {
+    const loopName = 'sandbox-secrets-clear'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: false,
+      phase: 'coding',
+      sandboxSettings: {
+        enabled: true,
+        resources: { memory: '4g' },
+        secrets: [{ env: 'OLD_TOKEN', hosts: ['old.example.com'] }],
+        secretProvider: 'old-provider',
+      },
+    })
+
+    const sandboxStartSpy = vi.fn().mockResolvedValue({ containerName: 'forge-sandbox' })
+    const sandboxManager = {
+      start: sandboxStartSpy,
+      runtime: { sandboxContainerName: () => 'forge-sandbox' },
+    }
+
+    const { service } = await createMockService({ sandboxManager })
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+        sandboxSecrets: { secrets: [] },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const expectedSettings = { enabled: true, resources: { memory: '4g' } }
+    expect(sandboxStartSpy).toHaveBeenCalledWith(loopName, '/tmp/test-worktree', undefined, expectedSettings)
+    expect(loopService.getActiveState(loopName)?.sandboxSettings).toEqual(expectedSettings)
+  })
+
+  test('restart without sandbox secrets keeps the stored definitions', async () => {
+    const loopName = 'sandbox-secrets-kept'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: false,
+      phase: 'coding',
+      sandboxSettings: {
+        secrets: [{ env: 'KEPT_TOKEN', hosts: ['kept.example.com'] }],
+        secretProvider: 'kept-provider',
+      },
+    })
+
+    const sandboxStartSpy = vi.fn().mockResolvedValue({ containerName: 'forge-sandbox' })
+    const sandboxManager = {
+      start: sandboxStartSpy,
+      runtime: { sandboxContainerName: () => 'forge-sandbox' },
+    }
+
+    const { service } = await createMockService({ sandboxManager })
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const expectedSettings = {
+      secrets: [{ env: 'KEPT_TOKEN', hosts: ['kept.example.com'] }],
+      secretProvider: 'kept-provider',
+    }
+    expect(sandboxStartSpy).toHaveBeenCalledWith(loopName, '/tmp/test-worktree', undefined, expectedSettings)
+  })
+
+  test('restart rejects sandbox secrets when the loop is not sandboxed', async () => {
+    const loopName = 'sandbox-secrets-optout'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: false,
+      phase: 'coding',
+      sandboxSettings: { enabled: false },
+    })
+
+    const sandboxStartSpy = vi.fn().mockResolvedValue({ containerName: 'forge-sandbox' })
+    const sandboxManager = {
+      start: sandboxStartSpy,
+      runtime: { sandboxContainerName: () => 'forge-sandbox' },
+    }
+
+    const { service } = await createMockService({ sandboxManager })
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+        sandboxSecrets: { secrets: [{ env: 'NEW_TOKEN', hosts: ['new.example.com'] }] },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('bad_request')
+    expect(result.error.status).toBe(400)
+    expect(result.error.message).toBe('Sandbox secrets require a sandboxed loop')
+    expect(sandboxStartSpy).not.toHaveBeenCalled()
   })
 
   test('retries a transient "Session not found" on restart prompt instead of rolling back', async () => {

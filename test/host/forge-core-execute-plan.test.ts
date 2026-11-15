@@ -21,10 +21,12 @@ vi.mock('../../src/services/execution', async (importOriginal) => {
 })
 
 import { createForgeCore, type ForgeCore } from '../../src/host/forge-core'
+import { sandboxSecretProviders } from '../../src/sandbox/secrets'
 import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
 const TEST_ROOT = join('/tmp', `forge-core-execute-plan-${Date.now()}`)
+const PROVIDER_ID = 'execute-plan-provider'
 
 describe('createForgeCore executeTuiPlan loop settings', () => {
   let testDir: string
@@ -38,6 +40,7 @@ describe('createForgeCore executeTuiPlan loop settings', () => {
   })
 
   afterEach(async () => {
+    sandboxSecretProviders().delete(PROVIDER_ID)
     await core?.cleanup()
     core = null
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true })
@@ -80,6 +83,102 @@ describe('createForgeCore executeTuiPlan loop settings', () => {
     expect(command.type).toBe('loop.start')
     expect(command.maxIterations).toBe(3)
     expect(command.sandbox).toEqual({ enabled: false, resources: { memory: '2g', cpus: '2' } })
+  })
+
+  test('rejects sandbox secrets outside loop mode without dispatching', async () => {
+    const built = await buildCore()
+
+    await expect(built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'execute-here',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      sandbox: { secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }] },
+    })).resolves.toEqual({ error: 'Sandbox secrets are only supported for loop executions' })
+
+    await expect(built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'new-session',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      sandbox: { secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }] },
+    })).resolves.toEqual({ error: 'Sandbox secrets are only supported for loop executions' })
+
+    expect(dispatched).toHaveLength(0)
+  })
+
+  test('rejects sandbox secrets when the loop is not sandboxed', async () => {
+    const disabledByConfig = await buildCore({ sandbox: { enabled: false } })
+
+    await expect(disabledByConfig.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      sandbox: { secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }] },
+    })).resolves.toEqual({ error: 'Sandbox secrets require a sandboxed loop' })
+    expect(dispatched).toHaveLength(0)
+
+    const disabledByRequest = await buildCore()
+    await expect(disabledByRequest.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      sandbox: { enabled: false, secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }] },
+    })).resolves.toEqual({ error: 'Sandbox secrets require a sandboxed loop' })
+    expect(dispatched).toHaveLength(0)
+  })
+
+  test('rejects invalid sandbox secret definitions before dispatching', async () => {
+    const built = await buildCore()
+
+    await expect(built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      sandbox: { secrets: [{ env: 'LOOP_TOKEN', hosts: [] }] },
+    })).resolves.toEqual({ error: 'Invalid sandbox secret LOOP_TOKEN: no allowed hosts' })
+
+    await expect(built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      sandbox: {
+        secrets: [
+          { env: 'LOOP_TOKEN', hosts: ['api.example.com'] },
+          { env: 'LOOP_TOKEN', hosts: ['other.example.com'] },
+        ],
+      },
+    })).resolves.toEqual({ error: 'Duplicate sandbox secret LOOP_TOKEN' })
+
+    expect(dispatched).toHaveLength(0)
+  })
+
+  test('forwards loop sandbox secrets and their provider into the start-loop command', async () => {
+    sandboxSecretProviders().set(PROVIDER_ID, () => ({ LOOP_TOKEN: 'value' }))
+    const built = await buildCore()
+
+    const result = await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      sandbox: {
+        secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }],
+        secretProvider: PROVIDER_ID,
+      },
+    })
+
+    expect(result).toMatchObject({ sessionId: 'ses_loop', loopName: 'loop-a' })
+    const command = dispatched.at(-1) as Record<string, unknown>
+    expect(command.type).toBe('loop.start')
+    expect(command.sandbox).toEqual({
+      secrets: [{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }],
+      secretProvider: PROVIDER_ID,
+    })
   })
 
   test('falls back to the configured default max iterations and drops an invalid sandbox', async () => {

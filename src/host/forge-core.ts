@@ -17,6 +17,7 @@ import { collectLegacySandboxConfigWarnings } from '../sandbox/config-warnings'
 import { defaultGitService } from '../utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled, isSandboxEnabled, isHostSessionsDefaultEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
 import { readLoopSandboxSettings, readSandboxOverrides, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
+import { describeInvalidLoopSecrets } from '../sandbox/secrets'
 import { createEnvironmentProbe } from '../sandbox/env-probe'
 import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-paths'
 import { isForgeWorktreeDir, forgeWorktreesRoot } from '../workspace/forge-naming'
@@ -472,6 +473,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     try {
       const sandboxConfig: Parameters<typeof createSandboxManager>[1] = {
         image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
+        projectId,
         toolOutputDir: resolveOpencodeToolOutputDir(),
         tmpDir: resolveOpencodeTmpDir(),
         listSkillPaths: async (dir) => (await forgeClient.skill.list({ directory: dir })).map((entry) => entry.path),
@@ -816,6 +818,10 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     plansRepo,
     sandboxPreferences,
     async restartLoop(request) {
+      if (request.sandbox) {
+        const invalid = describeInvalidLoopSecrets(request.sandbox)
+        if (invalid) return { error: invalid }
+      }
       const response = await executionService.dispatch(
         { surface: 'api', projectId, directory: projectRoot },
         {
@@ -827,6 +833,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
           executionModel: request.executionModel,
           executionVariant: request.executionVariant,
           expectedStartedAt: request.expectedStartedAt,
+          sandboxSecrets: request.sandbox,
         },
       )
       return response.ok
@@ -911,6 +918,15 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     const source: PlanSource = { kind: 'inline', planText: input.plan }
     const executionModel = input.executionModel || undefined
     const executionVariant = input.executionVariant || undefined
+
+    if (input.sandbox?.secrets && input.sandbox.secrets.length > 0) {
+      if (input.mode !== 'loop') return { error: 'Sandbox secrets are only supported for loop executions' }
+      if (!isSandboxEnabled(config, sandboxManager) || input.sandbox.enabled === false) {
+        return { error: 'Sandbox secrets require a sandboxed loop' }
+      }
+      const invalid = describeInvalidLoopSecrets(input.sandbox)
+      if (invalid) return { error: invalid }
+    }
 
     if (input.mode === 'execute-here') {
       if (!input.sessionId) return { error: 'Execute here requires a current session' }

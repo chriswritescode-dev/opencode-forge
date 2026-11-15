@@ -18,7 +18,6 @@ import {
   parseMsbImageList,
   msbImageMatches,
   parseMsbInspectSecrets,
-  resolveSandboxSecret,
   parseMsbInspectRuntimeSettings,
   msbSizeToMib,
   checkMsbAvailability,
@@ -27,6 +26,7 @@ import {
   MSB_DEFAULT_TIMEOUT,
 } from '../../src/sandbox/msb'
 import type { CommandRunner, SandboxRuntime } from '../../src/sandbox/msb'
+import { resolveSandboxSecret } from '../../src/sandbox/secrets'
 import { COMMAND_TIMEOUT_EXIT_CODE } from '../../src/sandbox/process'
 import type { Logger } from '../../src/types'
 
@@ -1124,12 +1124,12 @@ describe('availability', () => {
 describe('runtime', () => {
   interface Rec {
     args: string[]
-    opts?: { timeout?: number; stdin?: string; abort?: AbortSignal }
+    opts?: { timeout?: number; stdin?: string; abort?: AbortSignal; env?: Record<string, string> }
   }
   function recordingRunner(handler?: (rec: Rec) => { stdout: string; stderr: string; exitCode: number }) {
     const calls: Rec[] = []
     const runner: CommandRunner = async (args, opts) => {
-      const rec = { args, opts: { timeout: opts?.timeout, stdin: opts?.stdin, abort: opts?.abort } }
+      const rec = { args, opts: { timeout: opts?.timeout, stdin: opts?.stdin, abort: opts?.abort, env: opts?.env } }
       calls.push(rec)
       const res = handler ? handler(rec) : { stdout: '', stderr: '', exitCode: 0 }
       return res
@@ -1333,6 +1333,35 @@ describe('runtime', () => {
     expect(calls).toHaveLength(2)
     expect(seenOnReplace).toEqual([true])
     expect(existsSync(calls[1].args[calls[1].args.indexOf('--secret-conf') + 1])).toBe(false)
+  })
+
+  test('createSandbox passes secretEnv to the runner on the first attempt and the --replace retry without putting values in the args', async () => {
+    const secretEnv = { API_KEY: 'super-secret-value' }
+    const { calls, runner } = recordingRunner((rec) =>
+      rec.args.includes('--replace')
+        ? { stdout: '', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: alreadyExistsStderr, exitCode: 1 },
+    )
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-x', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      secrets: [{ env: 'API_KEY', hosts: ['api.example.com'] }],
+      secretEnv,
+    })
+
+    expect(calls).toHaveLength(2)
+    expect(calls[0].opts?.env).toEqual(secretEnv)
+    expect(calls[1].opts?.env).toEqual(secretEnv)
+    expect(calls[0].args.join(' ')).not.toContain('super-secret-value')
+    expect(calls[1].args.join(' ')).not.toContain('super-secret-value')
+  })
+
+  test('createSandbox passes no runner env when secretEnv is absent', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], { image: 'oc-forge-sandbox:latest' })
+
+    expect(calls[0].opts?.env).toBeUndefined()
   })
 
   test('createSandbox uses plain --secret flags when no per-secret policy needs a conf file', async () => {
@@ -1670,6 +1699,52 @@ describe('runtime', () => {
       'NPM_TOKEN:headers=*@registry.npmjs.org',
     ])
     expect(calls[1].opts?.timeout).toBe(MSB_DEFAULT_TIMEOUT)
+  })
+
+  test('refreshSandboxSecrets passes secretEnv to msb modify only', async () => {
+    const secretEnv = { ROTATED: 'rotated-value' }
+    const { calls, runner } = refreshRunner(['ROTATED'])
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(
+      rt.refreshSandboxSecrets('forge-c', [{ env: 'ROTATED', hosts: ['api.example.com'] }], secretEnv),
+    ).resolves.toEqual({ ok: true })
+
+    expect(calls[0].args[0]).toBe('inspect')
+    expect(calls[1].args[0]).toBe('modify')
+    expect(calls[0].opts?.env).toBeUndefined()
+    expect(calls[1].opts?.env).toEqual(secretEnv)
+    expect(calls[1].args.join(' ')).not.toContain('rotated-value')
+  })
+
+  test('refreshSandboxSecrets passes no runner env when secretEnv is absent', async () => {
+    const { calls, runner } = refreshRunner(['KEEP'])
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await rt.refreshSandboxSecrets('forge-c', [{ env: 'KEEP', hosts: ['api.example.com'] }])
+
+    expect(calls[1].opts?.env).toBeUndefined()
+  })
+
+  test('startSandbox runs msb start and passes secretEnv only through the environment', async () => {
+    const secretEnv = { ROTATED: 'rotated-value' }
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await rt.startSandbox('forge-c', secretEnv)
+
+    expect(calls[0].args).toEqual(['start', 'forge-c', '--quiet'])
+    expect(calls[0].opts?.timeout).toBe(MSB_DEFAULT_TIMEOUT)
+    expect(calls[0].opts?.env).toEqual(secretEnv)
+    expect(calls[0].args.join(' ')).not.toContain('rotated-value')
+  })
+
+  test('startSandbox omits the runner env and throws on a non-zero exit', async () => {
+    const { calls, runner } = recordingRunner(() => ({ stdout: '', stderr: 'still running', exitCode: 1 }))
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(rt.startSandbox('forge-c')).rejects.toThrow('Failed to start sandbox forge-c: still running')
+    expect(calls[0].opts?.env).toBeUndefined()
   })
 
   test('refreshSandboxSecrets always passes --restart so every bound change is applied', async () => {
