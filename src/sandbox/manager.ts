@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { SandboxRuntime, SandboxWorkspace, CreateSandboxOpts } from './msb'
-import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
+import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, resolveSandboxSecret, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, basename, dirname, posix as posixPath } from 'path'
@@ -502,16 +502,12 @@ export function createSandboxManager(
   function resolveSandboxSecrets(): SandboxSecretConfig[] {
     const resolved: SandboxSecretConfig[] = []
     for (const raw of config.network?.secrets ?? []) {
-      const env = raw.env.trim()
-      if (!env) {
-        logger.log('Sandbox: skipping secret: missing env name')
+      const outcome = resolveSandboxSecret(raw)
+      if ('reason' in outcome) {
+        logger.log(`Sandbox: skipping secret${outcome.env ? ` ${outcome.env}` : ''}: ${outcome.reason}`)
         continue
       }
-      const hosts = (raw.hosts ?? []).map((h) => h.trim()).filter(Boolean)
-      if (hosts.length === 0) {
-        logger.log(`Sandbox: skipping secret ${env}: no allowed hosts`)
-        continue
-      }
+      const env = outcome.secret.env
       if (process.env[env] === undefined) {
         if (!warnedUnsetSecretEnv.has(env)) {
           warnedUnsetSecretEnv.add(env)
@@ -519,26 +515,26 @@ export function createSandboxManager(
         }
         continue
       }
-      resolved.push({ env, hosts })
+      resolved.push(outcome.secret)
     }
     return resolved
   }
 
-  async function refreshSecrets(containerName: string): Promise<boolean> {
-    if (convergedSecrets.has(containerName)) return true
+  async function refreshSecrets(containerName: string): Promise<void> {
+    if (convergedSecrets.has(containerName)) return
     const secrets = resolveSandboxSecrets()
     if (secrets.length === 0) {
       convergedSecrets.add(containerName)
-      return true
+      return
     }
     warnUncoveredSecretHosts(containerName, secrets)
-    if (!(await runtime.refreshSandboxSecrets(containerName, secrets))) {
-      logger.log(`Sandbox: failed to refresh secrets for ${containerName}`)
-      return false
+    const result = await runtime.refreshSandboxSecrets(containerName, secrets)
+    if (!result.ok) {
+      logger.log(`Sandbox: failed to refresh secrets for ${containerName}: ${result.reason}`)
+      throw new Error(`Failed to refresh secrets for sandbox ${containerName}: ${result.reason}; refusing to adopt`)
     }
     convergedSecrets.add(containerName)
     recordHandledSecretEnvs(containerName, secrets)
-    return true
   }
 
   function recordHandledSecretEnvs(containerName: string, secrets: SandboxSecretConfig[]): void {
@@ -581,9 +577,7 @@ export function createSandboxManager(
     }
     if (state !== 'missing') {
       logger.log(`Sandbox ${containerName} already exists (${state}), adopting`)
-      if (!(await refreshSecrets(containerName))) {
-        throw new Error(`Failed to refresh secrets for sandbox ${containerName}; refusing to adopt`)
-      }
+      await refreshSecrets(containerName)
       await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       await learnSettings(worktreeName)
@@ -739,9 +733,7 @@ export function createSandboxManager(
     const state = await runtime.getSandboxState(containerName)
 
     if (state === 'running' || state === 'stopped') {
-      if (!(await refreshSecrets(containerName))) {
-        throw new Error(`Failed to refresh secrets for sandbox ${containerName}; refusing to adopt`)
-      }
+      await refreshSecrets(containerName)
       await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       await learnSettings(worktreeName)

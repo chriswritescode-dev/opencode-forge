@@ -1,5 +1,14 @@
 import { z } from 'zod'
-import type { Logger, SandboxResources, SandboxSecretConfig } from '../types'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import type {
+  Logger,
+  SandboxResources,
+  SandboxSecretConfig,
+  SandboxSecretSubstitution,
+  SandboxSecretViolationAction,
+} from '../types'
 import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
 import { MSB_SIZE_RE, SANDBOX_RESOURCE_DEFAULTS, type SandboxRuntimeSettings } from './loop-settings'
 
@@ -75,13 +84,86 @@ export function msbSizeToMib(size: string): number | undefined {
   return Math.round(Number(amount) * factor)
 }
 
-function normalizeSecrets(secrets: SandboxSecretConfig[] | undefined): Array<{ env: string; hosts: string[] }> {
-  const out: Array<{ env: string; hosts: string[] }> = []
-  for (const secret of secrets ?? []) {
-    const env = secret.env.trim()
-    const hosts = secret.hosts.map((h) => h.trim()).filter(Boolean)
-    if (!env || env.includes('=') || hosts.length === 0) continue
-    out.push({ env, hosts })
+const sandboxSecretViolationActionSchema = z.enum(['block', 'block-and-log', 'block-and-terminate'])
+
+const MSB_DEFAULT_SECRET_VIOLATION_ACTION: SandboxSecretViolationAction = 'block-and-log'
+
+const sandboxSecretSubstitutionSchema = z.object({
+  headers: z.boolean().optional(),
+  headerFields: z.array(z.string()).optional(),
+  query: z.boolean().optional(),
+  body: z.boolean().optional(),
+})
+
+const sandboxSecretSchema = z.object({
+  env: z.string(),
+  hosts: z.array(z.string()).optional(),
+  substitution: sandboxSecretSubstitutionSchema.optional(),
+  passthrough: z.array(z.string()).optional(),
+  violationAction: sandboxSecretViolationActionSchema.optional(),
+  requireTlsIdentity: z.boolean().optional(),
+})
+
+const SECRET_ENTRY_RE = /^[^\s,@[\]]+$/
+
+const secretEnvProbeSchema = z.looseObject({ env: z.string() })
+
+function trimmedEntries(entries: string[] | undefined): string[] {
+  return (entries ?? []).map((entry) => entry.trim()).filter(Boolean)
+}
+
+export function resolveSandboxSecret(
+  raw: SandboxSecretConfig,
+): { secret: SandboxSecretConfig } | { env: string; reason: string } {
+  const envProbe = secretEnvProbeSchema.safeParse(raw)
+  const rawEnv = envProbe.success ? envProbe.data.env.trim() : ''
+  const parsed = sandboxSecretSchema.safeParse(raw)
+  if (!parsed.success) return { env: rawEnv, reason: 'invalid definition' }
+  const env = parsed.data.env.trim()
+  if (!env) return { env, reason: 'missing env name' }
+  if (env.includes('=')) return { env, reason: 'env name must not contain =' }
+  if (env.includes(':') || !SECRET_ENTRY_RE.test(env)) {
+    return { env, reason: 'env name must not contain whitespace, commas, colons, @, or brackets' }
+  }
+  const hosts = trimmedEntries(parsed.data.hosts)
+  if (hosts.length === 0) return { env, reason: 'no allowed hosts' }
+  if (hosts.some((host) => !SECRET_ENTRY_RE.test(host))) {
+    return { env, reason: 'hosts entries must not contain whitespace, commas, @, or brackets' }
+  }
+  const substitution = parsed.data.substitution
+  const headerFields = trimmedEntries(substitution?.headerFields)
+  if (headerFields.length > 0 && substitution?.headers === false) {
+    return { env, reason: 'substitution.headerFields requires substitution.headers' }
+  }
+  const passthrough = trimmedEntries(parsed.data.passthrough)
+  for (const entry of [...headerFields, ...passthrough]) {
+    if (!SECRET_ENTRY_RE.test(entry)) {
+      return {
+        env,
+        reason: 'substitution.headerFields and passthrough entries must not contain whitespace, commas, @, or brackets',
+      }
+    }
+  }
+  const secret: SandboxSecretConfig = { env, hosts }
+  if (substitution !== undefined) {
+    const resolvedSubstitution: SandboxSecretSubstitution = {}
+    if (substitution.headers !== undefined) resolvedSubstitution.headers = substitution.headers
+    if (headerFields.length > 0) resolvedSubstitution.headerFields = headerFields
+    if (substitution.query !== undefined) resolvedSubstitution.query = substitution.query
+    if (substitution.body !== undefined) resolvedSubstitution.body = substitution.body
+    secret.substitution = resolvedSubstitution
+  }
+  if (passthrough.length > 0) secret.passthrough = passthrough
+  if (parsed.data.violationAction !== undefined) secret.violationAction = parsed.data.violationAction
+  if (parsed.data.requireTlsIdentity !== undefined) secret.requireTlsIdentity = parsed.data.requireTlsIdentity
+  return { secret }
+}
+
+function normalizeSecrets(secrets: SandboxSecretConfig[] | undefined): SandboxSecretConfig[] {
+  const out: SandboxSecretConfig[] = []
+  for (const raw of secrets ?? []) {
+    const resolved = resolveSandboxSecret(raw)
+    if ('secret' in resolved) out.push(resolved.secret)
   }
   return out
 }
@@ -89,9 +171,53 @@ function normalizeSecrets(secrets: SandboxSecretConfig[] | undefined): Array<{ e
 function buildSecretFlags(secrets: SandboxSecretConfig[] | undefined): string[] {
   const flags: string[] = []
   for (const secret of normalizeSecrets(secrets)) {
-    flags.push('--secret', `${secret.env}@${secret.hosts.join(',')}`)
+    const options: string[] = []
+    const headerFields = secret.substitution?.headerFields ?? []
+    if (secret.substitution?.headers === false) options.push('no-headers')
+    else if (headerFields.length > 0) options.push(`headers=[${headerFields.join(',')}]`)
+    else options.push('headers=*')
+    if (secret.substitution?.query) options.push('query')
+    if (secret.substitution?.body) options.push('body')
+    if (secret.passthrough && secret.passthrough.length > 0) {
+      options.push(`passthrough=[${secret.passthrough.join(',')}]`)
+    }
+    flags.push('--secret', `${secret.env}:${options.join(',')}@${secret.hosts.join(',')}`)
   }
   return flags
+}
+
+interface MsbSecretConfDefinition {
+  allow: string[]
+  substitution: {
+    headers: boolean
+    query: boolean
+    body: boolean
+    header_fields?: string[]
+  }
+  passthrough?: string[]
+  violation_action?: SandboxSecretViolationAction
+  require_tls_identity?: boolean
+}
+
+function buildSecretConf(secrets: SandboxSecretConfig[] | undefined) {
+  const entries = normalizeSecrets(secrets).map((secret) => {
+    const headerFields = secret.substitution?.headerFields ?? []
+    const substitution: MsbSecretConfDefinition['substitution'] = {
+      headers: secret.substitution?.headers ?? true,
+      query: secret.substitution?.query ?? false,
+      body: secret.substitution?.body ?? false,
+    }
+    if (headerFields.length > 0) substitution.header_fields = headerFields
+    const definition: MsbSecretConfDefinition = {
+      allow: secret.hosts,
+      substitution,
+    }
+    if (secret.passthrough && secret.passthrough.length > 0) definition.passthrough = secret.passthrough
+    if (secret.violationAction !== undefined) definition.violation_action = secret.violationAction
+    if (secret.requireTlsIdentity !== undefined) definition.require_tls_identity = secret.requireTlsIdentity
+    return [secret.env, definition] as const
+  })
+  return Object.fromEntries<MsbSecretConfDefinition>(entries)
 }
 
 const EGRESS_ALLOW_ALL_TOKENS = new Set(['*', '**'])
@@ -187,6 +313,7 @@ export function buildMsbCreateArgs(
     cacheDisk?: string
     env?: string[]
     secrets?: SandboxSecretConfig[]
+    secretConfPath?: string
     allowLan?: boolean
     idleTimeout?: string
   },
@@ -222,7 +349,8 @@ export function buildMsbCreateArgs(
     if (!name || name.includes('=')) continue
     args.push('-e', name)
   }
-  args.push(...buildSecretFlags(opts.secrets))
+  if (opts.secretConfPath) args.push('--secret-conf', opts.secretConfPath)
+  else args.push(...buildSecretFlags(opts.secrets))
   return args
 }
 
@@ -306,9 +434,19 @@ const msbSecretListSchema = z.looseObject({
 
 const msbSecretEntrySchema = z.looseObject({
   env_var: z.string().min(1).optional().catch(undefined),
+  require_tls_identity: z.boolean().optional().catch(undefined),
+  violation_action: z.string().nullable().optional().catch(undefined),
+  passthrough_hosts: z.array(z.unknown()).optional().catch(undefined),
 })
 
-export function parseMsbInspectSecretNames(stdout: string): string[] | null {
+export interface MsbBoundSecret {
+  env: string
+  requireTlsIdentity: boolean
+  violationAction?: string
+  hasPassthrough: boolean
+}
+
+export function parseMsbInspectSecrets(stdout: string): MsbBoundSecret[] | null {
   const data = decodeMsbJson(stdout)
   if (data === undefined) return null
   const envelope = msbInspectEnvelopeSchema.safeParse(data)
@@ -317,13 +455,20 @@ export function parseMsbInspectSecretNames(stdout: string): string[] | null {
   if (secrets === undefined || secrets === null) return []
   const list = msbSecretListSchema.safeParse(secrets)
   if (!list.success) return null
-  const names: string[] = []
+  const out: MsbBoundSecret[] = []
   for (const raw of list.data.secrets) {
     const entry = msbSecretEntrySchema.safeParse(raw)
     if (!entry.success || entry.data.env_var === undefined) continue
-    names.push(entry.data.env_var)
+    const bound: MsbBoundSecret = {
+      env: entry.data.env_var,
+      requireTlsIdentity: entry.data.require_tls_identity ?? true,
+      hasPassthrough: (entry.data.passthrough_hosts?.length ?? 0) > 0,
+    }
+    const violationAction = entry.data.violation_action ?? undefined
+    if (violationAction !== undefined) bound.violationAction = violationAction
+    out.push(bound)
   }
-  return names
+  return out
 }
 
 const msbRuntimeSettingsEnvelopeSchema = z.looseObject({
@@ -477,6 +622,8 @@ export interface SandboxExecOpts {
   abort?: AbortSignal
 }
 
+export type SecretRefreshResult = { ok: true } | { ok: false; reason: string }
+
 export interface SandboxRuntime {
   checkAvailable(): Promise<MsbAvailability>
   templateExists(ref: string): Promise<boolean>
@@ -487,7 +634,7 @@ export interface SandboxRuntime {
   getSandboxState(name: string): Promise<SandboxState>
   sandboxContainerName(worktreeName: string): string
   listSandboxesByPrefix(prefix: string): Promise<string[]>
-  refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<boolean>
+  refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<SecretRefreshResult>
   readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null>
   resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
@@ -530,30 +677,46 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     workspaces: SandboxWorkspace[],
     opts: CreateSandboxOpts,
   ): Promise<void> {
-    const args = buildMsbCreateArgs(name, workspaces, {
-      image: opts.image,
-      memory: normalizeMsbSize(opts.resources?.memory, logger),
-      cpus: parseMsbCpus(opts.resources?.cpus, logger),
-      networkAllow: opts.networkAllow,
-      restrictEgress: opts.restrictEgress,
-      dockerDisk: normalizeMsbSize(opts.resources?.dockerDisk, logger),
-      cacheDisk: normalizeMsbSize(opts.resources?.cacheDisk, logger),
-      env: opts.env,
-      secrets: opts.secrets,
-      allowLan: opts.allowLan,
-      idleTimeout: opts.idleTimeout,
-    })
-    const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
-    if (result.exitCode === 0) return
-    if (!MSB_CREATE_EXISTS_RE.test(`${result.stdout}\n${result.stderr}`)) {
-      throw new Error(`Failed to create sandbox: ${result.stderr}`)
-    }
-    logger.log(
-      `Sandbox: msb reports ${name} already exists but it was not reusable (orphaned state); recreating with --replace`,
+    const needsSecretConf = normalizeSecrets(opts.secrets).some(
+      (secret) => secret.requireTlsIdentity === false || secret.violationAction !== undefined,
     )
-    const replaced = await run([...args, '--replace'], { timeout: MSB_DEFAULT_TIMEOUT })
-    if (replaced.exitCode !== 0) {
-      throw new Error(`Failed to create sandbox: ${replaced.stderr}`)
+    let confDir: string | undefined
+    try {
+      let secretConfPath: string | undefined
+      if (needsSecretConf) {
+        confDir = mkdtempSync(join(tmpdir(), 'forge-msb-'))
+        secretConfPath = join(confDir, 'secrets.yaml')
+        writeFileSync(secretConfPath, JSON.stringify(buildSecretConf(opts.secrets)), { mode: 0o600 })
+      }
+      const args = buildMsbCreateArgs(name, workspaces, {
+        image: opts.image,
+        memory: normalizeMsbSize(opts.resources?.memory, logger),
+        cpus: parseMsbCpus(opts.resources?.cpus, logger),
+        networkAllow: opts.networkAllow,
+        restrictEgress: opts.restrictEgress,
+        dockerDisk: normalizeMsbSize(opts.resources?.dockerDisk, logger),
+        cacheDisk: normalizeMsbSize(opts.resources?.cacheDisk, logger),
+        env: opts.env,
+        secrets: opts.secrets,
+        secretConfPath,
+        allowLan: opts.allowLan,
+        idleTimeout: opts.idleTimeout,
+      })
+      const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
+      if (result.exitCode !== 0) {
+        if (!MSB_CREATE_EXISTS_RE.test(`${result.stdout}\n${result.stderr}`)) {
+          throw new Error(`Failed to create sandbox: ${result.stderr}`)
+        }
+        logger.log(
+          `Sandbox: msb reports ${name} already exists but it was not reusable (orphaned state); recreating with --replace`,
+        )
+        const replaced = await run([...args, '--replace'], { timeout: MSB_DEFAULT_TIMEOUT })
+        if (replaced.exitCode !== 0) {
+          throw new Error(`Failed to create sandbox: ${replaced.stderr}`)
+        }
+      }
+    } finally {
+      if (confDir) rmSync(confDir, { recursive: true, force: true })
     }
   }
 
@@ -611,34 +774,60 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     }
   }
 
-  async function refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<boolean> {
-    let current: string[]
+  async function refreshSandboxSecrets(
+    name: string,
+    secrets: SandboxSecretConfig[],
+  ): Promise<SecretRefreshResult> {
+    const inspectFailure: SecretRefreshResult = {
+      ok: false,
+      reason: 'could not read the bound secrets from msb inspect',
+    }
+    let bound: MsbBoundSecret[]
     try {
       const inspect = await run(['inspect', name, '--format', 'json'], { timeout: MSB_QUERY_TIMEOUT })
-      if (inspect.exitCode !== 0) return false
-      const parsed = parseMsbInspectSecretNames(inspect.stdout)
-      if (parsed === null) return false
-      current = parsed
+      if (inspect.exitCode !== 0) return inspectFailure
+      const parsed = parseMsbInspectSecrets(inspect.stdout)
+      if (parsed === null) return inspectFailure
+      bound = parsed
     } catch {
-      return false
+      return inspectFailure
     }
 
     const desired = normalizeSecrets(secrets)
     const desiredNames = new Set(desired.map((s) => s.env))
-    const currentNames = new Set(current)
-    const stale = current.filter((n) => !desiredNames.has(n))
-    if (stale.length === 0 && desired.length === 0) return true
+    const stale = bound.map((s) => s.env).filter((n) => !desiredNames.has(n))
+    if (stale.length === 0 && desired.length === 0) return { ok: true }
 
-    const introduced = desired.some((s) => !currentNames.has(s.env))
-    const args = ['modify', name]
-    if (introduced) args.push('--restart')
-    for (const staleName of stale) args.push('--secret-rm', staleName)
-    args.push(...buildSecretFlags(secrets))
+    for (const secret of desired) {
+      const current = bound.find((b) => b.env === secret.env)
+      const frozen =
+        (secret.requireTlsIdentity ?? true) !== (current?.requireTlsIdentity ?? true)
+        || (secret.violationAction ?? MSB_DEFAULT_SECRET_VIOLATION_ACTION)
+          !== (current?.violationAction ?? MSB_DEFAULT_SECRET_VIOLATION_ACTION)
+        || (current?.hasPassthrough === true && (secret.passthrough === undefined || secret.passthrough.length === 0))
+      if (frozen) {
+        return {
+          ok: false,
+          reason: `secret ${secret.env}: requireTlsIdentity, violationAction, and removing every passthrough host are fixed when the sandbox is created; remove the sandbox with \`msb rm --force ${name}\` so it is recreated with the configured secrets`,
+        }
+      }
+    }
+
+    const args = [
+      'modify',
+      name,
+      '--restart',
+      ...stale.flatMap((staleName) => ['--secret-rm', staleName]),
+      ...buildSecretFlags(secrets),
+    ]
     try {
-      const result = await run(args, { timeout: introduced ? MSB_DEFAULT_TIMEOUT : MSB_QUERY_TIMEOUT })
-      return result.exitCode === 0
-    } catch {
-      return false
+      const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
+      if (result.exitCode !== 0) {
+        return { ok: false, reason: (result.stderr || result.stdout).trim() || 'msb modify failed' }
+      }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) }
     }
   }
 

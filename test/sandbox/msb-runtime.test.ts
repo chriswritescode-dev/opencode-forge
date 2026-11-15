@@ -1,4 +1,5 @@
 import { describe, test, expect, vi } from 'vitest'
+import { existsSync, readFileSync } from 'fs'
 import {
   sanitizeMsbName,
   sandboxContainerName,
@@ -16,7 +17,8 @@ import {
   mapMsbStatus,
   parseMsbImageList,
   msbImageMatches,
-  parseMsbInspectSecretNames,
+  parseMsbInspectSecrets,
+  resolveSandboxSecret,
   parseMsbInspectRuntimeSettings,
   msbSizeToMib,
   checkMsbAvailability,
@@ -310,7 +312,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
       '--secret',
-      'GITHUB_TOKEN@api.github.com,*.githubusercontent.com',
+      'GITHUB_TOKEN:headers=*@api.github.com,*.githubusercontent.com',
     ])
     expect(args.join(' ')).not.toContain('GITHUB_TOKEN=')
   })
@@ -341,7 +343,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
       '--secret',
-      'KEEP@api.example.com',
+      'KEEP:headers=*@api.example.com',
     ])
     expect(args.join(' ')).not.toContain('super-secret')
   })
@@ -352,7 +354,7 @@ describe('create args', () => {
       secrets: [{ env: ' TOKEN ', hosts: [' api.example.com ', '*.github.com'] }],
     })
     expect(args).toContain('--secret')
-    expect(args).toContain('TOKEN@api.example.com,*.github.com')
+    expect(args).toContain('TOKEN:headers=*@api.example.com,*.github.com')
     expect(args).not.toContain(' TOKEN ')
   })
 
@@ -366,6 +368,45 @@ describe('create args', () => {
     // `NAME=VALUE` fragment can appear in the vector.
     expect(vector.join(' ')).not.toContain('GITHUB_TOKEN=')
     expect(vector.join(' ')).not.toContain('NPM_TOKEN=')
+  })
+
+  test('renders substitution options in the documented comma-joined order', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      secrets: [
+        {
+          env: 'API',
+          hosts: ['api.example.com'],
+          substitution: {
+            headers: true,
+            headerFields: ['authorization', 'x-api-key'],
+            query: true,
+            body: true,
+          },
+          passthrough: ['*.corp.example', 'telemetry.example'],
+        },
+        { env: 'PLAIN', hosts: ['plain.example'], substitution: { headers: false } },
+        { env: 'QUERY_ONLY', hosts: ['q.example'], substitution: { query: true, body: true } },
+      ],
+    })
+    expect(args).toContain(
+      'API:headers=[authorization,x-api-key],query,body,passthrough=[*.corp.example,telemetry.example]@api.example.com',
+    )
+    expect(args).toContain('PLAIN:no-headers@plain.example')
+    expect(args).toContain('QUERY_ONLY:headers=*,query,body@q.example')
+  })
+
+  test('emits --secret-conf instead of any --secret flag when a conf path is supplied', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      secrets: [{ env: 'T', hosts: ['h'] }],
+      secretConfPath: '/tmp/forge-msb-x/secrets.yaml',
+    })
+    expect(args.slice(args.indexOf('--secret-conf'), args.indexOf('--secret-conf') + 2)).toEqual([
+      '--secret-conf',
+      '/tmp/forge-msb-x/secrets.yaml',
+    ])
+    expect(args).not.toContain('--secret')
   })
 
   test('throws on an empty workspace array', () => {
@@ -399,7 +440,7 @@ describe('create args', () => {
     expect(args).toContain('allow@pypi.org')
     expect(args).toContain('allow@*.githubusercontent.com')
     expect(args).toContain('--secret')
-    expect(args).toContain('GITHUB_TOKEN@api.github.com,*.githubusercontent.com')
+    expect(args).toContain('GITHUB_TOKEN:headers=*@api.github.com,*.githubusercontent.com')
   })
 
   test('emits no net flags at all when no egress hosts are configured', () => {
@@ -599,11 +640,18 @@ describe('network allow union', () => {
     expect(
       buildNetworkAllow(
         undefined,
-        [{ env: 'KEEP', hosts: ['api.example.com', '*.com', 'bad,host'] }],
+        [{ env: 'KEEP', hosts: ['api.example.com', '*.com', 'localhost'] }],
         { ...logger, log },
       ),
     ).toEqual(['api.example.com'])
     expect(log).toHaveBeenCalledTimes(2)
+  })
+
+  test('a secret with a delimiter in a host contributes no egress hosts', () => {
+    expect(
+      buildNetworkAllow(undefined, [{ env: 'BAD', hosts: ['api.example.com', 'bad,host'] }], logger),
+    ).toEqual([])
+    expect(egressRestrictionRequested(undefined, [{ env: 'BAD', hosts: ['bad,host'] }])).toBe(false)
   })
 
   test('accepts a multi-label wildcard and the domain=/suffix= forms unchanged', () => {
@@ -653,7 +701,7 @@ describe('network allow union', () => {
   test('egressRestrictionRequested is true for any configured token, valid or not', () => {
     expect(egressRestrictionRequested(['github.com'], undefined)).toBe(true)
     expect(egressRestrictionRequested(['localhost'], undefined)).toBe(true)
-    expect(egressRestrictionRequested(undefined, [{ env: 'T', hosts: ['bad,host'] }])).toBe(true)
+    expect(egressRestrictionRequested(undefined, [{ env: 'T', hosts: ['*.com'] }])).toBe(true)
   })
 })
 
@@ -820,23 +868,149 @@ describe('inspect secret parsing', () => {
       status: 'Running',
       config: { network: { secrets: { secrets: [{ env_var: 'A_TOKEN' }, { env_var: 'B_TOKEN' }] } } },
     })
-    expect(parseMsbInspectSecretNames(stdout)).toEqual(['A_TOKEN', 'B_TOKEN'])
+    expect(parseMsbInspectSecrets(stdout)?.map((s) => s.env)).toEqual(['A_TOKEN', 'B_TOKEN'])
+  })
+
+  test('extracts the fixed per-secret policy fields with msb defaults filled in', () => {
+    const stdout = JSON.stringify({
+      config: {
+        network: {
+          secrets: {
+            secrets: [
+              {
+                env_var: 'T',
+                allowed_hosts: [{ exact: 'ai2.lab' }],
+                passthrough_hosts: [{ wildcard: '*.x.org' }],
+                placeholder: '$MSB_T',
+                require_tls_identity: false,
+                substitution: { body: false, header_fields: ['authorization'], headers: true, query: false },
+                violation_action: 'block',
+              },
+              { env_var: 'DEFAULTS' },
+              { env_var: 'NULL_ACTION', violation_action: null, require_tls_identity: true },
+              { env_var: 'EMPTY_PASSTHROUGH', passthrough_hosts: [] },
+              { not_env: true },
+            ],
+          },
+        },
+      },
+    })
+    expect(parseMsbInspectSecrets(stdout)).toEqual([
+      { env: 'T', requireTlsIdentity: false, violationAction: 'block', hasPassthrough: true },
+      { env: 'DEFAULTS', requireTlsIdentity: true, hasPassthrough: false },
+      { env: 'NULL_ACTION', requireTlsIdentity: true, hasPassthrough: false },
+      { env: 'EMPTY_PASSTHROUGH', requireTlsIdentity: true, hasPassthrough: false },
+    ])
+  })
+
+  test('treats a non-boolean require_tls_identity as the default', () => {
+    const stdout = JSON.stringify({
+      config: { network: { secrets: { secrets: [{ env_var: 'T', require_tls_identity: 'yes' }] } } },
+    })
+    expect(parseMsbInspectSecrets(stdout)).toEqual([
+      { env: 'T', requireTlsIdentity: true, hasPassthrough: false },
+    ])
   })
 
   test('returns an empty list when no secrets are bound', () => {
     const stdout = JSON.stringify({ name: 'forge-c', status: 'Running', config: { network: {} } })
-    expect(parseMsbInspectSecretNames(stdout)).toEqual([])
+    expect(parseMsbInspectSecrets(stdout)).toEqual([])
   })
 
   test('returns null for unparseable or malformed output so callers fail closed', () => {
-    expect(parseMsbInspectSecretNames('not json')).toBeNull()
-    expect(parseMsbInspectSecretNames('[]')).toBeNull()
-    expect(parseMsbInspectSecretNames('{"config":{}}')).toBeNull()
+    expect(parseMsbInspectSecrets('not json')).toBeNull()
+    expect(parseMsbInspectSecrets('[]')).toBeNull()
+    expect(parseMsbInspectSecrets('{"config":{}}')).toBeNull()
     expect(
-      parseMsbInspectSecretNames(
+      parseMsbInspectSecrets(
         JSON.stringify({ config: { network: { secrets: { secrets: 'x' } } } }),
       ),
     ).toBeNull()
+  })
+})
+
+describe('resolveSandboxSecret', () => {
+  test('preserves the exact plain shape with no extra keys', () => {
+    const result = resolveSandboxSecret({ env: 'T', hosts: ['h'] })
+    expect(result).toEqual({ secret: { env: 'T', hosts: ['h'] } })
+  })
+
+  test('trims env, hosts, header fields, and passthrough entries', () => {
+    const result = resolveSandboxSecret({
+      env: ' T ',
+      hosts: [' h ', '  '],
+      substitution: { headers: true, headerFields: [' authorization ', ' '], query: true },
+      passthrough: [' *.x.org ', ''],
+      violationAction: 'block-and-log',
+      requireTlsIdentity: false,
+    })
+    expect(result).toEqual({
+      secret: {
+        env: 'T',
+        hosts: ['h'],
+        substitution: { headers: true, headerFields: ['authorization'], query: true },
+        passthrough: ['*.x.org'],
+        violationAction: 'block-and-log',
+        requireTlsIdentity: false,
+      },
+    })
+  })
+
+  test('rejects a definition that does not match the schema', () => {
+    const wrongType = { env: 'T', hosts: 'h' } as unknown as { env: string; hosts: string[] }
+    expect(resolveSandboxSecret(wrongType)).toEqual({ env: 'T', reason: 'invalid definition' })
+    const unknownAction = {
+      env: 'T',
+      hosts: ['h'],
+      violationAction: 'nope',
+    } as unknown as { env: string; hosts: string[] }
+    expect(resolveSandboxSecret(unknownAction)).toEqual({ env: 'T', reason: 'invalid definition' })
+  })
+
+  test('reports the rejection reason for each invalid definition', () => {
+    expect(resolveSandboxSecret({ env: '   ', hosts: ['h'] })).toEqual({
+      env: '',
+      reason: 'missing env name',
+    })
+    expect(resolveSandboxSecret({ env: 'A=B', hosts: ['h'] })).toEqual({
+      env: 'A=B',
+      reason: 'env name must not contain =',
+    })
+    for (const env of ['A:B', 'A@B', 'A,B', 'A B', 'A[B]']) {
+      expect(resolveSandboxSecret({ env, hosts: ['h'] })).toEqual({
+        env,
+        reason: 'env name must not contain whitespace, commas, colons, @, or brackets',
+      })
+    }
+    expect(resolveSandboxSecret({ env: 'T', hosts: [' ', ''] })).toEqual({
+      env: 'T',
+      reason: 'no allowed hosts',
+    })
+    for (const host of ['a.com,b.com', 'a@b.com', 'a b.com', '[a.com]']) {
+      expect(resolveSandboxSecret({ env: 'T', hosts: [host] })).toEqual({
+        env: 'T',
+        reason: 'hosts entries must not contain whitespace, commas, @, or brackets',
+      })
+    }
+    expect(resolveSandboxSecret({ env: 'T', hosts: ['*.example.com', 'ai2.lab'] })).toEqual({
+      secret: { env: 'T', hosts: ['*.example.com', 'ai2.lab'] },
+    })
+    expect(
+      resolveSandboxSecret({ env: 'T', hosts: ['h'], substitution: { headers: false, headerFields: ['authorization'] } }),
+    ).toEqual({ env: 'T', reason: 'substitution.headerFields requires substitution.headers' })
+    const entryReason =
+      'substitution.headerFields and passthrough entries must not contain whitespace, commas, @, or brackets'
+    expect(
+      resolveSandboxSecret({ env: 'T', hosts: ['h'], substitution: { headerFields: ['a,b'] } }),
+    ).toEqual({ env: 'T', reason: entryReason })
+    expect(resolveSandboxSecret({ env: 'T', hosts: ['h'], substitution: { headerFields: ['a@b'] } })).toEqual({
+      env: 'T',
+      reason: entryReason,
+    })
+    expect(resolveSandboxSecret({ env: 'T', hosts: ['h'], passthrough: ['a b'] })).toEqual({
+      env: 'T',
+      reason: entryReason,
+    })
   })
 })
 
@@ -1094,9 +1268,90 @@ describe('runtime', () => {
     expect(calls[0].args).toContain('-e')
     expect(calls[0].args).toContain('GITHUB_TOKEN')
     expect(calls[0].args).toContain('--secret')
-    expect(calls[0].args).toContain('API_KEY@api.example.com')
+    expect(calls[0].args).toContain('API_KEY:headers=*@api.example.com')
     expect(calls[0].args.join(' ')).not.toContain('GITHUB_TOKEN=')
     expect(calls[0].args.join(' ')).not.toContain('API_KEY=')
+  })
+
+  test('createSandbox writes a secret conf file for policies the flag grammar cannot express', async () => {
+    const observed: Array<{ args: string[]; fileExists: boolean; conf?: unknown }> = []
+    const { calls, runner } = recordingRunner((rec) => {
+      const idx = rec.args.indexOf('--secret-conf')
+      const path = idx >= 0 ? rec.args[idx + 1] : undefined
+      observed.push({
+        args: rec.args,
+        fileExists: path ? existsSync(path) : false,
+        conf: path ? JSON.parse(readFileSync(path, 'utf8')) : undefined,
+      })
+      return { stdout: '', stderr: '', exitCode: 0 }
+    })
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      secrets: [
+        {
+          env: 'LAN_TOKEN',
+          hosts: ['ai2.lab'],
+          substitution: { headers: true, headerFields: ['authorization'], query: true },
+          passthrough: ['*.x.org'],
+          violationAction: 'block',
+          requireTlsIdentity: false,
+        },
+      ],
+    })
+    expect(observed).toHaveLength(1)
+    expect(observed[0].fileExists).toBe(true)
+    expect(observed[0].conf).toEqual({
+      LAN_TOKEN: {
+        allow: ['ai2.lab'],
+        substitution: { headers: true, query: true, body: false, header_fields: ['authorization'] },
+        passthrough: ['*.x.org'],
+        violation_action: 'block',
+        require_tls_identity: false,
+      },
+    })
+    expect(observed[0].args).not.toContain('--secret')
+    const confPath = calls[0].args[calls[0].args.indexOf('--secret-conf') + 1]
+    expect(existsSync(confPath)).toBe(false)
+  })
+
+  test('createSandbox keeps the secret conf file available across the --replace retry', async () => {
+    const seenOnReplace: boolean[] = []
+    const { calls, runner } = recordingRunner((rec) => {
+      const confPath = rec.args[rec.args.indexOf('--secret-conf') + 1]
+      if (rec.args.includes('--replace')) {
+        seenOnReplace.push(existsSync(confPath))
+        return { stdout: '', stderr: '', exitCode: 0 }
+      }
+      return { stdout: '', stderr: alreadyExistsStderr, exitCode: 1 }
+    })
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-x', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      secrets: [{ env: 'T', hosts: ['h'], requireTlsIdentity: false }],
+    })
+    expect(calls).toHaveLength(2)
+    expect(seenOnReplace).toEqual([true])
+    expect(existsSync(calls[1].args[calls[1].args.indexOf('--secret-conf') + 1])).toBe(false)
+  })
+
+  test('createSandbox uses plain --secret flags when no per-secret policy needs a conf file', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      secrets: [
+        {
+          env: 'T',
+          hosts: ['h'],
+          substitution: { headers: true, query: true },
+          passthrough: ['*.x.org'],
+        },
+      ],
+    })
+    expect(calls[0].args).not.toContain('--secret-conf')
+    expect(calls[0].args).toContain('--secret')
+    expect(calls[0].args).toContain('T:headers=*,query,passthrough=[*.x.org]@h')
   })
 
   test('createSandbox throws on non-zero exit', async () => {
@@ -1345,7 +1600,7 @@ describe('runtime', () => {
     await expect(rt.listSandboxesByPrefix('forge-')).resolves.toEqual([])
   })
 
-  function inspectStdout(bound: string[]): string {
+  function inspectStdout(bound: Array<string | Record<string, unknown>>): string {
     return JSON.stringify({
       name: 'forge-c',
       status: 'Running',
@@ -1353,13 +1608,13 @@ describe('runtime', () => {
         network: {
           secrets: bound.length === 0
             ? undefined
-            : { secrets: bound.map((envVar) => ({ env_var: envVar })) },
+            : { secrets: bound.map((entry) => (typeof entry === 'string' ? { env_var: entry } : entry)) },
         },
       },
     })
   }
 
-  function refreshRunner(bound: string[]) {
+  function refreshRunner(bound: Array<string | Record<string, unknown>>) {
     return recordingRunner((rec) =>
       rec.args[0] === 'inspect'
         ? { stdout: inspectStdout(bound), stderr: '', exitCode: 0 }
@@ -1396,14 +1651,13 @@ describe('runtime', () => {
   test('refreshSandboxSecrets reads the bound set and converges msb modify to the desired set', async () => {
     const { calls, runner } = refreshRunner(['STALE_TOKEN', 'KEEP'])
     const rt = createMsbRuntime(logger, { run: runner })
-    const ok = await rt.refreshSandboxSecrets('forge-c', [
+    const result = await rt.refreshSandboxSecrets('forge-c', [
       { env: 'KEEP', hosts: ['api.example.com'] },
       { env: 'NPM_TOKEN', hosts: ['registry.npmjs.org'] },
     ])
-    expect(ok).toBe(true)
+    expect(result).toEqual({ ok: true })
     expect(calls[0].args).toEqual(['inspect', 'forge-c', '--format', 'json'])
     expect(calls[0].opts?.timeout).toBe(30000)
-    // NPM_TOKEN is a new placeholder, so the modification is restart-backed.
     expect(calls[1].args).toEqual([
       'modify',
       'forge-c',
@@ -1411,26 +1665,28 @@ describe('runtime', () => {
       '--secret-rm',
       'STALE_TOKEN',
       '--secret',
-      'KEEP@api.example.com',
+      'KEEP:headers=*@api.example.com',
       '--secret',
-      'NPM_TOKEN@registry.npmjs.org',
+      'NPM_TOKEN:headers=*@registry.npmjs.org',
     ])
-    // A restart-backed modify (--restart restarts the VM) gets the long default timeout.
     expect(calls[1].opts?.timeout).toBe(MSB_DEFAULT_TIMEOUT)
   })
 
-  test('refreshSandboxSecrets adds --restart only when introducing a new secret name', async () => {
-    // Rotation of an existing name stays restart-free (msb applies it live).
+  test('refreshSandboxSecrets always passes --restart so every bound change is applied', async () => {
     const rotation = refreshRunner(['KEEP'])
     const rt = createMsbRuntime(logger, { run: rotation.runner })
     await expect(
       rt.refreshSandboxSecrets('forge-c', [{ env: 'KEEP', hosts: ['api.example.com'] }]),
-    ).resolves.toBe(true)
-    expect(rotation.calls[1].args).toEqual(['modify', 'forge-c', '--secret', 'KEEP@api.example.com'])
-    // A live (restart-free) modify keeps the short query timeout.
-    expect(rotation.calls[1].opts?.timeout).toBe(30000)
+    ).resolves.toEqual({ ok: true })
+    expect(rotation.calls[1].args).toEqual([
+      'modify',
+      'forge-c',
+      '--restart',
+      '--secret',
+      'KEEP:headers=*@api.example.com',
+    ])
+    expect(rotation.calls[1].opts?.timeout).toBe(MSB_DEFAULT_TIMEOUT)
 
-    // A new name is a placeholder addition, which msb classifies as restart-required.
     const added = refreshRunner(['KEEP'])
     const rt2 = createMsbRuntime(logger, { run: added.runner })
     await expect(
@@ -1438,52 +1694,49 @@ describe('runtime', () => {
         { env: 'KEEP', hosts: ['api.example.com'] },
         { env: 'NEW_TOKEN', hosts: ['api.example.com'] },
       ]),
-    ).resolves.toBe(true)
+    ).resolves.toEqual({ ok: true })
     expect(added.calls[1].args).toEqual([
       'modify',
       'forge-c',
       '--restart',
       '--secret',
-      'KEEP@api.example.com',
+      'KEEP:headers=*@api.example.com',
       '--secret',
-      'NEW_TOKEN@api.example.com',
+      'NEW_TOKEN:headers=*@api.example.com',
     ])
   })
 
   test('refreshSandboxSecrets removes every bound secret when the desired list is empty', async () => {
     const { calls, runner } = refreshRunner(['A_TOKEN', 'B_TOKEN'])
     const rt = createMsbRuntime(logger, { run: runner })
-    const ok = await rt.refreshSandboxSecrets('forge-c', [])
-    expect(ok).toBe(true)
-    // Removals apply live, so no --restart is needed.
+    await expect(rt.refreshSandboxSecrets('forge-c', [])).resolves.toEqual({ ok: true })
     expect(calls[1].args).toEqual([
       'modify',
       'forge-c',
+      '--restart',
       '--secret-rm',
       'A_TOKEN',
       '--secret-rm',
       'B_TOKEN',
     ])
-    expect(calls[1].args).not.toContain('--restart')
   })
 
   test('refreshSandboxSecrets re-issues desired secrets so a rotated host value is re-read', async () => {
     const { calls, runner } = refreshRunner(['KEEP'])
     const rt = createMsbRuntime(logger, { run: runner })
-    const ok = await rt.refreshSandboxSecrets('forge-c', [
+    const result = await rt.refreshSandboxSecrets('forge-c', [
       { env: 'KEEP', hosts: ['api.example.com'] },
     ])
-    expect(ok).toBe(true)
-    // A matching name is not skipped: `--secret` re-binds it, picking up any rotated host value.
+    expect(result).toEqual({ ok: true })
     expect(calls).toHaveLength(2)
     expect(calls[0].args[0]).toBe('inspect')
-    expect(calls[1].args).toEqual(['modify', 'forge-c', '--secret', 'KEEP@api.example.com'])
+    expect(calls[1].args).toEqual(['modify', 'forge-c', '--restart', '--secret', 'KEEP:headers=*@api.example.com'])
   })
 
   test('refreshSandboxSecrets with an empty list and nothing bound never invokes msb modify', async () => {
     const { calls, runner } = refreshRunner([])
     const rt = createMsbRuntime(logger, { run: runner })
-    await expect(rt.refreshSandboxSecrets('forge-c', [])).resolves.toBe(true)
+    await expect(rt.refreshSandboxSecrets('forge-c', [])).resolves.toEqual({ ok: true })
     expect(calls).toHaveLength(1)
     expect(calls[0].args[0]).toBe('inspect')
     expect(calls.filter((c) => c.args[0] === 'modify')).toHaveLength(0)
@@ -1495,45 +1748,138 @@ describe('runtime', () => {
     await rt.refreshSandboxSecrets('forge-c', [{ env: 'GITHUB_TOKEN', hosts: ['api.github.com'] }])
     for (const call of calls) {
       expect(call.args.join(' ')).not.toContain('GITHUB_TOKEN=')
-      expect(call.args.join(' ')).not.toContain('=')
     }
   })
 
-  test('refreshSandboxSecrets returns false when the inspect query fails or is unparseable', async () => {
+  test('refreshSandboxSecrets reports a failure when the inspect query fails or is unparseable', async () => {
     const failing = recordingRunner(() => ({ stdout: '', stderr: 'boom', exitCode: 1 }))
     const rt = createMsbRuntime(logger, { run: failing.runner })
     await expect(
       rt.refreshSandboxSecrets('forge-c', [{ env: 'T', hosts: ['h'] }]),
-    ).resolves.toBe(false)
+    ).resolves.toEqual({ ok: false, reason: 'could not read the bound secrets from msb inspect' })
 
     const malformed = recordingRunner(() => ({ stdout: 'not json', stderr: '', exitCode: 0 }))
     const rt2 = createMsbRuntime(logger, { run: malformed.runner })
     await expect(
       rt2.refreshSandboxSecrets('forge-c', [{ env: 'T', hosts: ['h'] }]),
-    ).resolves.toBe(false)
+    ).resolves.toEqual({ ok: false, reason: 'could not read the bound secrets from msb inspect' })
   })
 
-  test('refreshSandboxSecrets returns false when the runner throws', async () => {
+  test('refreshSandboxSecrets reports a failure when the runner throws', async () => {
     const { runner } = recordingRunner(() => { throw new Error('msb exploded') })
     const rt = createMsbRuntime(logger, { run: runner })
     await expect(
       rt.refreshSandboxSecrets('forge-c', [{ env: 'T', hosts: ['h'] }]),
-    ).resolves.toBe(false)
+    ).resolves.toEqual({ ok: false, reason: 'could not read the bound secrets from msb inspect' })
   })
 
   test('refreshSandboxSecrets skips misconfigured secrets like the create builder', async () => {
     const { calls, runner } = refreshRunner([])
     const rt = createMsbRuntime(logger, { run: runner })
-    const ok = await rt.refreshSandboxSecrets('forge-c', [
+    const result = await rt.refreshSandboxSecrets('forge-c', [
       { env: 'KEEP', hosts: ['api.example.com'] },
       { env: ' ', hosts: ['api.example.com'] },
       { env: 'GITHUB_TOKEN=super-secret', hosts: ['api.github.com'] },
       { env: 'NO_HOSTS', hosts: [] },
     ])
-    expect(ok).toBe(true)
-    // KEEP is a new name (nothing was bound), so the introduction is restart-backed.
-    expect(calls[1].args).toEqual(['modify', 'forge-c', '--restart', '--secret', 'KEEP@api.example.com'])
+    expect(result).toEqual({ ok: true })
+    expect(calls[1].args).toEqual(['modify', 'forge-c', '--restart', '--secret', 'KEEP:headers=*@api.example.com'])
     expect(calls[1].args.join(' ')).not.toContain('super-secret')
+  })
+
+  test('refreshSandboxSecrets reports a reason naming the frozen secret and the recreate command', async () => {
+    const cases: Array<{
+      bound: Array<string | Record<string, unknown>>
+      desired: Array<Record<string, unknown>>
+    }> = [
+      {
+        bound: [],
+        desired: [{ env: 'T', hosts: ['h'], requireTlsIdentity: false }],
+      },
+      {
+        bound: [{ env_var: 'T', require_tls_identity: false }],
+        desired: [{ env: 'T', hosts: ['h'] }],
+      },
+      {
+        bound: [{ env_var: 'T', violation_action: 'block' }],
+        desired: [{ env: 'T', hosts: ['h'], violationAction: 'block-and-log' }],
+      },
+      {
+        bound: [{ env_var: 'T', passthrough_hosts: [{ wildcard: '*.x.org' }] }],
+        desired: [{ env: 'T', hosts: ['h'] }],
+      },
+    ]
+    for (const { bound, desired } of cases) {
+      const { calls, runner } = refreshRunner(bound)
+      const rt = createMsbRuntime(logger, { run: runner })
+      const result = await rt.refreshSandboxSecrets('forge-c', desired)
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.reason).toContain('secret T')
+        expect(result.reason).toContain('msb rm --force forge-c')
+      }
+      expect(calls.filter((c) => c.args[0] === 'modify')).toHaveLength(0)
+    }
+  })
+
+  test('refreshSandboxSecrets converges when the bound fixed fields equal the configuration', async () => {
+    const { calls, runner } = refreshRunner([
+      { env_var: 'T', require_tls_identity: false, passthrough_hosts: [{ wildcard: '*.x.org' }], substitution: { headers: true } },
+    ])
+    const rt = createMsbRuntime(logger, { run: runner })
+    await expect(
+      rt.refreshSandboxSecrets('forge-c', [
+        {
+          env: 'T',
+          hosts: ['h'],
+          requireTlsIdentity: false,
+          passthrough: ['*.x.org'],
+          substitution: { headers: true },
+        },
+      ]),
+    ).resolves.toEqual({ ok: true })
+    expect(calls[1].args).toEqual([
+      'modify',
+      'forge-c',
+      '--restart',
+      '--secret',
+      'T:headers=*,passthrough=[*.x.org]@h',
+    ])
+  })
+
+  test('refreshSandboxSecrets treats an unset violationAction as the msb default block-and-log', async () => {
+    const cases: Array<{ bound: Record<string, unknown>; desired: Record<string, unknown> }> = [
+      { bound: { env_var: 'T' }, desired: { env: 'T', hosts: ['h'], violationAction: 'block-and-log' } },
+      { bound: { env_var: 'T', violation_action: 'block-and-log' }, desired: { env: 'T', hosts: ['h'] } },
+    ]
+    for (const { bound, desired } of cases) {
+      const { calls, runner } = refreshRunner([bound])
+      const rt = createMsbRuntime(logger, { run: runner })
+      await expect(rt.refreshSandboxSecrets('forge-c', [desired])).resolves.toEqual({ ok: true })
+      expect(calls.filter((c) => c.args[0] === 'modify')).toHaveLength(1)
+    }
+  })
+
+  test('refreshSandboxSecrets surfaces the modify failure output', async () => {
+    const runner: CommandRunner = async (args) =>
+      args[0] === 'inspect'
+        ? { stdout: inspectStdout([]), stderr: '', exitCode: 0 }
+        : { stdout: 'rejected by msb', stderr: '', exitCode: 1 }
+    const rt = createMsbRuntime(logger, { run: runner })
+    await expect(
+      rt.refreshSandboxSecrets('forge-c', [{ env: 'T', hosts: ['h'] }]),
+    ).resolves.toEqual({ ok: false, reason: 'rejected by msb' })
+  })
+
+  test('refreshSandboxSecrets surfaces a thrown modify error', async () => {
+    const runner: CommandRunner = async (args) => {
+      if (args[0] === 'inspect') return { stdout: inspectStdout([]), stderr: '', exitCode: 0 }
+      throw new Error('modify exploded')
+    }
+    const rt = createMsbRuntime(logger, { run: runner })
+    await expect(
+      rt.refreshSandboxSecrets('forge-c', [{ env: 'T', hosts: ['h'] }]),
+    ).resolves.toEqual({ ok: false, reason: 'modify exploded' })
   })
 
   test('templateExists matches parsed image references', async () => {

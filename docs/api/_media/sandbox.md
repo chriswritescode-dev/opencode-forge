@@ -159,16 +159,60 @@ Host-held credentials are bound with `sandbox.network.secrets` instead of `env`.
 }
 ```
 
-Each entry maps to `msb create --secret <env>@<hosts>`. Once a sandbox has a secret bound, every `msb exec` fails unless the named host environment variable is present in the environment of the process invoking msb — msb reports `error: invalid config: secret X: host environment variable X is not set`. Because the shell shim inherits opencode's process environment, a variable missing there breaks every sandboxed shell command. The variables named in `sandbox.network.secrets` must therefore be exported in the environment that **launches opencode**, not merely present in an interactive shell. Forge logs an explicit warning naming the variable when a configured secret's host variable is unset.
+Each entry maps to `msb create --secret <env>:<options>@<hosts>`, where the options express the optional fields below, for example `headers=*`, `headers=[authorization]`, `no-headers`, `query`, `body`, or `passthrough=[host]`. Once a sandbox has a secret bound, every `msb exec` fails unless the named host environment variable is present in the environment of the process invoking msb — msb reports `error: invalid config: secret X: host environment variable X is not set`. Because the shell shim inherits opencode's process environment, a variable missing there breaks every sandboxed shell command. The variables named in `sandbox.network.secrets` must therefore be exported in the environment that **launches opencode**, not merely present in an interactive shell. Forge logs an explicit warning naming the variable when a configured secret's host variable is unset.
 
-Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify`: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. Convergence runs once per sandbox adoption per plugin instance, not on every liveness check. A refresh failure blocks adoption without marking the sandbox converged, so a later startup can retry.
+### Secret options
+
+Each entry accepts these optional fields alongside `env` and `hosts`:
+
+| Field | Default | Meaning |
+|---|---:|---|
+| `substitution.headers` | `true` | Substitute the real value in request headers, including Basic authentication. |
+| `substitution.headerFields` | every header | Restrict header substitution to the named fields, for example `["authorization"]`. Requires `substitution.headers` to be on. |
+| `substitution.query` | `false` | Substitute in URL query parameters. |
+| `substitution.body` | `false` | Substitute in request bodies. |
+| `passthrough` | `[]` | Extra hosts that may receive the unchanged placeholder. Grants neither network access nor the credential. |
+| `violationAction` | msb default (`block-and-log`) | What happens when a placeholder is sent to a host that may receive neither the credential nor the placeholder: `block`, `block-and-log`, or `block-and-terminate` (also stops the sandbox). |
+| `requireTlsIdentity` | `true` | Set `false` to let the secret be substituted over plain HTTP for its hosts. |
+
+An unrestricted header list lets an allowed endpoint echo a substituted secret back to the guest, so listing the credential field is recommended. A plain-HTTP LAN service that authenticates with the `Authorization` header only:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "allowLan": true,
+      "secrets": [
+        {
+          "env": "REVIEW_TOKEN",
+          "hosts": ["review.lab"],
+          "substitution": { "headerFields": ["authorization"] },
+          "requireTlsIdentity": false
+        }
+      ]
+    }
+  }
+}
+```
+
+Forge passes the options as part of the `--secret` argument at create time. `requireTlsIdentity: false` and `violationAction` have no flag form, so when any secret sets one of them Forge writes every secret definition — env names, hosts, and options, never a value — to a temporary msb secret config file, passes it with `--secret-conf`, and deletes it as soon as `msb create` returns. The value is still stored only as a reference to the host environment variable.
+
+`passthrough` hosts are not added to the egress allow-list; the secret's `hosts` still are.
+
+Plain HTTP means the real credential crosses the network unencrypted, so set `requireTlsIdentity: false` only for trusted hosts such as a service on your own LAN. msb matches the secret's hosts by name, not by address: a request sent to the raw IP is blocked by the secret policy, so configure and call the service by a DNS name. A LAN host also needs `sandbox.network.allowLan: true` (or an allow rule) to be reachable.
+
+Invalid definitions are skipped and logged with the reason, like other misconfigured secrets: wrong field types, an unknown `violationAction`, `substitution.headerFields` set while `substitution.headers` is `false`, an `env` name containing whitespace, commas, colons, `@`, or brackets, and `hosts`/`headerFields`/`passthrough` entries containing whitespace, commas, `@`, or brackets.
+
+Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify`: `--secret <env>:<options>@<hosts>` refreshes the current value and options of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. msb restarts the sandbox only when the change needs it — a newly added secret, or a changed substitution or passthrough list — while refreshing a value and changing hosts apply live. Convergence runs once per sandbox adoption per plugin instance, not on every liveness check. A refresh failure blocks adoption without marking the sandbox converged, so a later startup can retry.
+
+`requireTlsIdentity`, `violationAction`, and removing the last `passthrough` host cannot be changed on an existing sandbox, because `msb modify` has no config-file option. When the configured value differs from what the sandbox has bound — including a newly added secret that needs `requireTlsIdentity: false` or a `violationAction` — Forge refuses to adopt the sandbox and the error names the secret. Remove the sandbox with `msb rm --force <sandbox name>` so Forge recreates it with the configured secrets.
 
 One placeholder caveat: a secret introduced by `msb modify` on an already-existing sandbox gets a `$<ENV>` placeholder instead of the `$MSB_<ENV>` form, so a newly added secret is most reliable on a freshly created sandbox.
 
 Security notes:
 
 - Only pass variables you are willing to expose to the sandbox. Plain variables listed in `network.env` are readable inside the guest.
-- The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is **gone**: nothing is written to disk, and the real secret value is stored only on the host.
+- The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is **gone**: the real secret value is never written to disk and is stored only on the host. When a secret needs `requireTlsIdentity` or `violationAction`, a temporary file holding only names, hosts, and options exists for the duration of `msb create`.
 
 ## Read-Only Project Mount
 

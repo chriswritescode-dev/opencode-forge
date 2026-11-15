@@ -78,7 +78,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     listSandboxesByPrefix: async (prefix: string) => sandboxes.filter((n) => n.startsWith(prefix)),
     refreshSandboxSecrets: async (name: string, secrets: SandboxSecretConfig[]) => {
       refreshSecretCalls.push([name, secrets])
-      return true
+      return { ok: true as const }
     },
     readSandboxSettings: async (name: string) => sandboxSettings.has(name)
       ? sandboxSettings.get(name)!
