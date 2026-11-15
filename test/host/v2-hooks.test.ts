@@ -16,6 +16,7 @@ import {
 import type { SandboxContext } from '../../src/sandbox/context'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
 import type { Logger, PluginConfig } from '../../src/types'
+import type { SessionInstructionEntries } from '../../src/hooks/sandbox-message'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createFakeV2Context, type V2HookRegistration } from '../helpers/fake-v2-context'
 
@@ -34,6 +35,37 @@ function sandboxContext(containerName = CONTAINER): SandboxContext {
   }
 }
 
+interface RecordedInstructionPut {
+  sessionID: string
+  key: string
+  value: string
+}
+
+function withInstructionEntries(ctx: ReturnType<typeof createFakeV2Context>['ctx']) {
+  const puts: RecordedInstructionPut[] = []
+  const lists: string[] = []
+  let existing: Array<{ key: string }> = []
+  const entry = {
+    list: vi.fn(async (input: { sessionID: string }) => {
+      lists.push(input.sessionID)
+      return existing
+    }),
+    put: vi.fn(async (input: RecordedInstructionPut) => {
+      puts.push(input)
+    }),
+    remove: vi.fn(async () => {}),
+  }
+  ;(ctx.session as unknown as { instructions: { entry: typeof entry } }).instructions = { entry }
+  return {
+    entry,
+    puts,
+    lists,
+    setExisting(next: Array<{ key: string }>) {
+      existing = next
+    },
+  }
+}
+
 interface StubCoreOptions {
   shellShimPath?: string | null
   resolveSandboxForDirectory?: ForgeHooksV2Core['resolveSandboxForDirectory']
@@ -45,7 +77,7 @@ interface StubCoreOptions {
   toolBefore?: ForgeHooksV2Core['toolBefore']
   toolAfter?: ForgeHooksV2Core['toolAfter']
   chatMessage?: ForgeHooksV2Core['chatMessage']
-  systemTransform?: ForgeHooksV2Core['systemTransform']
+  syncSandboxInstructions?: ForgeHooksV2Core['syncSandboxInstructions']
   compacting?: ForgeHooksV2Core['compacting']
 }
 
@@ -54,12 +86,14 @@ interface StubCore {
   before: Array<{ tool: string; args: unknown }>
   after: Array<{ tool: string; output: string }>
   prompts: Array<{ sessionID?: string; messageID?: string; text: string }>
+  instructionSyncs: Array<{ sessionID: string; entries: SessionInstructionEntries }>
 }
 
 function createStubCore(options: StubCoreOptions = {}): StubCore {
   const before: Array<{ tool: string; args: unknown }> = []
   const after: Array<{ tool: string; output: string }> = []
   const prompts: Array<{ sessionID?: string; messageID?: string; text: string }> = []
+  const instructionSyncs: Array<{ sessionID: string; entries: SessionInstructionEntries }> = []
   const core: ForgeHooksV2Core = {
     toolBefore: async (input, output) => {
       before.push({ tool: input.tool, args: output.args })
@@ -74,9 +108,9 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
       prompts.push({ sessionID: input.sessionID, messageID: input.messageID, text: parts[0]!.text })
       await options.chatMessage?.(input, output)
     },
-    systemTransform: async (input, output) => {
-      output.system.push('sandbox context note')
-      await options.systemTransform?.(input, output)
+    syncSandboxInstructions: async (sessionID, entries) => {
+      instructionSyncs.push({ sessionID, entries })
+      await options.syncSandboxInstructions?.(sessionID, entries)
     },
     compacting: async (input, output) => {
       output.context.push('compaction context')
@@ -91,7 +125,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     autoApproveDenyRules: options.autoApproveDenyRules ?? [],
     shellShimPath: options.shellShimPath ?? null,
   }
-  return { core, before, after, prompts }
+  return { core, before, after, prompts, instructionSyncs }
 }
 
 async function invokeHook(
@@ -739,9 +773,35 @@ describe('registerForgeHooksV2 session hooks', () => {
     expect(prompts).toEqual([{ sessionID: 'ses_1', messageID: 'msg_1', text: 'hello' }])
   })
 
-  test('context appends the sandbox note and the architect reminder', async () => {
+  test('prompt and context sync the sandbox instructions through the session port', async () => {
+    const fake = createFakeV2Context()
+    const entries = withInstructionEntries(fake.ctx)
+    entries.setExisting([{ key: 'forge-sandbox' }])
+    const { core, instructionSyncs } = createStubCore()
+    await registerForgeHooksV2(fake.ctx, core)
+
+    await invokeHook(fake.hooks, 'session', 'prompt', {
+      sessionID: 'ses_1',
+      messageID: 'msg_1',
+      prompt: { text: 'hello' },
+      delivery: 'queue',
+    })
+    await invokeHook(fake.hooks, 'session', 'context', { sessionID: 'ses_2', agent: 'code', system: [], messages: [] })
+
+    expect(instructionSyncs.map((sync) => sync.sessionID)).toEqual(['ses_1', 'ses_2'])
+
+    const adapter = instructionSyncs[0]!.entries
+    await expect(adapter.list('ses_1')).resolves.toEqual([{ key: 'forge-sandbox' }])
+    await adapter.put({ sessionID: 'ses_1', key: 'forge-sandbox', value: 'note' })
+
+    expect(entries.lists).toEqual(['ses_1'])
+    expect(entries.entry.put).toHaveBeenCalledWith({ sessionID: 'ses_1', key: 'forge-sandbox', value: 'note' })
+    expect(entries.puts).toEqual([{ sessionID: 'ses_1', key: 'forge-sandbox', value: 'note' }])
+  })
+
+  test('context appends the architect reminder without touching the system parts', async () => {
     const { ctx, hooks } = createFakeV2Context()
-    const { core } = createStubCore()
+    const { core, instructionSyncs } = createStubCore()
     await registerForgeHooksV2(ctx, core)
 
     const messages = [
@@ -751,7 +811,8 @@ describe('registerForgeHooksV2 session hooks', () => {
     const event = { sessionID: 'ses_1', agent: 'architect', system: [], messages }
     await invokeHook(hooks, 'session', 'context', event)
 
-    expect(event.system).toEqual([{ type: 'text', text: 'sandbox context note' }])
+    expect(event.system).toEqual([])
+    expect(instructionSyncs.map((sync) => sync.sessionID)).toEqual(['ses_1'])
     expect(messages[0]!.content).toEqual([
       { type: 'text', text: 'plan this' },
       { type: 'text', text: buildArchitectReminder() },
@@ -793,7 +854,6 @@ describe('registerForgeHooksV2 session hooks', () => {
       { type: 'text', text: 'base' },
       { type: 'text', text: 'ADDENDUM' },
       { type: 'text', text: 'instructions' },
-      { type: 'text', text: 'sandbox context note' },
     ])
   })
 
@@ -818,7 +878,6 @@ describe('registerForgeHooksV2 session hooks', () => {
     expect(event.system).toEqual([
       { type: 'text', text: 'base' },
       { type: 'text', text: 'instructions' },
-      { type: 'text', text: 'sandbox context note' },
     ])
   })
 
@@ -842,7 +901,6 @@ describe('registerForgeHooksV2 session hooks', () => {
     expect(event.system).toEqual([
       { type: 'text', text: 'base' },
       { type: 'text', text: 'ADDENDUM' },
-      { type: 'text', text: 'sandbox context note' },
     ])
     expect(errorSpy).toHaveBeenCalled()
     errorSpy.mockRestore()
@@ -860,7 +918,6 @@ describe('registerForgeHooksV2 session hooks', () => {
 
     expect(event.system).toEqual([
       { type: 'text', text: 'base' },
-      { type: 'text', text: 'sandbox context note' },
     ])
     expect(calls.map((call) => call.method)).not.toContain('agent.get')
   })

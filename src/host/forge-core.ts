@@ -47,7 +47,7 @@ import { createUnifiedSandboxResolver } from '../services/unified-sandbox-resolv
 import { createPlanCaptureEventHook } from '../hooks/plan-capture'
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from '../hooks/forge-session-attach'
 import { createLoopPermissionPatcher } from '../hooks/loop-permission'
-import { createSandboxMessageHook } from '../hooks/sandbox-message'
+import { createSandboxMessageHook, type SessionInstructionEntries } from '../hooks/sandbox-message'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeExecutePlanSuccess, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
@@ -72,7 +72,7 @@ export interface ForgeCore {
   tools: Record<string, ToolDefinition>
   applyConfig: ReturnType<typeof createConfigHandler>
   chatMessage(input: { sessionID: string; messageID?: string; agent?: string }, output: ChatMessageOutput): Promise<void>
-  systemTransform(input: { sessionID?: string }, output: { system: string[] }): Promise<void>
+  syncSandboxInstructions(sessionID: string, entries: SessionInstructionEntries): Promise<void>
   onEvent(input: { event: ForgeEvent }): Promise<void>
   toolBefore(input: ToolBeforeInput, output: ToolBeforeOutput): Promise<void>
   toolAfter(input: ToolAfterInput, output: ToolAfterOutput): Promise<void>
@@ -1054,8 +1054,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       await loopPermissionPatcher.ensurePatched({ sessionID: input.sessionID })
       await sessionHooks.onMessage(input, output)
     },
-    systemTransform: async (input, output) => {
-      await sandboxMessageHook(input, output)
+    syncSandboxInstructions: async (sessionID, entries) => {
+      await sandboxMessageHook(sessionID, entries)
     },
     onEvent: async (input) => {
       await planCaptureEventHook(input)

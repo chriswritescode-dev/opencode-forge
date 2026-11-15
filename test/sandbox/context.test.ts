@@ -7,7 +7,6 @@ import {
   SANDBOX_OFF_NOTE,
   SANDBOX_SWITCHED_ON_NOTE,
   buildSandboxContextNote,
-  buildSandboxHostEnvironmentNote,
   isSandboxEnabled,
   isSandboxConfigEnabled,
   isHostSessionsDefaultEnabled,
@@ -121,19 +120,6 @@ describe('buildSandboxContextNote', () => {
     expect(note.split('\n')[0]).not.toContain('[Sandbox] Environment:')
     expect(note.split('\n')[0]).toBe('[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.')
     expect(note).toContain(SANDBOX_CONTEXT_NOTE)
-  })
-})
-
-describe('buildSandboxHostEnvironmentNote', () => {
-  it('describes the host environment in steady state', () => {
-    expect(buildSandboxHostEnvironmentNote('Darwin 24.6.0 arm64 | macOS 15.6')).toBe(
-      '[Sandbox] Environment: host (Darwin 24.6.0 arm64 | macOS 15.6).'
-    )
-  })
-
-  it('emits nothing when the host probe is null or blank', () => {
-    expect(buildSandboxHostEnvironmentNote(null)).toBeNull()
-    expect(buildSandboxHostEnvironmentNote('   ')).toBeNull()
   })
 })
 

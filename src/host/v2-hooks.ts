@@ -2,6 +2,7 @@ import type { Plugin } from '@opencode/plugin'
 import { randomUUID } from 'node:crypto'
 import type { ForgeCore } from './forge-core'
 import type { SandboxContext } from '../sandbox/context'
+import type { SessionInstructionEntries } from '../hooks/sandbox-message'
 import { canonicalizePath } from '../sandbox/path'
 import { SHIM_ENV_CONTAINER } from '../sandbox/shell-shim'
 import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client/v2-adapter'
@@ -22,7 +23,7 @@ export type ForgeHooksV2Core = Pick<
   | 'toolBefore'
   | 'toolAfter'
   | 'chatMessage'
-  | 'systemTransform'
+  | 'syncSandboxInstructions'
   | 'compacting'
   | 'architectReminderFor'
   | 'systemAddendumFor'
@@ -154,6 +155,13 @@ export async function registerForgeHooksV2(
   const locationDirectory = ctx.location.directory
   const isProjectLocation = canonicalizePath(locationDirectory) === canonicalizePath(ctx.location.project.canonical)
 
+  const instructionEntries: SessionInstructionEntries = {
+    list: async (sessionID) => ctx.session.instructions.entry.list({ sessionID }),
+    put: async (input) => {
+      await ctx.session.instructions.entry.put({ sessionID: input.sessionID, key: input.key, value: input.value })
+    },
+  }
+
   await ctx.tool.hook('execute.before', async (event) => {
     await applySubagentDefaultModel(ctx, event)
     const input = { tool: toV1ToolName(event.tool), sessionID: event.sessionID, callID: event.id }
@@ -216,6 +224,7 @@ export async function registerForgeHooksV2(
       { sessionID: event.sessionID, messageID: event.messageID, agent: undefined },
       { message: {}, parts: [{ type: 'text', text: event.prompt.text }] },
     )
+    await core.syncSandboxInstructions(event.sessionID, instructionEntries)
   })
 
   await ctx.session.hook('context', async (event) => {
@@ -224,9 +233,7 @@ export async function registerForgeHooksV2(
       event.system.splice(1, 0, { type: 'text', text: addendum })
     }
 
-    const system: string[] = []
-    await core.systemTransform({ sessionID: event.sessionID }, { system })
-    for (const text of system) event.system.push({ type: 'text', text })
+    await core.syncSandboxInstructions(event.sessionID, instructionEntries)
 
     const reminder = core.architectReminderFor(event.agent)
     if (!reminder) return

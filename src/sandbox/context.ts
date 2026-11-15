@@ -99,10 +99,6 @@ function formatEnvironmentLine(label: string, value: string | null | undefined):
   return `[Sandbox] Environment: ${label} (${trimmed}).`
 }
 
-export function buildSandboxHostEnvironmentNote(hostEnv: string | null): string | null {
-  return formatEnvironmentLine('host', hostEnv)
-}
-
 export function buildSandboxContextNote(
   environment: SandboxEnvironmentState,
   sandbox?: { settings?: SandboxRuntimeSettings; change?: SandboxChange },
