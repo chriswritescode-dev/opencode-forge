@@ -38,15 +38,15 @@ export function buildHostSandboxSettingsOptions(
       title: `${field.label}: ${resources[field.key]}${draft?.resources?.[field.key] === undefined ? DEFAULT_SUFFIX : ''}`,
       value: `resource:${field.key}`,
       description: running
-        ? 'Press enter to change; applying restarts the shared sandbox for every session in this project (files kept, running processes stop)'
-        : 'Press enter to change; applied when the shared sandbox next starts',
+        ? 'Press enter to change; applying restarts the host-session sandboxes in use in this project (files kept, running processes stop)'
+        : 'Press enter to change; applied when a host-session sandbox next starts',
     })
   }
   options.push({
     title: `LAN access: ${formatLanAccess(effectiveAllowLan(draft, defaults))}${draft?.allowLan === undefined ? DEFAULT_SUFFIX : ''}`,
     value: 'allowLan',
     description: running
-      ? 'Press enter to change; applying recreates the shared sandbox for every session in this project (in-sandbox state is lost)'
+      ? 'Press enter to change; applying recreates the host-session sandboxes in use in this project (in-sandbox state is lost)'
       : 'Press enter to change whether the sandbox can reach private (LAN) addresses',
   })
   if (readSandboxOverrides(draft)) {
@@ -56,7 +56,7 @@ export function buildHostSandboxSettingsOptions(
     options.push({
       title: 'Apply settings',
       value: 'apply',
-      description: running ? 'Apply the changed settings to the running sandbox now' : 'Save the changed settings for the next time the shared sandbox starts',
+      description: running ? 'Apply the changed settings to the sandboxes in use now' : 'Save the changed settings for the next time a host-session sandbox starts',
     })
   }
   options.push({ title: changed ? 'Discard changes' : 'Done', value: 'done', description: 'Close without sending anything' })
@@ -72,10 +72,10 @@ async function confirmRecreate(
   if (!isHostSandboxRunning(preference)) return true
   if (effectiveAllowLan(draft, defaults) === effectiveAllowLan(preference.desired?.overrides, defaults)) return true
   const choice = await host.select({
-    title: 'Recreate the host sandbox?',
+    title: 'Recreate the host sandboxes?',
     options: [
       { title: 'Recreate', value: 'recreate', description: 'LAN access can only change on a new sandbox: installed packages, Docker data, caches, and running processes are lost' },
-      { title: 'Cancel', value: 'cancel', description: 'Keep the running sandbox unchanged' },
+      { title: 'Cancel', value: 'cancel', description: 'Keep the running sandboxes unchanged' },
     ],
   })
   return choice === 'recreate'

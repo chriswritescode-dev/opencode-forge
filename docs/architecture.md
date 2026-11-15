@@ -249,7 +249,7 @@ The plugin follows this initialization sequence within `createForgeCore()`:
 5. **Database** - Initialize SQLite storage (`initializeDatabase()`)
 6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, transitions, planAmendments, attempts, sessionSandboxPreferences, sessionAutoApprove)
 7. **Loop Event Handler** - Connect loop runtime to events and state management
-8. **Session Sandbox Controller** - Start the shared host-session sandbox and reconcile per-session preferences
+8. **Session Sandbox Controller** - Start the host-session sandboxes and reconcile per-session preferences
 9. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
 10. **Hooks** - Final registration of all hook points
 

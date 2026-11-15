@@ -26,7 +26,7 @@ import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } 
 import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
-import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, deriveManagerKey, type SessionSandboxController } from '../sandbox/session-controller'
+import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, isHostSessionManagerKey, type SessionSandboxController } from '../sandbox/session-controller'
 import type { PluginConfig, CompactionConfig, AutoApproveDenyRule, Logger } from '../types'
 import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
 import { createTools } from '../tools'
@@ -190,19 +190,21 @@ function createSessionIdentityLookup({
   directory,
   loop,
   negativeTtlMs = SESSION_IDENTITY_NEGATIVE_TTL_MS,
-}: CreateSessionDirectoryLookupOptions, requireProjectId = true): (sessionId: string) => Promise<SessionSandboxIdentity | null> {
+}: CreateSessionDirectoryLookupOptions, requireProjectId = true, cacheEnabled = true): (sessionId: string) => Promise<SessionSandboxIdentity | null> {
   const cache = new LRUCache<SessionSandboxIdentity>(500)
   const negativeCache = new LRUCache<number>(500)
 
   return async (sessionId: string): Promise<SessionSandboxIdentity | null> => {
-    if (cache.has(sessionId)) {
+    if (cacheEnabled && cache.has(sessionId)) {
       return cache.get(sessionId) ?? null
     }
 
-    const negExpiry = negativeCache.get(sessionId)
-    if (negExpiry !== undefined) {
-      if (negExpiry > Date.now()) return null
-      negativeCache.delete(sessionId)
+    if (cacheEnabled) {
+      const negExpiry = negativeCache.get(sessionId)
+      if (negExpiry !== undefined) {
+        if (negExpiry > Date.now()) return null
+        negativeCache.delete(sessionId)
+      }
     }
 
     const attempts = buildSessionLookupAttempts(sessionId, directory, loop)
@@ -211,15 +213,17 @@ function createSessionIdentityLookup({
         const session = await client.session.get(attempt.input)
         if (session?.directory && (!requireProjectId || session.projectID)) {
           const identity = { projectId: session.projectID ?? '', directory: session.directory }
-          negativeCache.delete(sessionId)
-          cache.set(sessionId, identity)
+          if (cacheEnabled) {
+            negativeCache.delete(sessionId)
+            cache.set(sessionId, identity)
+          }
           return identity
         }
       } catch {
       }
     }
 
-    negativeCache.set(sessionId, Date.now() + negativeTtlMs)
+    if (cacheEnabled) negativeCache.set(sessionId, Date.now() + negativeTtlMs)
     return null
   }
 }
@@ -453,7 +457,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
   const runtime = createMsbRuntime(logger)
-  const hostSandboxManagerKey = deriveManagerKey(projectId)
   if (!isSandboxConfigEnabled(config)) {
     logger.log('Sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
   } else {
@@ -469,7 +472,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         mountProjectReadonly: config.sandbox?.mountProjectReadonly,
         buildContextDir: resolveBundledContainerDir(),
         templateBuildArgs: resolveTemplateBuildArgs(config),
-        resolveOverrides: (worktreeName) => worktreeName === hostSandboxManagerKey
+        resolveOverrides: (worktreeName) => isHostSessionManagerKey(projectId, worktreeName)
           ? sandboxPreferences.getDesired(projectId)?.overrides
           : readSandboxOverrides(loopsRepo.get(projectId, worktreeName)?.sandboxSettings),
       }
@@ -689,6 +692,11 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   loopHandler.loop.setParentSessionLookup(parentSessionLookup)
   loopHandler.loop.superviseOwnedLoops()
   const sessionIdentityLookup = createSessionIdentityLookup({ client: forgeClient, directory, loop: loopHandler.loop })
+  const hostSessionIdentityLookup = createSessionIdentityLookup(
+    { client: forgeClient, directory, loop: loopHandler.loop },
+    true,
+    false,
+  )
   const sessionDirectoryLookup = async (sessionId: string) => (await sessionIdentityLookup(sessionId))?.directory ?? null
   const sessionLoopResolver = createSessionLoopResolver({
     loop: loopHandler.loop,
@@ -718,7 +726,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const hostSessionProvider: SessionSandboxProvider = {
     worktree: isForgeWorktreeDir(dataDir, directory),
     getParentSessionId: parentSessionLookup,
-    getSessionIdentity: sessionIdentityLookup,
+    getSessionIdentity: hostSessionIdentityLookup,
   }
   const sharedSessionSandbox = acquireSessionSandboxController(projectId, hostSessionProvider, (getCurrent) => {
     const forwarding = sessionSandboxProviderForwarding(getCurrent)
