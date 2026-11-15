@@ -361,6 +361,7 @@ Drives the `msb` CLI to provision isolated sandboxes for loop execution.
 | `shell-shim.ts` | Generated shim routing the native `shell` tool through `msb exec` |
 | `session-controller.ts` | Per-folder host-session sandbox keys, restore/routing, and per-session preference reconciliation |
 | `loop-settings.ts` | Per-loop sandbox overrides: validation, workspace `extra` carrier, and the effective-resource resolver shared by creation and the TUI |
+| `secrets.ts` | Sandbox secret definition validation and the in-process secret value provider registry |
 | `env-probe.ts` | Bounded environment probe for the container note |
 
 ### SandboxRuntime Interface

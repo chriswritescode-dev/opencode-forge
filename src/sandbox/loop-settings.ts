@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { WorkspaceExtra } from '../client/port'
-import type { LoopSandboxSettings, SandboxOverrides, SandboxResources } from '../types'
+import type { LoopSandboxSettings, SandboxOverrides, SandboxResources, SandboxSecretConfig } from '../types'
+import { resolveSandboxSecret } from './secrets'
 
 export const MSB_SIZE_RE = /^\d+(\.\d+)?[kmg]b?$/i
 
@@ -36,6 +37,8 @@ const rawLoopSandboxSettingsSchema = z.looseObject({
   enabled: z.boolean().optional().catch(undefined),
   allowLan: z.boolean().optional().catch(undefined),
   resources: rawLoopSandboxResourcesSchema.optional().catch(undefined),
+  secrets: z.array(z.unknown()).optional().catch(undefined),
+  secretProvider: z.string().optional().catch(undefined),
 })
 
 export function readLoopSandboxSettings(value: LoopSandboxSettingsInput): LoopSandboxSettings | undefined {
@@ -53,6 +56,14 @@ export function readLoopSandboxSettings(value: LoopSandboxSettingsInput): LoopSa
   if (rawSettings.enabled !== undefined) settings.enabled = rawSettings.enabled
   if (Object.keys(resources).length > 0) settings.resources = resources
   if (rawSettings.allowLan !== undefined) settings.allowLan = rawSettings.allowLan
+  const secrets: SandboxSecretConfig[] = []
+  for (const raw of rawSettings.secrets ?? []) {
+    const resolved = resolveSandboxSecret(raw)
+    if ('secret' in resolved) secrets.push(resolved.secret)
+  }
+  if (secrets.length > 0) settings.secrets = secrets
+  const secretProvider = rawSettings.secretProvider?.trim() ?? ''
+  if (secretProvider) settings.secretProvider = secretProvider
   return Object.keys(settings).length > 0 ? settings : undefined
 }
 

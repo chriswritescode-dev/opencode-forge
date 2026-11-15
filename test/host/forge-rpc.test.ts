@@ -24,6 +24,29 @@ import {
 } from '../../src/host/forge-rpc'
 import { FORGE_PLUGIN_ID } from '../../src/constants/plugin'
 
+const SANDBOX_SECRET_SCHEMA = {
+  type: 'object',
+  properties: {
+    env: { type: 'string' },
+    hosts: { type: 'array', items: { type: 'string' } },
+    substitution: {
+      type: 'object',
+      properties: {
+        headers: { type: 'boolean' },
+        headerFields: { type: 'array', items: { type: 'string' } },
+        query: { type: 'boolean' },
+        body: { type: 'boolean' },
+      },
+      additionalProperties: false,
+    },
+    passthrough: { type: 'array', items: { type: 'string' } },
+    violationAction: { type: 'string', enum: ['block', 'block-and-log', 'block-and-terminate'] },
+    requireTlsIdentity: { type: 'boolean' },
+  },
+  required: ['env', 'hosts'],
+  additionalProperties: false,
+} as const
+
 describe('FORGE_RPC', () => {
   test('uses the plugin id and exposes every method in contract order', () => {
     expect(FORGE_RPC.id).toBe(FORGE_PLUGIN_ID)
@@ -93,6 +116,8 @@ describe('FORGE_RPC', () => {
           additionalProperties: false,
         },
         allowLan: { type: 'boolean' },
+        secrets: { type: 'array', items: SANDBOX_SECRET_SCHEMA },
+        secretProvider: { type: 'string', minLength: 1 },
       },
       additionalProperties: false,
     })
@@ -119,6 +144,49 @@ describe('FORGE_RPC', () => {
       additionalProperties: false,
     })
     expect(method.output.additionalProperties).toBe(false)
+  })
+
+  test('loopRestart accepts per-loop secret definitions only under its sandbox input', () => {
+    const restartInput = FORGE_RPC.methods.loopRestart.input
+    expect(restartInput.properties.sandbox).toEqual({
+      type: 'object',
+      properties: {
+        secrets: { type: 'array', items: SANDBOX_SECRET_SCHEMA },
+        secretProvider: { type: 'string', minLength: 1 },
+      },
+      required: ['secrets'],
+      additionalProperties: false,
+    })
+    expect(restartInput.required).toEqual(['loopName', 'auditorModel', 'auditorVariant'])
+    expect(restartInput.additionalProperties).toBe(false)
+
+    const sandboxSettings = FORGE_RPC.methods.executePlan.input.properties.sandbox
+    expect('required' in sandboxSettings).toBe(false)
+    expect(sandboxSettings.properties.secrets).toEqual({ type: 'array', items: SANDBOX_SECRET_SCHEMA })
+    expect(sandboxSettings.properties.secretProvider).toEqual({ type: 'string', minLength: 1 })
+  })
+
+  test('hostSandboxSet overrides cannot carry secret definitions or a provider', () => {
+    const overrides = FORGE_RPC.methods.hostSandboxSet.input.properties.overrides
+    expect(overrides).toEqual({
+      type: 'object',
+      properties: {
+        resources: {
+          type: 'object',
+          properties: {
+            memory: { type: 'string' },
+            cpus: { type: 'string' },
+            dockerDisk: { type: 'string' },
+            cacheDisk: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        allowLan: { type: 'boolean' },
+      },
+      additionalProperties: false,
+    })
+    expect('secrets' in overrides.properties).toBe(false)
+    expect('secretProvider' in overrides.properties).toBe(false)
   })
 
   test('readForgeLoopDefaults keeps defaults and rejects invalid payloads', () => {

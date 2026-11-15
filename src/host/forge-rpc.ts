@@ -10,7 +10,7 @@ import {
   type SessionSandboxControllerState,
   type SessionSandboxDesiredState,
 } from '../storage/session-sandbox-state'
-import type { LoopSandboxSettings, SandboxOverrides, SandboxResources } from '../types'
+import type { LoopSandboxSettings, SandboxOverrides, SandboxResources, SandboxSecretConfig } from '../types'
 import type { JsonValue } from '../utils/json-schema'
 import { TOAST_VARIANTS, type ToastVariant } from '../utils/toast'
 import type { LoopInfo } from '../utils/tui-models'
@@ -128,6 +128,7 @@ export interface ForgeLoopRestartInput {
   executionVariant?: string
   force?: boolean
   expectedStartedAt?: string
+  sandbox?: { secrets: SandboxSecretConfig[]; secretProvider?: string }
 }
 
 export type ForgeLoopRestartOutput = { sessionId: string } | ForgeRpcError
@@ -175,11 +176,36 @@ const SANDBOX_OVERRIDES_SCHEMA = {
   additionalProperties: false,
 } as const
 
+const SANDBOX_SECRET_SCHEMA = {
+  type: 'object',
+  properties: {
+    env: { type: 'string' },
+    hosts: { type: 'array', items: { type: 'string' } },
+    substitution: {
+      type: 'object',
+      properties: {
+        headers: { type: 'boolean' },
+        headerFields: { type: 'array', items: { type: 'string' } },
+        query: { type: 'boolean' },
+        body: { type: 'boolean' },
+      },
+      additionalProperties: false,
+    },
+    passthrough: { type: 'array', items: { type: 'string' } },
+    violationAction: { type: 'string', enum: ['block', 'block-and-log', 'block-and-terminate'] },
+    requireTlsIdentity: { type: 'boolean' },
+  },
+  required: ['env', 'hosts'],
+  additionalProperties: false,
+} as const
+
 const SANDBOX_SETTINGS_SCHEMA = {
   type: 'object',
   properties: {
     enabled: { type: 'boolean' },
     ...SANDBOX_OVERRIDES_SCHEMA.properties,
+    secrets: { type: 'array', items: SANDBOX_SECRET_SCHEMA },
+    secretProvider: { type: 'string', minLength: 1 },
   },
   additionalProperties: false,
 } as const
@@ -386,6 +412,15 @@ export const FORGE_RPC = {
           executionVariant: OPTIONAL_STRING,
           force: { type: 'boolean' },
           expectedStartedAt: OPTIONAL_STRING,
+          sandbox: {
+            type: 'object',
+            properties: {
+              secrets: { type: 'array', items: SANDBOX_SECRET_SCHEMA },
+              secretProvider: { type: 'string', minLength: 1 },
+            },
+            required: ['secrets'],
+            additionalProperties: false,
+          },
         },
         required: ['loopName', 'auditorModel', 'auditorVariant'],
         additionalProperties: false,

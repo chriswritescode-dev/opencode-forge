@@ -77,10 +77,26 @@ const sandboxOverridesRpcSchema = z.object({
   allowLan: z.boolean().optional(),
 })
 
+const sandboxSecretRpcSchema = z.object({
+  env: z.string(),
+  hosts: z.array(z.string()),
+  substitution: z.object({
+    headers: z.boolean().optional(),
+    headerFields: z.array(z.string()).optional(),
+    query: z.boolean().optional(),
+    body: z.boolean().optional(),
+  }).optional(),
+  passthrough: z.array(z.string()).optional(),
+  violationAction: z.enum(['block', 'block-and-log', 'block-and-terminate']).optional(),
+  requireTlsIdentity: z.boolean().optional(),
+})
+
 const sandboxSettingsRpcSchema = z.object({
   enabled: z.boolean().optional(),
   resources: sandboxResourcesRpcSchema.optional(),
   allowLan: z.boolean().optional(),
+  secrets: z.array(sandboxSecretRpcSchema).optional(),
+  secretProvider: z.string().min(1).optional(),
 })
 
 const executePlanRpcInputSchema = z.object({
@@ -115,6 +131,10 @@ const loopRestartRpcInputSchema = z.object({
   executionVariant: z.string().optional(),
   force: z.boolean().optional(),
   expectedStartedAt: z.string().optional(),
+  sandbox: z.object({
+    secrets: z.array(sandboxSecretRpcSchema),
+    secretProvider: z.string().min(1).optional(),
+  }).optional(),
 })
 
 const hostSandboxSetRpcInputSchema = z.object({

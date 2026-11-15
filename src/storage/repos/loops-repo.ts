@@ -203,6 +203,7 @@ export interface LoopsRepo {
       auditorVariant?: string | null
       executionModel?: string | null
       executionVariant?: string | null
+      sandboxSettings?: LoopSandboxSettings | null
     }
   ): void
   terminate(
@@ -561,6 +562,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       auditor_variant = CASE WHEN ? = 1 THEN ? ELSE auditor_variant END,
       execution_model = CASE WHEN ? = 1 THEN ? ELSE execution_model END,
       execution_variant = CASE WHEN ? = 1 THEN ? ELSE execution_variant END,
+      sandbox_settings = CASE WHEN ? = 1 THEN ? ELSE sandbox_settings END,
       started_at = ?,
       completed_at = NULL,
       termination_reason = NULL,
@@ -862,6 +864,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         const setsAuditorVariant = opts.auditorVariant !== undefined ? 1 : 0
         const setsExecutionModel = opts.executionModel !== undefined ? 1 : 0
         const setsExecutionVariant = opts.executionVariant !== undefined ? 1 : 0
+        const setsSandboxSettings = opts.sandboxSettings !== undefined ? 1 : 0
         restartStmt.run(
           opts.sessionId,
           opts.phase,
@@ -877,6 +880,8 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           setsExecutionModel ? (opts.executionModel ?? null) : null,
           setsExecutionVariant,
           setsExecutionVariant ? (opts.executionVariant ?? null) : null,
+          setsSandboxSettings,
+          setsSandboxSettings ? serializeSandboxSettings(opts.sandboxSettings) : null,
           opts.startedAt,
           opts.currentSectionIndex,
           opts.totalSections,

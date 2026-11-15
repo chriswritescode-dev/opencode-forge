@@ -159,7 +159,7 @@ Host-held credentials are bound with `sandbox.network.secrets` instead of `env`.
 }
 ```
 
-Each entry maps to `msb create --secret <env>:<options>@<hosts>`, where the options express the optional fields below, for example `headers=*`, `headers=[authorization]`, `no-headers`, `query`, `body`, or `passthrough=[host]`. Once a sandbox has a secret bound, every `msb exec` fails unless the named host environment variable is present in the environment of the process invoking msb — msb reports `error: invalid config: secret X: host environment variable X is not set`. Because the shell shim inherits opencode's process environment, a variable missing there breaks every sandboxed shell command. The variables named in `sandbox.network.secrets` must therefore be exported in the environment that **launches opencode**, not merely present in an interactive shell. Forge logs an explicit warning naming the variable when a configured secret's host variable is unset.
+Each entry maps to `msb create --secret <env>:<options>@<hosts>`, where the options express the optional fields below, for example `headers=*`, `headers=[authorization]`, `no-headers`, `query`, `body`, or `passthrough=[host]`. Once a sandbox has a secret bound, `msb create`, `msb start`, `msb modify`, and an `msb exec` that has to start a stopped sandbox all need the named host environment variable in the environment of the process invoking msb; `msb exec` against a running sandbox does not. Without it msb reports `error: invalid config: secret X: host environment variable X is not set`. Because the shell shim inherits opencode's process environment, a sandbox that has stopped cannot be started by a routed command when the variable is missing there. The variables named in `sandbox.network.secrets` must therefore be exported in the environment that **launches opencode**, not merely present in an interactive shell. Forge logs an explicit warning naming the variable when a configured secret's host variable is unset.
 
 ### Secret options
 
@@ -209,10 +209,39 @@ Adopting an existing sandbox (for example after a plugin restart) converges the 
 
 One placeholder caveat: a secret introduced by `msb modify` on an already-existing sandbox gets a `$<ENV>` placeholder instead of the `$MSB_<ENV>` form, so a newly added secret is most reliable on a freshly created sandbox.
 
+### Per-loop secrets
+
+A loop can carry its own secret definitions in addition to `sandbox.network.secrets`, which is unchanged. The definitions travel over the plugin RPC: `FORGE_RPC.executePlan` accepts `sandbox.secrets` and an optional `sandbox.secretProvider` for `loop` mode, and `FORGE_RPC.loopRestart` accepts an optional `sandbox: { secrets, secretProvider }` that replaces the loop's stored definitions — an empty `secrets` array clears them, and omitting `sandbox` reuses them. Entries take the same `env`, `hosts`, and optional `substitution`, `passthrough`, `violationAction`, and `requireTlsIdentity` fields as `sandbox.network.secrets`. Only the definitions — names, hosts, and policy, never a value — are stored on the loop row. `hostSandboxSet` does not accept them, so host-session sandboxes cannot carry per-loop secrets yet.
+
+`executePlan` returns an error and launches nothing when secrets are passed for `execute-here` or `new-session`, when the loop is not sandboxed, when a definition is invalid, when an `env` name repeats, or when the named provider is not registered. `loopRestart` rejects the same definition problems and secrets for a loop that is not sandboxed.
+
+Values never cross the RPC. OpenCode serves every plugin RPC method over HTTP at `POST /api/rpc/:rpcID/:method`, so a method returning secret values would be reachable by any client of the server, including a sandbox with LAN access. Values therefore come from an in-process provider registered in Forge's process-shared store:
+
+```ts
+const shared = (globalThis.__opencodeForgeShared ??= {})
+const providers = (shared['sandbox-secret-providers.v1'] ??= new Map())
+providers.set('my-plugin', async ({ projectId, sandbox, directory, names }) => {
+  return { MY_TOKEN: '...' }
+})
+```
+
+Registration is order-independent: either plugin may load first. The request carries `projectId`, `sandbox` (the loop name), `directory` (the loop's worktree directory), and `names` (the env names Forge needs). The provider returns a name-to-value record and must return a non-empty value for every requested name. When `secretProvider` is omitted, per-loop secrets take their values from OpenCode's process environment exactly like config-file secrets, and an unset variable is skipped and logged.
+
+Forge asks right before each msb call that needs the values: `msb create` (including its `--replace` retry), the `msb modify` secret refresh when an existing sandbox is adopted, and `msb start` for a stopped sandbox. The values are passed only in that child process's environment, never as arguments, never logged, and never stored by Forge. A running, already-converged sandbox causes no provider call, and `msb exec` on a running sandbox needs no value.
+
+A stopped sandbox is normally started in place by `msb exec` using OpenCode's own environment, which lacks provider-supplied values, so for a sandbox with provider secrets Forge runs `msb start` itself with the values before any command is routed into it. Sandboxes without provider secrets keep the start-in-place behavior.
+
+If the provider is not registered, throws, does not answer within 30 s, returns an invalid result, or omits a value, the sandbox does not start and the error names the provider and the missing variable names; the loop's routed commands fail rather than run without the secret. After an OpenCode restart, a provider that loads after Forge is picked up on the next routed call.
+
+A per-loop definition replaces a config-file definition with the same `env` name. Per-loop secrets never switch a sandbox to restricted egress — only `sandbox.network.allow` and config-file secrets do — and their hosts are added to the allow-list when one is already active. The fixed-at-create fields described above apply unchanged: a restart that changes `requireTlsIdentity` or `violationAction`, or removes the last `passthrough` host, is refused with the `msb rm --force <name>` instruction.
+
+Inside the sandbox the variable holds only the `$MSB_<ENV>` placeholder; msb substitutes the real value at the network boundary for the listed hosts.
+
 Security notes:
 
 - Only pass variables you are willing to expose to the sandbox. Plain variables listed in `network.env` are readable inside the guest.
 - The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is **gone**: the real secret value is never written to disk and is stored only on the host. When a secret needs `requireTlsIdentity` or `violationAction`, a temporary file holding only names, hosts, and options exists for the duration of `msb create`.
+- Provider-supplied values exist only in the environment of the msb call that needs them: Forge fetches them from the registered provider immediately before `msb create`, `start`, or `modify`, and never writes or logs them.
 
 ## Read-Only Project Mount
 

@@ -1,4 +1,4 @@
-import type { PluginConfig, Logger, LoopSandboxSettings } from '../types'
+import type { PluginConfig, Logger, LoopSandboxSettings, SandboxSecretConfig } from '../types'
 import type { ForgeClient } from '../client/port'
 import { publishToast } from '../utils/toast'
 
@@ -211,6 +211,7 @@ export interface RestartLoopCommand {
   executionModel?: string
   executionVariant?: string
   expectedStartedAt?: string
+  sandboxSecrets?: { secrets: SandboxSecretConfig[]; secretProvider?: string }
 }
 
 export interface CancelLoopCommand {
@@ -1381,6 +1382,22 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
     const previousState = { ...stoppedState }
+    if (command.sandboxSecrets) {
+      if (command.sandboxSecrets.secrets.length > 0 && !restartSandbox) {
+        return fail('bad_request', 400, 'Sandbox secrets require a sandboxed loop')
+      }
+      const previousSettings: LoopSandboxSettings = { ...stoppedState.sandboxSettings }
+      delete previousSettings.secrets
+      delete previousSettings.secretProvider
+      const { secrets, secretProvider } = command.sandboxSecrets
+      if (secrets.length > 0) {
+        const nextSettings: LoopSandboxSettings = { ...previousSettings, secrets }
+        if (secretProvider) nextSettings.secretProvider = secretProvider
+        stoppedState.sandboxSettings = nextSettings
+      } else {
+        stoppedState.sandboxSettings = Object.keys(previousSettings).length > 0 ? previousSettings : undefined
+      }
+    }
     let previousSessionId = stoppedState.sessionId
     let bindFailed = false
 
@@ -1655,6 +1672,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         executionVariant: command.executionVariant === undefined ? undefined : overrideExecutionVariant ?? null,
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
+        sandboxSettings: newState.sandboxSettings ?? null,
         startedAt: new Date(newState.startedAt).getTime(),
       })
 
