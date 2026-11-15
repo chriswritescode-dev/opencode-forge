@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { SandboxRuntime, SandboxWorkspace } from './msb'
+import type { SandboxRuntime, SandboxWorkspace, CreateSandboxOpts } from './msb'
 import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
@@ -23,6 +23,7 @@ export interface SandboxManagerConfig {
   listSkillPaths?: (projectDir: string) => Promise<string[]>
   fallbackSkillsDir?: string
   network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[]; allowLan?: boolean }
+  resolveIdleTimeout?: (worktreeName: string) => string | undefined
 }
 
 function normalizeContainerPath(path: string): string {
@@ -594,7 +595,7 @@ export function createSandboxManager(
     const target = resolveTargetSettings(worktreeName, overrides)
     const secrets = resolveSandboxSecrets()
     logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${target.resources.memory} cpus=${target.resources.cpus} lan=${target.allowLan} workspaces=${workspaces.length})`)
-    await runtime.createSandbox(containerName, workspaces, {
+    const createOpts: CreateSandboxOpts = {
       image: config.image,
       resources: target.resources,
       networkAllow: buildNetworkAllow(config.network?.allow, secrets, logger),
@@ -602,7 +603,10 @@ export function createSandboxManager(
       env: resolvePassthroughEnv(),
       secrets,
       allowLan: target.allowLan,
-    })
+    }
+    const idleTimeout = config.resolveIdleTimeout?.(worktreeName)
+    if (idleTimeout) createOpts.idleTimeout = idleTimeout
+    await runtime.createSandbox(containerName, workspaces, createOpts)
     await prepareCacheDisk(containerName)
     convergedSecrets.add(containerName)
     recordHandledSecretEnvs(containerName, secrets)

@@ -26,7 +26,7 @@ import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } 
 import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
-import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, isHostSessionManagerKey, type SessionSandboxController } from '../sandbox/session-controller'
+import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, FOLDER_SANDBOX_IDLE_TIMEOUT, isFolderManagerKey, isHostSessionManagerKey, type SessionSandboxController } from '../sandbox/session-controller'
 import type { PluginConfig, CompactionConfig, AutoApproveDenyRule, Logger } from '../types'
 import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
 import { createTools } from '../tools'
@@ -183,28 +183,35 @@ interface SessionSandboxIdentity {
   directory: string
 }
 
+interface CachedSessionIdentity {
+  identity: SessionSandboxIdentity
+  expiresAt: number
+}
+
 const SESSION_IDENTITY_NEGATIVE_TTL_MS = 15000
+
+const HOST_SESSION_IDENTITY_TTL_MS = 1000
 
 function createSessionIdentityLookup({
   client,
   directory,
   loop,
   negativeTtlMs = SESSION_IDENTITY_NEGATIVE_TTL_MS,
-}: CreateSessionDirectoryLookupOptions, requireProjectId = true, cacheEnabled = true): (sessionId: string) => Promise<SessionSandboxIdentity | null> {
-  const cache = new LRUCache<SessionSandboxIdentity>(500)
+}: CreateSessionDirectoryLookupOptions, requireProjectId = true, positiveTtlMs?: number): (sessionId: string) => Promise<SessionSandboxIdentity | null> {
+  const cache = new LRUCache<CachedSessionIdentity>(500)
   const negativeCache = new LRUCache<number>(500)
 
   return async (sessionId: string): Promise<SessionSandboxIdentity | null> => {
-    if (cacheEnabled && cache.has(sessionId)) {
-      return cache.get(sessionId) ?? null
+    const cached = cache.get(sessionId)
+    if (cached !== undefined) {
+      if (positiveTtlMs === undefined || Date.now() < cached.expiresAt) return cached.identity
+      cache.delete(sessionId)
     }
 
-    if (cacheEnabled) {
-      const negExpiry = negativeCache.get(sessionId)
-      if (negExpiry !== undefined) {
-        if (negExpiry > Date.now()) return null
-        negativeCache.delete(sessionId)
-      }
+    const negExpiry = negativeCache.get(sessionId)
+    if (negExpiry !== undefined) {
+      if (negExpiry > Date.now()) return null
+      negativeCache.delete(sessionId)
     }
 
     const attempts = buildSessionLookupAttempts(sessionId, directory, loop)
@@ -213,17 +220,18 @@ function createSessionIdentityLookup({
         const session = await client.session.get(attempt.input)
         if (session?.directory && (!requireProjectId || session.projectID)) {
           const identity = { projectId: session.projectID ?? '', directory: session.directory }
-          if (cacheEnabled) {
-            negativeCache.delete(sessionId)
-            cache.set(sessionId, identity)
-          }
+          negativeCache.delete(sessionId)
+          cache.set(sessionId, {
+            identity,
+            expiresAt: positiveTtlMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + positiveTtlMs,
+          })
           return identity
         }
       } catch {
       }
     }
 
-    if (cacheEnabled) negativeCache.set(sessionId, Date.now() + negativeTtlMs)
+    negativeCache.set(sessionId, Date.now() + negativeTtlMs)
     return null
   }
 }
@@ -475,6 +483,9 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         resolveOverrides: (worktreeName) => isHostSessionManagerKey(projectId, worktreeName)
           ? sandboxPreferences.getDesired(projectId)?.overrides
           : readSandboxOverrides(loopsRepo.get(projectId, worktreeName)?.sandboxSettings),
+        resolveIdleTimeout: (worktreeName) => isFolderManagerKey(projectId, worktreeName)
+          ? FOLDER_SANDBOX_IDLE_TIMEOUT
+          : undefined,
       }
       if (sandboxMountConfigs.length > 0) sandboxConfig.customMounts = sandboxMountConfigs
       if (config.sandbox?.network) sandboxConfig.network = config.sandbox.network
@@ -693,9 +704,9 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   loopHandler.loop.superviseOwnedLoops()
   const sessionIdentityLookup = createSessionIdentityLookup({ client: forgeClient, directory, loop: loopHandler.loop })
   const hostSessionIdentityLookup = createSessionIdentityLookup(
-    { client: forgeClient, directory, loop: loopHandler.loop },
+    { client: forgeClient, directory, loop: loopHandler.loop, negativeTtlMs: HOST_SESSION_IDENTITY_TTL_MS },
     true,
-    false,
+    HOST_SESSION_IDENTITY_TTL_MS,
   )
   const sessionDirectoryLookup = async (sessionId: string) => (await sessionIdentityLookup(sessionId))?.directory ?? null
   const sessionLoopResolver = createSessionLoopResolver({

@@ -14,6 +14,8 @@ export const DEFAULT_POLL_INTERVAL_MS = 500
 
 export const OWNERSHIP_LOOKUP_TIMEOUT_MS = 5_000
 
+export const FOLDER_SANDBOX_IDLE_TIMEOUT = '30m'
+
 const UNAVAILABLE_SANDBOX_ERROR = 'host-session sandbox is unavailable (sandbox runtime not initialized)'
 
 export interface SessionSandboxLifecycleManager {
@@ -80,9 +82,12 @@ export function deriveFolderManagerKey(projectId: string, projectRoot: string, d
   return `${rootKey}-${createHash('sha256').update(folder).digest('hex').slice(0, 12)}`
 }
 
+export function isFolderManagerKey(projectId: string, key: string): boolean {
+  return key.startsWith(`${deriveManagerKey(projectId)}-`)
+}
+
 export function isHostSessionManagerKey(projectId: string, key: string): boolean {
-  const rootKey = deriveManagerKey(projectId)
-  return key === rootKey || key.startsWith(`${rootKey}-`)
+  return key === deriveManagerKey(projectId) || isFolderManagerKey(projectId, key)
 }
 
 function freshRevision(): string {
@@ -187,7 +192,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
 
   function sandboxActive(): boolean {
     if (hostActive) return true
-    for (const key of trackedSandboxes.keys()) {
+    const keys = new Set<string>([managerKey, ...trackedSandboxes.keys()])
+    for (const key of keys) {
       if (sandboxManager.getActive(key) !== null) return true
     }
     return false

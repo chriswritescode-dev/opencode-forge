@@ -132,4 +132,21 @@ describe('SandboxManager caching', () => {
     await expect(manager.start('test-wt', '/tmp/project')).resolves.toEqual({ containerName: 'forge-test-wt' })
     expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(1)
   })
+
+  it('should pass an idle timeout to createSandbox only for the worktrees it resolves for', async () => {
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      resolveIdleTimeout: (worktreeName) => worktreeName === 'folder-wt' ? '30m' : undefined,
+    }
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
+
+    await manager.start('folder-wt', '/tmp/project')
+    await manager.start('loop-wt', '/tmp/project')
+
+    const calls = mockRuntime.getCreateSandboxCalls()
+    const folder = calls.find(([name]) => name === 'forge-folder-wt')
+    const loop = calls.find(([name]) => name === 'forge-loop-wt')
+    expect(folder?.[2]?.idleTimeout).toBe('30m')
+    expect(loop?.[2]).not.toHaveProperty('idleTimeout')
+  })
 })

@@ -12,7 +12,7 @@ export interface MockSandboxRuntime extends SandboxRuntime {
     [
       string,
       SandboxWorkspace[],
-      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] } | undefined,
+      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[]; idleTimeout?: string } | undefined,
     ]
   >
   getRefreshSecretCalls(): Array<[string, SandboxSecretConfig[]]>
@@ -37,7 +37,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     [
       string,
       SandboxWorkspace[],
-      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] } | undefined,
+      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[]; idleTimeout?: string } | undefined,
     ]
   > = []
   const removeSandboxCalls: string[] = []
@@ -59,7 +59,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     createSandbox: async (
       name: string,
       workspaces: SandboxWorkspace[],
-      opts?: { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] },
+      opts?: { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[]; idleTimeout?: string },
     ) => {
       createSandboxCalls.push([name, workspaces, opts])
       sandboxStates.set(name, 'running')

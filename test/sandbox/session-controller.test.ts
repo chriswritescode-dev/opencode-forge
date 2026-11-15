@@ -6,6 +6,7 @@ import {
   createUnavailableSandboxLifecycleManager,
   deriveFolderManagerKey,
   deriveManagerKey,
+  isFolderManagerKey,
   isHostSessionManagerKey,
   DEFAULT_POLL_INTERVAL_MS,
   OWNERSHIP_LOOKUP_TIMEOUT_MS,
@@ -254,6 +255,10 @@ describe('SessionSandboxController', () => {
     expect(isHostSessionManagerKey(PROJECT, folderKey)).toBe(true)
     expect(isHostSessionManagerKey('project-b', folderKey)).toBe(false)
     expect(isHostSessionManagerKey(PROJECT, 'some-loop-name')).toBe(false)
+    expect(isFolderManagerKey(PROJECT, folderKey)).toBe(true)
+    expect(isFolderManagerKey(PROJECT, MANAGER_KEY)).toBe(false)
+    expect(isFolderManagerKey(PROJECT, 'some-loop-name')).toBe(false)
+    expect(isFolderManagerKey('project-b', folderKey)).toBe(false)
   })
 
   test('a session whose directory is the project root uses the root sandbox key', async () => {
@@ -559,6 +564,22 @@ describe('SessionSandboxController', () => {
     expect(manager.active).toBeNull()
     expect(repo.getApplied(PROJECT)).toMatchObject({ revision: 'rev-leftover', running: false, error: null })
     await controller.dispose()
+  })
+
+  test('dispose stops an active root sandbox the controller never tracked', async () => {
+    manager.setActive({
+      containerName: `forge-${MANAGER_KEY}`,
+      projectDir: DIRECTORY,
+      startedAt: new Date().toISOString(),
+      mounts: [],
+      instanceId: `instance-forge-${MANAGER_KEY}`,
+    })
+    const controller = createController()
+
+    await controller.dispose()
+
+    expect(manager.stopCalls).toEqual([MANAGER_KEY])
+    expect(manager.active).toBeNull()
   })
 
   test('a new controller adopts applied running at the same revision through ensureRunning without stopping', async () => {

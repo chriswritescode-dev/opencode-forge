@@ -374,6 +374,17 @@ describe('create args', () => {
     )
   })
 
+  test('emits --idle-timeout only when an idle timeout is configured', () => {
+    const ws = [{ hostDir: '/a', containerDir: '/a' }]
+    const withTimeout = buildMsbCreateArgs('forge-c', ws, { image: 'img', idleTimeout: '30m' })
+    expect(withTimeout.slice(withTimeout.indexOf('--idle-timeout'), withTimeout.indexOf('--idle-timeout') + 2))
+      .toEqual(['--idle-timeout', '30m'])
+
+    const withoutTimeout = buildMsbCreateArgs('forge-c', ws, { image: 'img' })
+    expect(withoutTimeout).not.toContain('--idle-timeout')
+    expect(withoutTimeout.join(' ')).not.toContain('30m')
+  })
+
   test('a host shared by allow and secrets emits exactly one matching --net-rule allow@host', () => {
     const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
