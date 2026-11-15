@@ -54,9 +54,22 @@ export interface LoopConfig {
   permissions?: LoopPermissionsConfig
 }
 
+export type SandboxSecretViolationAction = 'block' | 'block-and-log' | 'block-and-terminate'
+
+export interface SandboxSecretSubstitution {
+  headers?: boolean
+  headerFields?: string[]
+  query?: boolean
+  body?: boolean
+}
+
 export interface SandboxSecretConfig {
   env: string
   hosts: string[]
+  substitution?: SandboxSecretSubstitution
+  passthrough?: string[]
+  violationAction?: SandboxSecretViolationAction
+  requireTlsIdentity?: boolean
 }
 
 export interface SandboxNetworkConfig {

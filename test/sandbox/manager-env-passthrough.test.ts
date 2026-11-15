@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach, vi } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
+import type { SecretRefreshResult } from '../../src/sandbox/msb'
 import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 import { createMockLogger } from '../helpers/logger'
 
@@ -119,6 +120,73 @@ describe('SandboxManager create-time env and secrets', () => {
       { env: 'FORGE_TEST_PADDED_HOSTS', hosts: ['*.githubusercontent.com'] },
     ])
     expect(logger.log).not.toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_PADDED'))
+  })
+
+  test('start forwards an extended secret definition to createSandbox unchanged', async () => {
+    setEnv('FORGE_TEST_LAN', 'v')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        secrets: [
+          {
+            env: 'FORGE_TEST_LAN',
+            hosts: [' ai2.lab ', 'second.example'],
+            substitution: { headers: true, headerFields: ['authorization'], query: true, body: true },
+            passthrough: ['*.x.org'],
+            violationAction: 'block-and-log',
+            requireTlsIdentity: false,
+          },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()[0][2]?.secrets).toEqual([
+      {
+        env: 'FORGE_TEST_LAN',
+        hosts: ['ai2.lab', 'second.example'],
+        substitution: { headers: true, headerFields: ['authorization'], query: true, body: true },
+        passthrough: ['*.x.org'],
+        violationAction: 'block-and-log',
+        requireTlsIdentity: false,
+      },
+    ])
+  })
+
+  test('start skips a rejected secret definition and logs its reason', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        secrets: [
+          {
+            env: 'FORGE_TEST_HEADERS',
+            hosts: ['api.example.com'],
+            substitution: { headers: false, headerFields: ['authorization'] },
+          },
+          { env: 'FORGE_TEST_PASSTHROUGH', hosts: ['api.example.com'], passthrough: ['bad,entry'] },
+          { env: 'FORGE_TEST_ACTION', hosts: ['api.example.com'], violationAction: 'nope' as never },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()[0][2]?.secrets).toEqual([])
+    expect(logger.log).toHaveBeenCalledWith(
+      'Sandbox: skipping secret FORGE_TEST_HEADERS: substitution.headerFields requires substitution.headers',
+    )
+    expect(logger.log).toHaveBeenCalledWith(
+      'Sandbox: skipping secret FORGE_TEST_PASSTHROUGH: substitution.headerFields and passthrough entries must not contain whitespace, commas, @, or brackets',
+    )
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping secret FORGE_TEST_ACTION: invalid definition')
   })
 
   test('no credential value leaks into the create arguments', async () => {
@@ -245,7 +313,10 @@ describe('SandboxManager create-time env and secrets', () => {
 
     const runtime = createMockSandboxRuntime()
     runtime.setSandboxState('forge-test', 'running')
-    const refresh = vi.fn(async () => false)
+    const refresh = vi.fn(async (): Promise<SecretRefreshResult> => ({
+      ok: false,
+      reason: 'msb refused the change',
+    }))
     runtime.refreshSandboxSecrets = refresh
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
@@ -254,12 +325,16 @@ describe('SandboxManager create-time env and secrets', () => {
     }
 
     const manager = createSandboxManager(runtime, config, logger)
-    await expect(manager.start('test', '/home/user/worktrees/feature')).rejects.toThrow(/Failed to refresh secrets/)
+    await expect(manager.start('test', '/home/user/worktrees/feature')).rejects.toThrow(
+      'Failed to refresh secrets for sandbox forge-test: msb refused the change; refusing to adopt',
+    )
     expect(refresh).toHaveBeenCalledTimes(1)
-    expect(logger.log).toHaveBeenCalledWith('Sandbox: failed to refresh secrets for forge-test')
+    expect(logger.log).toHaveBeenCalledWith(
+      'Sandbox: failed to refresh secrets for forge-test: msb refused the change',
+    )
     expect(manager.isActive('test')).toBe(false)
 
-    refresh.mockResolvedValue(true)
+    refresh.mockResolvedValue({ ok: true })
     await expect(manager.start('test', '/home/user/worktrees/feature')).resolves.toEqual({
       containerName: 'forge-test',
     })
@@ -272,7 +347,10 @@ describe('SandboxManager create-time env and secrets', () => {
 
     const runtime = createMockSandboxRuntime()
     runtime.setSandboxState('forge-test', 'stopped')
-    const refresh = vi.fn(async () => false)
+    const refresh = vi.fn(async (): Promise<SecretRefreshResult> => ({
+      ok: false,
+      reason: 'msb refused the change',
+    }))
     runtime.refreshSandboxSecrets = refresh
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
@@ -285,7 +363,7 @@ describe('SandboxManager create-time env and secrets', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
     expect(manager.isActive('test')).toBe(false)
 
-    refresh.mockResolvedValue(true)
+    refresh.mockResolvedValue({ ok: true })
     await expect(manager.ensureRunning('test', '/home/user/worktrees/feature')).resolves.toBe('forge-test')
     expect(refresh).toHaveBeenCalledTimes(2)
   })
