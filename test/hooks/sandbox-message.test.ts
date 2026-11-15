@@ -1,9 +1,9 @@
 import { describe, test, expect, vi } from 'vitest'
 import {
   createSandboxMessageHook,
-  SANDBOX_BLOCK_CLOSE,
-  SANDBOX_BLOCK_OPEN,
+  SANDBOX_INSTRUCTION_KEY,
   SANDBOX_TRACKED_SESSION_LIMIT,
+  type SessionInstructionEntries,
 } from '../../src/hooks/sandbox-message'
 import { SANDBOX_CONTEXT_NOTE, SANDBOX_OFF_NOTE, SANDBOX_SWITCHED_ON_NOTE } from '../../src/sandbox/context'
 import type { SandboxContext } from '../../src/sandbox/context'
@@ -13,204 +13,299 @@ const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Lo
 
 const context = { containerName: 'forge-x', hostDir: '/w', mounts: [] } as unknown as SandboxContext
 
+interface RecordedPut {
+  sessionID: string
+  key: string
+  value: string
+}
+
+function createEntries(options: { existing?: boolean; failPut?: boolean } = {}) {
+  const puts: RecordedPut[] = []
+  const lists: string[] = []
+  const state = { existing: options.existing ?? false, failPut: options.failPut ?? false }
+  const entries: SessionInstructionEntries = {
+    list: async (sessionID) => {
+      lists.push(sessionID)
+      return state.existing ? [{ key: SANDBOX_INSTRUCTION_KEY }] : []
+    },
+    put: async (input) => {
+      if (state.failPut) throw new Error('put failed')
+      puts.push(input)
+    },
+  }
+  return { entries, puts, lists, state }
+}
+
 function makeHook(resolved: SandboxContext | null) {
   return createSandboxMessageHook({ resolveSandboxForSession: async () => resolved, logger })
 }
 
-function countBlock(entry: string, marker: string): number {
-  return entry.split(marker).length - 1
-}
-
-function systemText(output: { system: string[] }): string {
-  return output.system.join('\n\n')
-}
-
-describe('createSandboxMessageHook (chat.system.transform)', () => {
-  test('merges the sandbox context note into the existing system prompt entry', async () => {
+describe('createSandboxMessageHook (session instruction entries)', () => {
+  test('puts the steady-state sandbox note on the first observation and nothing after that', async () => {
     const hook = makeHook(context)
-    const output = { system: ['base system prompt'] }
+    const { entries, puts } = createEntries()
 
-    await hook({ sessionID: 'ses_1' }, output)
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.sessionID).toBe('ses_1')
+    expect(puts[0]!.key).toBe(SANDBOX_INSTRUCTION_KEY)
+    expect(puts[0]!.value).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(puts[0]!.value).not.toContain('Environment changed')
 
-    expect(output.system).toHaveLength(1)
-    expect(output.system[0]).toContain('base system prompt')
-    expect(output.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-    expect(output.system[0]).toContain(SANDBOX_BLOCK_OPEN)
-    expect(output.system[0]).toContain(SANDBOX_BLOCK_CLOSE)
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
   })
 
-  test('does not append when the session resolves to no sandbox', async () => {
-    const hook = makeHook(null)
-    const output = { system: ['base'] }
-
-    await hook({ sessionID: 'ses_1' }, output)
-    await hook({ sessionID: 'ses_1' }, output)
-
-    expect(output.system).toEqual(['base'])
-  })
-
-  test('no-ops when sessionID is missing', async () => {
-    const resolveSandboxForSession = vi.fn(async () => context)
-    const hook = createSandboxMessageHook({ resolveSandboxForSession, logger })
-    const output = { system: ['base'] }
-
-    await hook({}, output)
-
-    expect(resolveSandboxForSession).not.toHaveBeenCalled()
-    expect(output.system).toEqual(['base'])
-  })
-
-  test('swallows resolver errors without throwing or appending', async () => {
+  test('puts the host -> container note when a tracked host session enters a sandbox', async () => {
+    let state: SandboxContext | null = null
     const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => { throw new Error('boom') },
+      resolveSandboxForSession: async () => state,
+      probe: {
+        describeHost: async () => 'Darwin 24.6.0 arm64 | macOS 15.6',
+        describeSandbox: async () => 'Linux 6.1.0 aarch64 | Debian GNU/Linux 12',
+      },
       logger,
     })
-    const output = { system: ['base'] }
+    const { entries, puts } = createEntries({ existing: true })
 
-    await expect(hook({ sessionID: 'ses_1' }, output)).resolves.toBeUndefined()
-    expect(output.system).toEqual(['base'])
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(SANDBOX_OFF_NOTE)
+
+    state = context
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(2)
+    expect(puts[1]!.value).toContain(
+      '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64 | macOS 15.6) -> container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).',
+    )
+    expect(puts[1]!.value).toContain(SANDBOX_SWITCHED_ON_NOTE)
+    expect(puts[1]!.value).toContain(SANDBOX_CONTEXT_NOTE)
+  })
+
+  test('puts the off note once when the sandbox goes away and nothing on later host observations', async () => {
+    let state: SandboxContext | null = context
+    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => state,
+      probe: { describeHost, describeSandbox: async () => 'Linux 6.1.0 aarch64' },
+      logger,
+    })
+    const { entries, puts } = createEntries()
+
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
+
+    state = null
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(2)
+    expect(puts[1]!.value).toContain(SANDBOX_OFF_NOTE)
+    expect(puts[1]!.value).toContain(
+      '[Sandbox] Environment changed: container (Linux 6.1.0 aarch64) -> host (Darwin 24.6.0 arm64 | macOS 15.6).',
+    )
+
+    describeHost.mockClear()
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(2)
+    expect(describeHost).not.toHaveBeenCalled()
+  })
+
+  test('puts the restarted note exactly once after a settings change', async () => {
+    const base = { ...context, instanceId: 'i-1', settings: { cpus: 4, memoryMib: 8192, allowLan: false } } as SandboxContext
+    let state: SandboxContext = base
+    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
+    const { entries, puts } = createEntries()
+
+    await hook('ses_1', entries)
+    expect(puts[0]!.value).toContain('Resources: 4 CPUs, 8 GiB memory')
+    expect(puts[0]!.value).not.toMatch(/restarted|recreated/)
+
+    state = { ...base, settings: { cpus: 6, memoryMib: 12288, allowLan: false } }
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(2)
+    expect(puts[1]!.value).toContain('The sandbox was restarted to apply new resource settings')
+    expect(puts[1]!.value).toContain('Resources: 6 CPUs, 12 GiB memory')
+
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(2)
+  })
+
+  test('puts the recreated note exactly once after the sandbox instance changes', async () => {
+    const base = { ...context, instanceId: 'i-1' } as SandboxContext
+    let state: SandboxContext = base
+    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
+    const { entries, puts } = createEntries()
+
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
+
+    state = { ...base, instanceId: 'i-2' }
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(2)
+    expect(puts[1]!.value).toContain('The sandbox was recreated')
+
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(2)
+  })
+
+  test('treats a different sandbox name as a new sandbox rather than a recreation', async () => {
+    let state = {
+      ...context,
+      instanceId: 'i-1',
+      settings: { cpus: 4, memoryMib: 8192, allowLan: false },
+    } as SandboxContext
+    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
+    const { entries, puts } = createEntries()
+
+    await hook('ses_1', entries)
+    state = {
+      ...context,
+      containerName: 'forge-other',
+      instanceId: 'i-2',
+      settings: { cpus: 6, memoryMib: 12288, allowLan: false },
+    } as SandboxContext
+    await hook('ses_1', entries)
+
+    expect(puts).toHaveLength(2)
+    expect(puts[1]!.value).not.toContain('was recreated')
+    expect(puts[1]!.value).not.toContain('was restarted')
+    expect(puts[1]!.value).toContain('Resources: 6 CPUs, 12 GiB memory')
+  })
+
+  test('puts nothing and probes nothing for an untracked host session with no existing entry', async () => {
+    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => null,
+      probe: { describeHost, describeSandbox: async () => null },
+      logger,
+    })
+    const { entries, puts, lists } = createEntries()
+
+    await hook('ses_1', entries)
+    await hook('ses_1', entries)
+
+    expect(puts).toHaveLength(0)
+    expect(describeHost).not.toHaveBeenCalled()
+    expect(lists).toEqual(['ses_1'])
+  })
+
+  test('puts the off note for an untracked host session that already carries the entry', async () => {
+    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => null,
+      probe: { describeHost, describeSandbox: async () => null },
+      logger,
+    })
+    const { entries, puts } = createEntries({ existing: true })
+
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(SANDBOX_OFF_NOTE)
+    expect(puts[0]!.value).toContain(
+      '[Sandbox] Environment changed: container (unknown) -> host (Darwin 24.6.0 arm64 | macOS 15.6).',
+    )
+    expect(describeHost).toHaveBeenCalledTimes(1)
+
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
+  })
+
+  test('logs a failed put and retries it on the next call', async () => {
+    const errorLogger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => context, logger: errorLogger })
+    const { entries, puts, state } = createEntries({ failPut: true })
+
+    await expect(hook('ses_1', entries)).resolves.toBeUndefined()
+    expect(puts).toHaveLength(0)
+    expect(errorLogger.error).toHaveBeenCalled()
+
+    state.failPut = false
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(SANDBOX_CONTEXT_NOTE)
+  })
+
+  test('puts nothing and resolves when the resolver fails', async () => {
+    const errorLogger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => {
+        throw new Error('boom')
+      },
+      logger: errorLogger,
+    })
+    const { entries, puts } = createEntries()
+
+    await expect(hook('ses_1', entries)).resolves.toBeUndefined()
+    expect(puts).toHaveLength(0)
+    expect(errorLogger.error).toHaveBeenCalled()
   })
 
   test('resolves with throwOnRestoreError so an unrestorable acknowledged sandbox cannot read as off', async () => {
     const resolveSandboxForSession = vi.fn(async () => context)
     const hook = createSandboxMessageHook({ resolveSandboxForSession, logger })
-    const output = { system: ['base'] }
+    const { entries } = createEntries()
 
-    await hook({ sessionID: 'ses_1' }, output)
+    await hook('ses_1', entries)
 
     expect(resolveSandboxForSession).toHaveBeenCalledWith('ses_1', { throwOnRestoreError: true })
   })
 
-  test('reports the sandbox settings on every request and a restart or recreation exactly once', async () => {
-    const base = { ...context, instanceId: 'i-1', settings: { cpus: 4, memoryMib: 8192, allowLan: false } } as SandboxContext
-    let state: SandboxContext = base
-    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
-    const request = async () => {
-      const output = { system: ['base'] }
-      await hook({ sessionID: 'ses_1' }, output)
-      return systemText(output)
-    }
-
-    const first = await request()
-    expect(first).toContain('[Sandbox] Resources: 4 CPUs, 8 GiB memory. LAN (private network) access: blocked.')
-    expect(first).not.toMatch(/restarted|recreated/)
-
-    state = { ...base, settings: { cpus: 6, memoryMib: 12288, allowLan: false } }
-    const resized = await request()
-    expect(resized).toContain('The sandbox was restarted to apply new resource settings')
-    expect(resized).toContain('Resources: 6 CPUs, 12 GiB memory')
-    expect(await request()).not.toContain('was restarted')
-
-    state = { ...base, instanceId: 'i-2', settings: { cpus: 6, memoryMib: 12288, allowLan: true } }
-    const recreated = await request()
-    expect(recreated).toContain('The sandbox was recreated')
-    expect(recreated).toContain('LAN (private network) access: allowed.')
-    expect(recreated).not.toContain('was restarted')
-    expect(await request()).not.toContain('was recreated')
-  })
-
-  test('a different sandbox name is a new sandbox, not a change to the previous one', async () => {
-    let state = { ...context, instanceId: 'i-1' } as SandboxContext
-    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
-    await hook({ sessionID: 'ses_1' }, { system: [] })
-
-    state = { ...context, containerName: 'forge-other', instanceId: 'i-2' } as SandboxContext
-    const output = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, output)
-
-    expect(systemText(output)).not.toContain('was recreated')
-  })
-
-  test('emits the sandbox-off note once, then the host environment line with the probed host', async () => {
-    let state: SandboxContext | null = context
-    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
+  test('retains the tracked sandbox across a resolver error and reports the off note afterwards', async () => {
+    let mode: 'sandboxed' | 'error' | 'host' = 'sandboxed'
     const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => state,
-      probe: { describeHost, describeSandbox: async () => 'Linux 6.1.0 aarch64' },
+      resolveSandboxForSession: async () => {
+        if (mode === 'error') throw new Error('resolver down')
+        return mode === 'sandboxed' ? context : null
+      },
       logger,
     })
+    const { entries, puts } = createEntries()
 
-    const sandboxed = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, sandboxed)
-    expect(systemText(sandboxed)).toContain(SANDBOX_CONTEXT_NOTE)
-    expect(describeHost).toHaveBeenCalledTimes(1)
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
 
-    state = null
-    const firstOff = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, firstOff)
-    expect(systemText(firstOff)).toContain(SANDBOX_OFF_NOTE)
-    expect(systemText(firstOff)).toContain(
-      '[Sandbox] Environment changed: container (Linux 6.1.0 aarch64) -> host (Darwin 24.6.0 arm64 | macOS 15.6).'
-    )
-    expect(systemText(firstOff)).not.toContain(SANDBOX_CONTEXT_NOTE)
-    expect(describeHost).toHaveBeenCalledTimes(2)
+    mode = 'error'
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
 
-    describeHost.mockClear()
-    const secondOff = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, secondOff)
-    expect(systemText(secondOff)).toContain('[Sandbox] Environment: host (Darwin 24.6.0 arm64 | macOS 15.6).')
-    expect(systemText(secondOff)).not.toContain(SANDBOX_OFF_NOTE)
-    expect(describeHost).not.toHaveBeenCalled()
-
-    state = context
-    const reEnabled = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, reEnabled)
-    expect(systemText(reEnabled)).toContain(SANDBOX_SWITCHED_ON_NOTE)
-    expect(systemText(reEnabled)).toContain(SANDBOX_CONTEXT_NOTE)
-    expect(systemText(reEnabled)).not.toContain(SANDBOX_OFF_NOTE)
+    mode = 'host'
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(2)
+    expect(puts[1]!.value).toContain(SANDBOX_OFF_NOTE)
   })
 
-  test('drops the owned block on the request after an off note when the host probe is null', async () => {
+  test('falls back to the plain notes when neither environment can be probed', async () => {
     let state: SandboxContext | null = context
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => state,
+      probe: { describeHost: async () => null, describeSandbox: async () => null },
+      logger,
+    })
+    const { entries, puts } = createEntries()
+
+    await hook('ses_1', entries)
+    expect(puts[0]!.value).toContain(SANDBOX_CONTEXT_NOTE)
+
+    state = null
+    await hook('ses_1', entries)
+    expect(puts[1]!.value).toBe(SANDBOX_OFF_NOTE)
+  })
+
+  test('reports a partially probed transition rather than dropping the change', async () => {
+    let state: SandboxContext | null = null
     const hook = createSandboxMessageHook({
       resolveSandboxForSession: async () => state,
       probe: { describeHost: async () => null, describeSandbox: async () => 'Linux 6.1.0 aarch64' },
       logger,
     })
+    const { entries, puts } = createEntries({ existing: true })
 
-    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
 
-    state = null
-    const off = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, off)
-    expect(systemText(off)).toContain(SANDBOX_OFF_NOTE)
+    state = context
+    await hook('ses_1', entries)
 
-    const steady = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, steady)
-    expect(systemText(steady)).not.toContain(SANDBOX_OFF_NOTE)
-    expect(steady.system[0]).not.toContain(SANDBOX_BLOCK_OPEN)
-  })
-
-  test('re-enabling then disabling the sandbox emits the off note again', async () => {
-    let state: SandboxContext | null = context
-    const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => state,
-      logger,
-    })
-
-    const emittedOff = []
-    for (const next of [context, null, context, null, null]) {
-      state = next
-      const output = { system: ['base'] }
-      await hook({ sessionID: 'ses_1' }, output)
-      emittedOff.push(systemText(output).includes(SANDBOX_OFF_NOTE))
-    }
-    expect(emittedOff).toEqual([false, true, false, true, false])
-  })
-
-  test('probes the host only for switch events, not on steady-state requests', async () => {
-    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
-    const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => context,
-      probe: { describeHost, describeSandbox: async () => 'Linux 6.1.0 aarch64' },
-      logger,
-    })
-
-    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
-    expect(describeHost).toHaveBeenCalledTimes(1)
-
-    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
-    expect(describeHost).toHaveBeenCalledTimes(1)
+    expect(puts[1]!.value).toContain('host (unknown) -> container (Linux 6.1.0 aarch64).')
   })
 
   test('tracks each session independently', async () => {
@@ -222,285 +317,47 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
       resolveSandboxForSession: async (sessionID) => states.get(sessionID) ?? null,
       logger,
     })
+    const { entries, puts } = createEntries()
 
-    await hook({ sessionID: 'ses_a' }, { system: ['base'] })
-    await hook({ sessionID: 'ses_b' }, { system: ['base'] })
+    await hook('ses_a', entries)
+    await hook('ses_b', entries)
+    expect(puts.map((put) => put.sessionID)).toEqual(['ses_a'])
 
     states.set('ses_a', null)
     states.set('ses_b', context)
-    const aOutput = { system: ['base'] }
-    const bOutput = { system: ['base'] }
-    await hook({ sessionID: 'ses_a' }, aOutput)
-    await hook({ sessionID: 'ses_b' }, bOutput)
+    await hook('ses_a', entries)
+    await hook('ses_b', entries)
 
-    expect(systemText(aOutput)).toContain(SANDBOX_OFF_NOTE)
-    expect(systemText(bOutput)).not.toContain(SANDBOX_OFF_NOTE)
-    expect(systemText(bOutput)).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(puts.map((put) => put.sessionID)).toEqual(['ses_a', 'ses_a', 'ses_b'])
+    expect(puts[1]!.value).toContain(SANDBOX_OFF_NOTE)
+    expect(puts[2]!.value).toContain(SANDBOX_CONTEXT_NOTE)
   })
 
-  test('on resolver error emits no off note and retains the observed state', async () => {
-    let mode: 'sandboxed' | 'error' | 'host' = 'sandboxed'
-    const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => {
-        if (mode === 'error') throw new Error('resolver down')
-        return mode === 'sandboxed' ? context : null
-      },
-      logger,
-    })
-
-    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
-
-    mode = 'error'
-    const errored = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, errored)
-    expect(errored.system).toEqual(['base'])
-
-    mode = 'host'
-    const afterError = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, afterError)
-    expect(systemText(afterError)).toContain(SANDBOX_OFF_NOTE)
-  })
-
-  test('treats a sandboxed session with no observed history as switched on', async () => {
-    const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => context,
-      probe: { describeHost: async () => null, describeSandbox: async () => null },
-      logger,
-    })
-
-    const output = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, output)
-
-    expect(output.system[0]).toContain(SANDBOX_SWITCHED_ON_NOTE)
-    expect(output.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-
-    const second = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, second)
-    expect(second.system[0]).not.toContain(SANDBOX_SWITCHED_ON_NOTE)
-    expect(second.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-  })
-
-  test('shows the host -> container change on the first request after the switch, then the container environment', async () => {
-    const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => context,
-      probe: {
-        describeHost: async () => 'Darwin 24.6.0 arm64 | macOS 15.6',
-        describeSandbox: async () => 'Linux 6.1.0 aarch64 | Debian GNU/Linux 12',
-      },
-      logger,
-    })
-
-    const first = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, first)
-    expect(first.system[0]).toContain(
-      '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64 | macOS 15.6) -> container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).'
-    )
-    expect(first.system[0]).toContain(SANDBOX_SWITCHED_ON_NOTE)
-    expect(first.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-
-    const second = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, second)
-    expect(second.system[0]).toContain('[Sandbox] Environment: container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).')
-    expect(second.system[0]).not.toContain('Environment changed')
-    expect(second.system[0]).not.toContain(SANDBOX_SWITCHED_ON_NOTE)
-    expect(second.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-  })
-
-  test('leads the off note with the container it left -> the probed host', async () => {
-    let state: SandboxContext | null = context
-    const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => state,
-      probe: {
-        describeHost: async () => 'Darwin 24.6.0 arm64 | macOS 15.6',
-        describeSandbox: async () => 'Linux 6.1.0 aarch64 | Debian GNU/Linux 12',
-      },
-      logger,
-    })
-
-    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
-
-    state = null
-    const output = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, output)
-
-    expect(output.system[0]).toContain(
-      '[Sandbox] Environment changed: container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12) -> host (Darwin 24.6.0 arm64 | macOS 15.6).'
-    )
-    expect(output.system[0]).toContain(SANDBOX_OFF_NOTE)
-  })
-
-  test('falls back to the plain notes when neither environment can be probed', async () => {
-    let state: SandboxContext | null = context
-    const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => state,
-      probe: { describeHost: async () => null, describeSandbox: async () => null },
-      logger,
-    })
-
-    const on = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, on)
-    expect(systemText(on)).toContain(SANDBOX_CONTEXT_NOTE)
-
-    state = null
-    const off = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, off)
-    expect(systemText(off)).toContain(SANDBOX_OFF_NOTE)
-  })
-
-  test('reports a partially probed transition rather than dropping the change', async () => {
-    const hook = createSandboxMessageHook({
-      resolveSandboxForSession: async () => context,
-      probe: {
-        describeHost: async () => null,
-        describeSandbox: async () => 'Linux 6.1.0 aarch64',
-      },
-      logger,
-    })
-
-    const output = { system: ['base'] }
-    await hook({ sessionID: 'ses_1' }, output)
-
-    expect(output.system[0]).toContain('host (unknown) -> container (Linux 6.1.0 aarch64).')
-  })
-
-  test('bounds tracked sessions: the oldest is evicted past the limit, the newest still gets its off note', async () => {
+  test('bounds tracked sessions: the oldest is evicted past the limit, the newest still reports its off note', async () => {
     const states = new Map<string, SandboxContext | null>()
     const hook = createSandboxMessageHook({
       resolveSandboxForSession: async (sessionID) => states.get(sessionID) ?? null,
       logger,
     })
+    const { entries, puts } = createEntries()
 
     states.set('ses_oldest', context)
-    await hook({ sessionID: 'ses_oldest' }, { system: ['base'] })
+    await hook('ses_oldest', entries)
 
     for (let i = 0; i < SANDBOX_TRACKED_SESSION_LIMIT; i++) {
       states.set(`ses_${i}`, context)
-      await hook({ sessionID: `ses_${i}` }, { system: ['base'] })
+      await hook(`ses_${i}`, entries)
     }
+    puts.length = 0
 
     states.set('ses_oldest', null)
-    const evicted = { system: ['base'] }
-    await hook({ sessionID: 'ses_oldest' }, evicted)
-    expect(systemText(evicted)).not.toContain(SANDBOX_OFF_NOTE)
+    await hook('ses_oldest', entries)
+    expect(puts).toHaveLength(0)
 
     const newest = `ses_${SANDBOX_TRACKED_SESSION_LIMIT - 1}`
     states.set(newest, null)
-    const retained = { system: ['base'] }
-    await hook({ sessionID: newest }, retained)
-    expect(systemText(retained)).toContain(SANDBOX_OFF_NOTE)
-  })
-
-  test('replaces the owned block in place across repeated invocations without accumulating', async () => {
-    const hook = makeHook(context)
-    const output = { system: ['base', 'mode instructions'] }
-
-    await hook({ sessionID: 'ses_1' }, output)
-    await hook({ sessionID: 'ses_1' }, output)
-
-    expect(output.system).toHaveLength(2)
-    expect(output.system[0]).toBe('base')
-    expect(countBlock(output.system[1]!, SANDBOX_BLOCK_OPEN)).toBe(1)
-    expect(countBlock(output.system[1]!, SANDBOX_BLOCK_CLOSE)).toBe(1)
-  })
-
-  test('replaces the on guidance with the off note on a reused array, then drops the block on the steady request', async () => {
-    let state: SandboxContext | null = context
-    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
-    const output = { system: ['base'] }
-
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-
-    state = null
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[0]).toContain(SANDBOX_OFF_NOTE)
-    expect(output.system[0]).not.toContain(SANDBOX_CONTEXT_NOTE)
-    expect(countBlock(output.system[0]!, SANDBOX_BLOCK_OPEN)).toBe(1)
-
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[0]).not.toContain(SANDBOX_OFF_NOTE)
-    expect(countBlock(output.system[0]!, SANDBOX_BLOCK_OPEN)).toBe(0)
-  })
-
-  test('removes only the owned block on cleanup, preserving prefix and suffix byte-for-byte', async () => {
-    const hook = makeHook(null)
-    const prefix = 'base\tprompt\n\n'
-    const suffix = '\n\tanother plugin suffix'
-    const output = {
-      system: [`${prefix}${SANDBOX_BLOCK_OPEN}\nstale guidance\n${SANDBOX_BLOCK_CLOSE}${suffix}`],
-    }
-
-    await hook({ sessionID: 'ses_1' }, output)
-
-    expect(output.system).toEqual([`${prefix}${suffix}`])
-  })
-
-  test('preserves a same-entry suffix written by another plugin across on, off, and the following steady request', async () => {
-    let state: SandboxContext | null = context
-    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
-    const output = { system: ['base', 'mode instructions'] }
-
-    await hook({ sessionID: 'ses_1' }, output)
-    output.system[1] += '\n\nanother plugin suffix'
-
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[1]).toContain('mode instructions')
-    expect(output.system[1]!.endsWith('another plugin suffix')).toBe(true)
-    expect(countBlock(output.system[1]!, SANDBOX_BLOCK_OPEN)).toBe(1)
-
-    state = null
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[1]).toContain(SANDBOX_OFF_NOTE)
-    expect(output.system[1]!.endsWith('another plugin suffix')).toBe(true)
-    expect(countBlock(output.system[1]!, SANDBOX_BLOCK_OPEN)).toBe(1)
-
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[1]).not.toContain(SANDBOX_OFF_NOTE)
-    expect(output.system[1]!.endsWith('another plugin suffix')).toBe(true)
-    expect(countBlock(output.system[1]!, SANDBOX_BLOCK_OPEN)).toBe(0)
-  })
-
-  test('preserves a project-md-context block in the same entry', async () => {
-    let state: SandboxContext | null = context
-    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
-    const projectMdBlock = '<project-md-context>\nproject.md context\n</project-md-context>'
-    const output = { system: ['base', projectMdBlock] }
-
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[1]).toContain(projectMdBlock)
-    expect(output.system[1]).toContain(SANDBOX_CONTEXT_NOTE)
-
-    state = null
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[1]).toContain(projectMdBlock)
-    expect(output.system[1]).toContain(SANDBOX_OFF_NOTE)
-  })
-
-  test('handles an empty array and an empty string entry', async () => {
-    const hook = makeHook(context)
-
-    const emptyArray = { system: [] as string[] }
-    await hook({ sessionID: 'ses_1' }, emptyArray)
-    expect(emptyArray.system).toHaveLength(1)
-    expect(emptyArray.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-
-    const emptyString = { system: [''] }
-    await hook({ sessionID: 'ses_1' }, emptyString)
-    expect(emptyString.system).toHaveLength(1)
-    expect(emptyString.system[0]).toContain(SANDBOX_CONTEXT_NOTE)
-  })
-
-  test('removes a stale owned block and leaves an empty array empty when no note applies', async () => {
-    const hook = makeHook(null)
-    const output = {
-      system: [`base\n\n${SANDBOX_BLOCK_OPEN}\nstale guidance\n${SANDBOX_BLOCK_CLOSE}`],
-    }
-
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system).toEqual(['base\n\n'])
-
-    const empty = { system: [] as string[] }
-    await hook({ sessionID: 'ses_1' }, empty)
-    expect(empty.system).toEqual([])
+    await hook(newest, entries)
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(SANDBOX_OFF_NOTE)
   })
 })
