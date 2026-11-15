@@ -122,8 +122,14 @@ export function resolveSandboxSecret(
   const env = parsed.data.env.trim()
   if (!env) return { env, reason: 'missing env name' }
   if (env.includes('=')) return { env, reason: 'env name must not contain =' }
+  if (env.includes(':') || !SECRET_ENTRY_RE.test(env)) {
+    return { env, reason: 'env name must not contain whitespace, commas, colons, @, or brackets' }
+  }
   const hosts = trimmedEntries(parsed.data.hosts)
   if (hosts.length === 0) return { env, reason: 'no allowed hosts' }
+  if (hosts.some((host) => !SECRET_ENTRY_RE.test(host))) {
+    return { env, reason: 'hosts entries must not contain whitespace, commas, @, or brackets' }
+  }
   const substitution = parsed.data.substitution
   const headerFields = trimmedEntries(substitution?.headerFields)
   if (headerFields.length > 0 && substitution?.headers === false) {

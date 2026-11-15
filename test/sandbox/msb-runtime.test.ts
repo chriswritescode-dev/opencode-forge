@@ -640,11 +640,18 @@ describe('network allow union', () => {
     expect(
       buildNetworkAllow(
         undefined,
-        [{ env: 'KEEP', hosts: ['api.example.com', '*.com', 'bad,host'] }],
+        [{ env: 'KEEP', hosts: ['api.example.com', '*.com', 'localhost'] }],
         { ...logger, log },
       ),
     ).toEqual(['api.example.com'])
     expect(log).toHaveBeenCalledTimes(2)
+  })
+
+  test('a secret with a delimiter in a host contributes no egress hosts', () => {
+    expect(
+      buildNetworkAllow(undefined, [{ env: 'BAD', hosts: ['api.example.com', 'bad,host'] }], logger),
+    ).toEqual([])
+    expect(egressRestrictionRequested(undefined, [{ env: 'BAD', hosts: ['bad,host'] }])).toBe(false)
   })
 
   test('accepts a multi-label wildcard and the domain=/suffix= forms unchanged', () => {
@@ -694,7 +701,7 @@ describe('network allow union', () => {
   test('egressRestrictionRequested is true for any configured token, valid or not', () => {
     expect(egressRestrictionRequested(['github.com'], undefined)).toBe(true)
     expect(egressRestrictionRequested(['localhost'], undefined)).toBe(true)
-    expect(egressRestrictionRequested(undefined, [{ env: 'T', hosts: ['bad,host'] }])).toBe(true)
+    expect(egressRestrictionRequested(undefined, [{ env: 'T', hosts: ['*.com'] }])).toBe(true)
   })
 })
 
@@ -969,9 +976,24 @@ describe('resolveSandboxSecret', () => {
       env: 'A=B',
       reason: 'env name must not contain =',
     })
+    for (const env of ['A:B', 'A@B', 'A,B', 'A B', 'A[B]']) {
+      expect(resolveSandboxSecret({ env, hosts: ['h'] })).toEqual({
+        env,
+        reason: 'env name must not contain whitespace, commas, colons, @, or brackets',
+      })
+    }
     expect(resolveSandboxSecret({ env: 'T', hosts: [' ', ''] })).toEqual({
       env: 'T',
       reason: 'no allowed hosts',
+    })
+    for (const host of ['a.com,b.com', 'a@b.com', 'a b.com', '[a.com]']) {
+      expect(resolveSandboxSecret({ env: 'T', hosts: [host] })).toEqual({
+        env: 'T',
+        reason: 'hosts entries must not contain whitespace, commas, @, or brackets',
+      })
+    }
+    expect(resolveSandboxSecret({ env: 'T', hosts: ['*.example.com', 'ai2.lab'] })).toEqual({
+      secret: { env: 'T', hosts: ['*.example.com', 'ai2.lab'] },
     })
     expect(
       resolveSandboxSecret({ env: 'T', hosts: ['h'], substitution: { headers: false, headerFields: ['authorization'] } }),
