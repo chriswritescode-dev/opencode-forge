@@ -469,8 +469,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         if (opts?.throwOnRestoreError) throw err
         return null
       }
-      if (disposed) return null
       trackedSandboxes.set(key, targetDir)
+      if (disposed) return null
       const active = sandboxManager.getActive(key)
       if (!active) return null
       return sandboxContextFromActive(sandboxManager.runtime, active)

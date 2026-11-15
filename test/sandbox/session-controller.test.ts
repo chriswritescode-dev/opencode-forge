@@ -399,6 +399,29 @@ describe('SessionSandboxController', () => {
     await controller.dispose()
   })
 
+  test('a folder sandbox created while dispose is pending is still stopped', async () => {
+    const folder = tempDir('dispose-race')
+    const folderKey = deriveFolderManagerKey(PROJECT, DIRECTORY, folder)
+    const controller = createController({
+      getSessionIdentity: async () => ({ projectId: PROJECT, directory: folder }),
+    })
+    await controller.start()
+    const gate = deferred<void>()
+    manager.setEnsureRunningImpl(async (key: string) => {
+      if (key === folderKey) await gate.promise
+      return `forge-${key}`
+    })
+
+    const resolving = controller.resolveSandboxForSession('session-folder')
+    await vi.waitFor(() => expect(manager.ensureRunningCalls).toContain(folderKey))
+    const disposing = controller.dispose()
+    gate.resolve()
+
+    await expect(resolving).resolves.toBeNull()
+    await disposing
+    expect(manager.stopCalls).toContain(folderKey)
+  })
+
   test('a folder sandbox restore failure throws without touching the root sandbox', async () => {
     const folder = tempDir('restore-fail')
     const folderKey = deriveFolderManagerKey(PROJECT, DIRECTORY, folder)
