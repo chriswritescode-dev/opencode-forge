@@ -2452,6 +2452,45 @@ describe('handleLoopRestart restartability rules', () => {
     expect(loopService.getActiveState(loopName)?.sandboxSettings).toEqual(expectedSettings)
   })
 
+  test('restart clearing sandbox secrets with no other settings leaves sandboxSettings unset', async () => {
+    const loopName = 'sandbox-secrets-clear-all'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: false,
+      phase: 'coding',
+      sandboxSettings: {
+        secrets: [{ env: 'OLD_TOKEN', hosts: ['old.example.com'] }],
+        secretProvider: 'old-provider',
+      },
+    })
+
+    const sandboxStartSpy = vi.fn().mockResolvedValue({ containerName: 'forge-sandbox' })
+    const sandboxManager = {
+      start: sandboxStartSpy,
+      runtime: { sandboxContainerName: () => 'forge-sandbox' },
+    }
+
+    const { service } = await createMockService({ sandboxManager })
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+        sandboxSecrets: { secrets: [] },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(sandboxStartSpy).toHaveBeenCalledWith(loopName, '/tmp/test-worktree', undefined, undefined)
+    const newState = loopService.getActiveState(loopName)
+    expect(newState?.active).toBe(true)
+    expect(newState?.sandboxSettings).toBeUndefined()
+  })
+
   test('restart without sandbox secrets keeps the stored definitions', async () => {
     const loopName = 'sandbox-secrets-kept'
     insertLoop({

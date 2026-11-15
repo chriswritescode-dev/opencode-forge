@@ -207,6 +207,99 @@ describe('SandboxManager per-loop secrets', () => {
     expect(createCall?.secretEnv).toBeUndefined()
   })
 
+  test('a config secret shadowed by a per-loop definition still restricts egress', async () => {
+    setEnv('LOOP_TOKEN', undefined)
+    sandboxSecretProviders().set(PROVIDER_ID, () => ({ LOOP_TOKEN: SECRET_VALUE }))
+    const runtime = createMockSandboxRuntime()
+    const manager = createSandboxManager(
+      runtime,
+      makeConfig(loopOverrides(PROVIDER_ID), {
+        network: { secrets: [{ env: 'LOOP_TOKEN', hosts: ['config.example.com'] }] },
+      }),
+      createMockLogger(),
+    )
+
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0][2]
+    expect(createCall?.restrictEgress).toBe(true)
+    expect(createCall?.networkAllow).toEqual(['api.example.com'])
+    expect(createCall?.secrets).toEqual([{ env: 'LOOP_TOKEN', hosts: ['api.example.com'] }])
+  })
+
+  test('an explicit start re-applies changed per-loop definitions to a converged running sandbox', async () => {
+    const requests: SandboxSecretValuesRequest[] = []
+    sandboxSecretProviders().set(PROVIDER_ID, (request) => {
+      requests.push(request)
+      return Object.fromEntries(request.names.map((name) => [name, SECRET_VALUE]))
+    })
+    let overrides: SandboxOverrides | undefined = loopOverrides(PROVIDER_ID)
+    const runtime = createMockSandboxRuntime()
+    const manager = createSandboxManager(runtime, {
+      image: 'oc-forge-sandbox:latest',
+      projectId: 'proj-1',
+      resolveOverrides: (worktreeName) => worktreeName === 'test' ? overrides : undefined,
+    }, createMockLogger())
+
+    await manager.start('test', '/home/user/worktrees/feature')
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(0)
+
+    overrides = { secrets: [{ env: 'NEXT_TOKEN', hosts: ['next.example.com'] }], secretProvider: PROVIDER_ID }
+    runtime.setSandboxState('forge-test', 'running')
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(requests).toHaveLength(2)
+    expect(runtime.getRefreshSecretCalls()).toEqual([
+      ['forge-test', [{ env: 'NEXT_TOKEN', hosts: ['next.example.com'] }], { NEXT_TOKEN: SECRET_VALUE }],
+    ])
+  })
+
+  test('clearing per-loop definitions removes the bindings and converges once nothing is handled', async () => {
+    sandboxSecretProviders().set(PROVIDER_ID, () => ({ LOOP_TOKEN: SECRET_VALUE }))
+    let overrides: SandboxOverrides | undefined = loopOverrides(PROVIDER_ID)
+    const runtime = createMockSandboxRuntime()
+    const manager = createSandboxManager(runtime, {
+      image: 'oc-forge-sandbox:latest',
+      projectId: 'proj-1',
+      resolveOverrides: (worktreeName) => worktreeName === 'test' ? overrides : undefined,
+    }, createMockLogger())
+
+    await manager.start('test', '/home/user/worktrees/feature')
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(0)
+
+    overrides = undefined
+    await manager.start('test', '/home/user/worktrees/feature')
+    expect(runtime.getRefreshSecretCalls()).toEqual([
+      ['forge-test', [], undefined],
+    ])
+
+    await manager.start('test', '/home/user/worktrees/feature')
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(1)
+  })
+
+  test('the unset-variable warning names per-loop definitions separately from config secrets', async () => {
+    setEnv('LOOP_TOKEN', undefined)
+    setEnv('CONFIG_TOKEN', undefined)
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const manager = createSandboxManager(
+      runtime,
+      makeConfig(loopOverrides(), {
+        network: { secrets: [{ env: 'CONFIG_TOKEN', hosts: ['config.example.com'] }] },
+      }),
+      logger,
+    )
+
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const messages = logger.log.mock.calls.map((call) => String(call[0]))
+    const loopWarning = messages.find((message) => message.includes('secret LOOP_TOKEN'))
+    const configWarning = messages.find((message) => message.includes('secret CONFIG_TOKEN'))
+    expect(loopWarning).toContain('(defined for this loop without a secretProvider)')
+    expect(loopWarning).not.toContain('sandbox.network.secrets')
+    expect(configWarning).toContain('(configured under sandbox.network.secrets)')
+  })
+
   test('per-loop secrets without a provider are skipped and warned once when the host variable is unset', async () => {
     setEnv('LOOP_TOKEN', undefined)
     vi.useFakeTimers()

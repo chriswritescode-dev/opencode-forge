@@ -1395,7 +1395,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         if (secretProvider) nextSettings.secretProvider = secretProvider
         stoppedState.sandboxSettings = nextSettings
       } else {
-        stoppedState.sandboxSettings = previousSettings
+        stoppedState.sandboxSettings = Object.keys(previousSettings).length > 0 ? previousSettings : undefined
       }
     }
     let previousSessionId = stoppedState.sessionId

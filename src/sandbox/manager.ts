@@ -501,10 +501,13 @@ export function createSandboxManager(
     })
   }
 
-  function warnUnsetSecretEnv(env: string): void {
+  function warnUnsetSecretEnv(env: string, source: 'config' | 'loop'): void {
     if (warnedUnsetSecretEnv.has(env)) return
     warnedUnsetSecretEnv.add(env)
-    logger.log(`Sandbox: skipping secret ${env}: host variable is not set; sandboxed shell commands will fail until the variable is exported in the environment that launches opencode (configured under sandbox.network.secrets)`)
+    const origin = source === 'config'
+      ? 'configured under sandbox.network.secrets'
+      : 'defined for this loop without a secretProvider'
+    logger.log(`Sandbox: skipping secret ${env}: host variable is not set; sandboxed shell commands will fail until the variable is exported in the environment that launches opencode (${origin})`)
   }
 
   async function resolveSandboxSecrets(
@@ -525,6 +528,7 @@ export function createSandboxManager(
     const perSandboxEnvs = new Set(perSandbox.map((secret) => secret.env))
 
     const fromConfig: SandboxSecretConfig[] = []
+    const egressFromConfig: SandboxSecretConfig[] = []
     for (const raw of config.network?.secrets ?? []) {
       const outcome = resolveSandboxSecret(raw)
       if ('reason' in outcome) {
@@ -532,12 +536,16 @@ export function createSandboxManager(
         continue
       }
       const env = outcome.secret.env
-      if (perSandboxEnvs.has(env)) continue
+      if (perSandboxEnvs.has(env)) {
+        egressFromConfig.push(outcome.secret)
+        continue
+      }
       if (process.env[env] === undefined) {
-        warnUnsetSecretEnv(env)
+        warnUnsetSecretEnv(env, 'config')
         continue
       }
       fromConfig.push(outcome.secret)
+      egressFromConfig.push(outcome.secret)
     }
 
     const providerId = effective?.secretProvider?.trim()
@@ -553,12 +561,12 @@ export function createSandboxManager(
     } else if (perSandbox.length > 0) {
       keptPerSandbox = perSandbox.filter((secret) => {
         if (process.env[secret.env] !== undefined) return true
-        warnUnsetSecretEnv(secret.env)
+        warnUnsetSecretEnv(secret.env, 'loop')
         return false
       })
     }
 
-    return { secrets: [...fromConfig, ...keptPerSandbox], egressSecrets: fromConfig, secretEnv }
+    return { secrets: [...fromConfig, ...keptPerSandbox], egressSecrets: egressFromConfig, secretEnv }
   }
 
   async function adoptSecrets(
@@ -571,7 +579,8 @@ export function createSandboxManager(
     if (convergedSecrets.has(containerName) && state !== 'stopped') return
     const resolved = await resolveSandboxSecrets(worktreeName, projectDir, overrides)
     if (!convergedSecrets.has(containerName)) {
-      if (resolved.secrets.length === 0) {
+      const alreadyHandled = handledSecretEnvs.has(containerName)
+      if (resolved.secrets.length === 0 && !alreadyHandled) {
         convergedSecrets.add(containerName)
       } else {
         warnUncoveredSecretHosts(containerName, resolved.secrets)
@@ -590,9 +599,11 @@ export function createSandboxManager(
   }
 
   function recordHandledSecretEnvs(containerName: string, secrets: SandboxSecretConfig[]): void {
-    const known = handledSecretEnvs.get(containerName) ?? new Set<string>()
-    for (const secret of secrets) known.add(secret.env)
-    handledSecretEnvs.set(containerName, known)
+    if (secrets.length === 0) {
+      handledSecretEnvs.delete(containerName)
+      return
+    }
+    handledSecretEnvs.set(containerName, new Set(secrets.map((secret) => secret.env)))
   }
 
   function warnUncoveredSecretHosts(containerName: string, secrets: SandboxSecretConfig[]): void {
@@ -629,6 +640,7 @@ export function createSandboxManager(
     }
     if (state !== 'missing') {
       logger.log(`Sandbox ${containerName} already exists (${state}), adopting`)
+      convergedSecrets.delete(containerName)
       await adoptSecrets(worktreeName, absoluteProjectDir, containerName, state, overrides)
       await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
