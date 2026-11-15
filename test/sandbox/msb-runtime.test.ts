@@ -1825,6 +1825,19 @@ describe('runtime', () => {
     ])
   })
 
+  test('refreshSandboxSecrets treats an unset violationAction as the msb default block-and-log', async () => {
+    const cases: Array<{ bound: Record<string, unknown>; desired: Record<string, unknown> }> = [
+      { bound: { env_var: 'T' }, desired: { env: 'T', hosts: ['h'], violationAction: 'block-and-log' } },
+      { bound: { env_var: 'T', violation_action: 'block-and-log' }, desired: { env: 'T', hosts: ['h'] } },
+    ]
+    for (const { bound, desired } of cases) {
+      const { calls, runner } = refreshRunner([bound])
+      const rt = createMsbRuntime(logger, { run: runner })
+      await expect(rt.refreshSandboxSecrets('forge-c', [desired])).resolves.toEqual({ ok: true })
+      expect(calls.filter((c) => c.args[0] === 'modify')).toHaveLength(1)
+    }
+  })
+
   test('refreshSandboxSecrets surfaces the modify failure output', async () => {
     const runner: CommandRunner = async (args) =>
       args[0] === 'inspect'

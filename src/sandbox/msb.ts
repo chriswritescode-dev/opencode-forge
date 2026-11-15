@@ -86,6 +86,8 @@ export function msbSizeToMib(size: string): number | undefined {
 
 const sandboxSecretViolationActionSchema = z.enum(['block', 'block-and-log', 'block-and-terminate'])
 
+const MSB_DEFAULT_SECRET_VIOLATION_ACTION: SandboxSecretViolationAction = 'block-and-log'
+
 const sandboxSecretSubstitutionSchema = z.object({
   headers: z.boolean().optional(),
   headerFields: z.array(z.string()).optional(),
@@ -794,7 +796,8 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
       const current = bound.find((b) => b.env === secret.env)
       const frozen =
         (secret.requireTlsIdentity ?? true) !== (current?.requireTlsIdentity ?? true)
-        || secret.violationAction !== current?.violationAction
+        || (secret.violationAction ?? MSB_DEFAULT_SECRET_VIOLATION_ACTION)
+          !== (current?.violationAction ?? MSB_DEFAULT_SECRET_VIOLATION_ACTION)
         || (current?.hasPassthrough === true && (secret.passthrough === undefined || secret.passthrough.length === 0))
       if (frozen) {
         return {
