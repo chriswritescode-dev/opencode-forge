@@ -222,15 +222,20 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     return (await stopAllTracked()).stopped
   }
 
+  async function stopFolderSandbox(key: string): Promise<void> {
+    try {
+      await sandboxManager.stop(key)
+    } catch (err) {
+      logger.log(`[session-sandbox] stop failed for folder sandbox ${key}: ${errorMessage(err)}`)
+      return
+    }
+    trackedSandboxes.delete(key)
+  }
+
   async function pruneMissingFolders(): Promise<void> {
     for (const [key, folder] of [...trackedSandboxes]) {
       if (key === managerKey || existsSync(folder)) continue
-      try {
-        await sandboxManager.stop(key)
-      } catch (err) {
-        logger.log(`[session-sandbox] stop failed for stale folder sandbox ${key}: ${errorMessage(err)}`)
-      }
-      trackedSandboxes.delete(key)
+      await stopFolderSandbox(key)
     }
   }
 
@@ -261,12 +266,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         await sandboxManager.applyOverrides(key, folder)
       } catch (err) {
         logger.log(`[session-sandbox] applyOverrides failed for folder sandbox ${key}: ${errorMessage(err)}`)
-        try {
-          await sandboxManager.stop(key)
-        } catch (stopErr) {
-          logger.log(`[session-sandbox] stop failed for folder sandbox ${key}: ${errorMessage(stopErr)}`)
-        }
-        trackedSandboxes.delete(key)
+        await stopFolderSandbox(key)
       }
     }
   }
@@ -458,12 +458,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
             writeApplied(appliedState(current.revision, false, msg, current.overrides))
           }
         } else {
-          try {
-            await sandboxManager.stop(key)
-          } catch (stopErr) {
-            logger.log(`[session-sandbox] stop failed for folder sandbox ${key}: ${errorMessage(stopErr)}`)
-          }
-          trackedSandboxes.delete(key)
+          trackedSandboxes.set(key, targetDir)
+          await stopFolderSandbox(key)
           throw err
         }
         if (opts?.throwOnRestoreError) throw err

@@ -399,6 +399,34 @@ describe('SessionSandboxController', () => {
     await controller.dispose()
   })
 
+  test('a folder sandbox whose stop fails stays tracked so dispose retries it', async () => {
+    const folder = tempDir('stop-fails')
+    const folderKey = deriveFolderManagerKey(PROJECT, DIRECTORY, folder)
+    const controller = createController({
+      pollIntervalMs: 10,
+      getSessionIdentity: async () => ({ projectId: PROJECT, directory: folder }),
+    })
+    await controller.start()
+    expect(await controller.resolveSandboxForSession('session-stop-fails')).not.toBeNull()
+
+    const stop = manager.stop
+    let failures = 0
+    manager.stop = async (key: string) => {
+      if (key === folderKey && failures === 0) {
+        failures += 1
+        manager.stopCalls.push(key)
+        throw new Error('stop failed')
+      }
+      return stop(key)
+    }
+    rmSync(folder, { recursive: true, force: true })
+    await vi.waitFor(() => expect(failures).toBe(1))
+
+    await controller.dispose()
+    expect(manager.stopCalls.filter((key) => key === folderKey).length).toBeGreaterThanOrEqual(2)
+    expect(manager.getActive(folderKey)).toBeNull()
+  })
+
   test('a folder sandbox created while dispose is pending is still stopped', async () => {
     const folder = tempDir('dispose-race')
     const folderKey = deriveFolderManagerKey(PROJECT, DIRECTORY, folder)
