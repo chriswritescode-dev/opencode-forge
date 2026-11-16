@@ -1,6 +1,7 @@
+import { z } from 'zod'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
-import { buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
+import { SANDBOX_OFF_NOTE, buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
 import type { EnvironmentProbe } from '../sandbox/env-probe'
 import type { ResolveSandboxForSessionOpts } from '../services/unified-sandbox-resolver'
 import { LRUCache } from '../utils/lru-cache'
@@ -10,8 +11,21 @@ export const SANDBOX_TRACKED_SESSION_LIMIT = 500
 export const SANDBOX_INSTRUCTION_KEY = 'forge-sandbox'
 
 export interface SessionInstructionEntries {
-  list(sessionID: string): Promise<ReadonlyArray<{ key: string }>>
+  list(sessionID: string): Promise<ReadonlyArray<{ key: string; value: unknown }>>
   put(input: { sessionID: string; key: string; value: string }): Promise<void>
+}
+
+const storedNoteSchema = z.string()
+
+async function readStoredNote(entries: SessionInstructionEntries, sessionID: string): Promise<{ text: string | null } | null> {
+  const stored = (await entries.list(sessionID)).find((entry) => entry.key === SANDBOX_INSTRUCTION_KEY)
+  if (!stored) return null
+  const text = storedNoteSchema.safeParse(stored.value)
+  return { text: text.success ? text.data : null }
+}
+
+function isHostNote(text: string | null): boolean {
+  return text !== null && text.includes(SANDBOX_OFF_NOTE.split('\n')[0]!)
 }
 
 export interface CreateSandboxMessageHookDeps {
@@ -61,7 +75,17 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
             value: buildSandboxContextNote({ switched: true, from, to: env }, { settings: sandbox.settings }),
           })
         } else {
-          await entries.put({ sessionID, key: SANDBOX_INSTRUCTION_KEY, value: stable })
+          const stored = await readStoredNote(entries, sessionID)
+          if (stored && isHostNote(stored.text)) {
+            const hostEnv = probe ? await probe.describeHost() : null
+            await entries.put({
+              sessionID,
+              key: SANDBOX_INSTRUCTION_KEY,
+              value: buildSandboxContextNote({ switched: true, from: hostEnv, to: env }, { settings: sandbox.settings }),
+            })
+          } else if (stored?.text !== stable) {
+            await entries.put({ sessionID, key: SANDBOX_INSTRUCTION_KEY, value: stable })
+          }
         }
         trackedSessions.set(sessionID, { sandbox, env, stable })
         return
@@ -80,8 +104,8 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
 
       if (tracked) return
 
-      const existing = await entries.list(sessionID)
-      if (!existing.some((entry) => entry.key === SANDBOX_INSTRUCTION_KEY)) {
+      const stored = await readStoredNote(entries, sessionID)
+      if (!stored || isHostNote(stored.text)) {
         trackedSessions.set(sessionID, { hostEnv: undefined })
         return
       }
