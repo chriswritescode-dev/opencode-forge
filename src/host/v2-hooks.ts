@@ -167,9 +167,9 @@ export async function registerForgeHooksV2(
   }
 
   await ctx.tool.hook('execute.before', async (event) => {
+    await applySubagentDefaultModel(ctx, event)
     const core = await getCore()
     if (!core) return
-    await applySubagentDefaultModel(ctx, event)
     const input = { tool: toV1ToolName(event.tool), sessionID: event.sessionID, callID: event.id }
     const output = { args: toolArgsSchema.safeParse(event.input).data ?? {} }
     await core.toolBefore(input, output)

@@ -457,6 +457,23 @@ describe('registerForgeHooksV2 subagent default model', () => {
     data: { id: 'default-model', modelID: 'default-model', providerID: 'default-provider' },
   })
 
+  test('sets the default model even when the core failed to start', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    await registerForgeHooksV2(ctx, async () => null)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toEqual({
+      agent: 'minion',
+      prompt: 'do work',
+      model: 'default-provider/default-model',
+    })
+  })
+
   test('sets the default model for a new minion launch whose agent has no model', async () => {
     const { ctx, hooks, calls } = createFakeV2Context({
       agent: { get: agentLookup() },
