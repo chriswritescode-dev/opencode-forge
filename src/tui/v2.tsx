@@ -54,6 +54,10 @@ const SIDEBAR_LOOP_LIMIT = 3
 
 const WORKTREES_NEGATIVE_CACHE_MS = 5000
 
+export const VERSION_CHECK_RETRY_DELAY_MS = 1000
+
+export const VERSION_CHECK_MAX_ATTEMPTS = 15
+
 const forgeToastSchema = z.looseObject({
   projectId: z.string(),
   message: z.string(),
@@ -602,16 +606,40 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     return dispose
   })
 
-  void call(async (rpc, location) => await rpc.version({}, location), readForgeVersion).then((result) => {
+  void (async () => {
+    let lastError = ''
+    for (let attempt = 1; attempt <= VERSION_CHECK_MAX_ATTEMPTS; attempt += 1) {
+      if (lifecycle.signal.aborted) return
+      const result = await call(async (rpc, location) => await rpc.version({}, location), readForgeVersion)
+      if (lifecycle.signal.aborted) return
+      if (!('error' in result)) {
+        if (result.version === VERSION) return
+        context.ui.toast.show({
+          message: `Forge server plugin ${result.version} differs from TUI ${VERSION}; restart the OpenCode server`,
+          variant: 'warning',
+          duration: 10_000,
+        })
+        return
+      }
+      lastError = result.error
+      if (attempt >= VERSION_CHECK_MAX_ATTEMPTS) break
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timer)
+          lifecycle.signal.removeEventListener('abort', finish)
+          resolve()
+        }
+        const timer = setTimeout(finish, VERSION_CHECK_RETRY_DELAY_MS)
+        lifecycle.signal.addEventListener('abort', finish, { once: true })
+      })
+    }
     if (lifecycle.signal.aborted) return
-    const serverVersion = 'error' in result ? null : result.version
-    if (serverVersion === VERSION) return
     context.ui.toast.show({
-      message: `Forge server plugin ${serverVersion ?? 'unknown (older than this TUI)'} differs from TUI ${VERSION}; restart the OpenCode server`,
+      message: `Forge server plugin version unavailable (${lastError}) differs from TUI ${VERSION}; restart the OpenCode server`,
       variant: 'warning',
       duration: 10_000,
     })
-  })
+  })()
 
   void resolveV2TuiProjectId(context).then(async (projectId) => {
     if (!projectId || lifecycle.signal.aborted) return

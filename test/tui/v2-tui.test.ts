@@ -21,7 +21,7 @@ vi.mock('../../src/tui/dashboard/store', () => ({
 import { createSignal } from 'solid-js'
 import type { Plugin } from '@opencode/plugin/tui'
 import type { ForgeHostSandboxSetInput, ForgeHostSandboxState } from '../../src/host/forge-rpc'
-import { resolveV2TuiProjectId, setupForgeTuiV2 } from '../../src/tui/v2'
+import { resolveV2TuiProjectId, setupForgeTuiV2, VERSION_CHECK_MAX_ATTEMPTS, VERSION_CHECK_RETRY_DELAY_MS } from '../../src/tui/v2'
 import tuiModule from '../../src/tui'
 import { formatForgeTitle, resolveTuiOptions } from '../../src/tui/options'
 import { VERSION } from '../../src/version'
@@ -731,16 +731,86 @@ describe('V2 TUI setup', () => {
   })
 
   test('warns when the server has no version method', async () => {
-    const fake = createFakeV2TuiContext({ version: { error: 'method not found' } })
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const fake = createFakeV2TuiContext({ version: { error: 'method not found' } })
 
-    const cleanup = setupForgeTuiV2(fake.ctx)
+      const cleanup = setupForgeTuiV2(fake.ctx)
+      for (let attempt = 1; attempt < VERSION_CHECK_MAX_ATTEMPTS; attempt += 1) {
+        await vi.advanceTimersByTimeAsync(VERSION_CHECK_RETRY_DELAY_MS)
+      }
 
-    await vi.waitFor(() => expect(fake.toasts).toEqual([{
-      message: `Forge server plugin unknown (older than this TUI) differs from TUI ${VERSION}; restart the OpenCode server`,
-      variant: 'warning',
-      duration: 10_000,
-    }]))
-    cleanup()
+      expect(fake.version).toHaveBeenCalledTimes(VERSION_CHECK_MAX_ATTEMPTS)
+      expect(fake.toasts).toEqual([{
+        message: `Forge server plugin version unavailable (method not found) differs from TUI ${VERSION}; restart the OpenCode server`,
+        variant: 'warning',
+        duration: 10_000,
+      }])
+      cleanup()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('retries while the server is booting and stays quiet once the version matches', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const fake = createFakeV2TuiContext()
+      fake.version.mockResolvedValueOnce({ error: 'bad request' })
+
+      const cleanup = setupForgeTuiV2(fake.ctx)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fake.version).toHaveBeenCalledTimes(1)
+      expect(fake.toasts).toEqual([])
+
+      await vi.advanceTimersByTimeAsync(VERSION_CHECK_RETRY_DELAY_MS)
+      expect(fake.version).toHaveBeenCalledTimes(2)
+      expect(fake.toasts).toEqual([])
+      cleanup()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('warns once the retry returns a differing version', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const fake = createFakeV2TuiContext()
+      fake.version.mockResolvedValueOnce({ error: 'bad request' })
+      fake.version.mockResolvedValueOnce({ version: '0.0.2' })
+
+      const cleanup = setupForgeTuiV2(fake.ctx)
+      await vi.advanceTimersByTimeAsync(VERSION_CHECK_RETRY_DELAY_MS)
+
+      expect(fake.version).toHaveBeenCalledTimes(2)
+      expect(fake.toasts).toEqual([{
+        message: `Forge server plugin 0.0.2 differs from TUI ${VERSION}; restart the OpenCode server`,
+        variant: 'warning',
+        duration: 10_000,
+      }])
+      cleanup()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('stops retrying once the TUI is disposed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const fake = createFakeV2TuiContext({ version: { error: 'bad request' } })
+
+      const cleanup = setupForgeTuiV2(fake.ctx)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fake.version).toHaveBeenCalledTimes(1)
+
+      cleanup()
+      await vi.advanceTimersByTimeAsync(VERSION_CHECK_RETRY_DELAY_MS * (VERSION_CHECK_MAX_ATTEMPTS + 1))
+
+      expect(fake.version).toHaveBeenCalledTimes(1)
+      expect(fake.toasts).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test('does not warn when the server version matches the TUI', async () => {
