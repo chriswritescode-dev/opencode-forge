@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { buildSandboxWorkspaces } from '../../src/sandbox/manager'
-import { buildMsbCreateArgs } from '../../src/sandbox/msb'
+import { buildMsbCreateArgs, SANDBOX_WORKSPACE_QUOTA } from '../../src/sandbox/msb'
 import { createMockLogger } from '../helpers/logger'
 
 describe('buildSandboxWorkspaces host-path canonicalization', () => {
@@ -49,7 +49,7 @@ describe('buildSandboxWorkspaces host-path canonicalization', () => {
     const roArgs = buildMsbCreateArgs('forge-c', [roWorkspace], { image: 'oc-forge-sandbox:latest' })
 
     expect(args).toContain('-v')
-    expect(args).toContain(`${realpathSync(target)}:${link}`)
+    expect(args).toContain(`${realpathSync(target)}:${link}:quota=${SANDBOX_WORKSPACE_QUOTA}`)
     expect(args).not.toContain(`${link}:${link}`)
     expect(roArgs).toContain(`${realpathSync(target)}:${link}:ro`)
   })

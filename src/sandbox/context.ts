@@ -1,4 +1,4 @@
-import { SANDBOX_CACHE_DIR, type SandboxRuntime } from './msb'
+import { SANDBOX_CACHE_DIR, SANDBOX_WORKSPACE_QUOTA, type SandboxRuntime } from './msb'
 import type { PluginConfig, SandboxMountConfig } from '../types'
 import type { SandboxMount } from './path'
 import type { ActiveSandbox, SandboxManager } from './manager'
@@ -32,6 +32,7 @@ export const SANDBOX_CONTEXT_NOTE = [
   '[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.',
   'Environment-specific tooling that is missing or incompatible is not acceptable: install or reinstall the required tooling and dependencies in the container, rerun the intended checks, and do not misreport environment-induced failures as code defects.',
   SHARED_WORKSPACE_ARTIFACTS_NOTE,
+  `The project directory mount has a guest-write quota of ${SANDBOX_WORKSPACE_QUOTA} (sandboxes created by an earlier Forge build keep msb's 4 GiB default), so df on it reports that budget rather than the host disk's free space; if writes there fail with "No space left on device", delete build output in the workspace, and if df shows the 4 GiB default, ask the user to recreate the sandbox, rather than concluding the host disk is full.`,
   'Passwordless sudo is available for installing missing tools system-wide.',
   'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
   `Package and tool caches live on a dedicated disk mounted at ${SANDBOX_CACHE_DIR}; run forge-cache-prune to reclaim space when the disk fills (it clears caches while preserving installed toolchains).`,
