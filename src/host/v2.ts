@@ -181,6 +181,10 @@ function createDeferred<T>(): Deferred<T> {
   return { promise, resolve, reject }
 }
 
+function logStartupToastFailure(cause: unknown): void {
+  console.error('[forge] failed to publish the core startup failure toast', cause)
+}
+
 function coreStartError(cause: unknown): ForgeRpcError {
   return { error: `Forge failed to start: ${errorMessage(cause)}` }
 }
@@ -315,15 +319,9 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       (created) => coreReady.resolve(created),
       (cause: unknown) => {
         console.error('[forge] core failed to start', cause)
-        void (async () => {
-          try {
-            await publishToast({ title: 'Forge failed to start', message: errorMessage(cause), variant: 'error' })
-          } catch (toastCause) {
-            console.error('[forge] failed to publish the core startup failure toast', toastCause)
-          } finally {
-            coreReady.reject(cause)
-          }
-        })()
+        coreReady.reject(cause)
+        void publishToast({ title: 'Forge failed to start', message: errorMessage(cause), variant: 'error' })
+          .catch(logStartupToastFailure)
       },
     )
   }
