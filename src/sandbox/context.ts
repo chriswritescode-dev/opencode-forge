@@ -63,6 +63,10 @@ function formatTransitionLine(
 
 export const SANDBOX_SWITCHED_ON_NOTE = '[Sandbox] Earlier command output in this session may come from the host and does not describe the container.'
 
+export function formatSwitchArtifactsLine(fromLabel: string, toLabel: string): string {
+  return `[Sandbox] The environment just switched from the ${fromLabel} to the ${toLabel}. Dependency directories and native build output already in the shared project directory (for example node_modules) were most likely installed for the ${fromLabel} and will not work in the ${toLabel}: delete them and reinstall or rebuild before running builds, tests, or the app.`
+}
+
 export type SandboxChange = 'restarted' | 'recreated'
 
 const SANDBOX_CHANGE_NOTES = {
@@ -107,6 +111,7 @@ export function buildSandboxContextNote(
   const lines = environment.switched
     ? [
         formatTransitionLine({ from: environment.from, to: environment.to }, 'host', 'container'),
+        formatSwitchArtifactsLine('host', 'container'),
         SANDBOX_SWITCHED_ON_NOTE,
         settings,
         SANDBOX_CONTEXT_NOTE,
@@ -122,7 +127,8 @@ export function buildSandboxContextNote(
 
 export function buildSandboxOffNote(transition?: SandboxEnvironmentTransition): string {
   const line = formatTransitionLine(transition, 'container', 'host')
-  return line ? `${line}\n${SANDBOX_OFF_NOTE}` : SANDBOX_OFF_NOTE
+  const switched = formatSwitchArtifactsLine('container', 'host')
+  return line ? `${line}\n${switched}\n${SANDBOX_OFF_NOTE}` : `${switched}\n${SANDBOX_OFF_NOTE}`
 }
 
 export interface SandboxLoopContextState {
