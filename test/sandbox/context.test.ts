@@ -7,6 +7,8 @@ import {
   SANDBOX_OFF_NOTE,
   SANDBOX_SWITCHED_ON_NOTE,
   buildSandboxContextNote,
+  buildSandboxOffNote,
+  formatSwitchArtifactsLine,
   isSandboxEnabled,
   isSandboxConfigEnabled,
   isHostSessionsDefaultEnabled,
@@ -69,14 +71,15 @@ describe('SANDBOX_OFF_NOTE', () => {
 describe('buildSandboxContextNote', () => {
   const settings = { cpus: 4, memoryMib: 8192, allowLan: false }
 
-  it('announces a switch with the transition, the switched-on note, settings, and the container guidance', () => {
+  it('announces a switch with the transition, the switch artifacts warning, the switched-on note, settings, and the container guidance', () => {
     const note = buildSandboxContextNote(
       { switched: true, from: 'Darwin 24.6.0 arm64', to: 'Linux 6.1.0 aarch64' },
       { settings, change: 'recreated' },
     )
 
-    expect(note.split('\n').slice(0, 3)).toEqual([
+    expect(note.split('\n').slice(0, 4)).toEqual([
       '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64) -> container (Linux 6.1.0 aarch64).',
+      formatSwitchArtifactsLine('host', 'container'),
       SANDBOX_SWITCHED_ON_NOTE,
       '[Sandbox] Resources: 4 CPUs, 8 GiB memory. LAN (private network) access: blocked.',
     ])
@@ -88,7 +91,8 @@ describe('buildSandboxContextNote', () => {
     const note = buildSandboxContextNote({ switched: true, from: null, to: null })
 
     expect(note).not.toContain('Environment changed')
-    expect(note.split('\n')[0]).toBe(SANDBOX_SWITCHED_ON_NOTE)
+    expect(note.split('\n')[0]).toBe(formatSwitchArtifactsLine('host', 'container'))
+    expect(note.split('\n')[1]).toBe(SANDBOX_SWITCHED_ON_NOTE)
     expect(note).toContain(SANDBOX_CONTEXT_NOTE)
   })
 
@@ -112,6 +116,7 @@ describe('buildSandboxContextNote', () => {
     expect(note).toContain(SANDBOX_CONTEXT_NOTE)
     expect(note).not.toContain('Environment changed')
     expect(note).not.toContain(SANDBOX_SWITCHED_ON_NOTE)
+    expect(note).not.toContain('just switched')
   })
 
   it('omits the container line in steady state when the container probe is null', () => {
@@ -120,6 +125,34 @@ describe('buildSandboxContextNote', () => {
     expect(note.split('\n')[0]).not.toContain('[Sandbox] Environment:')
     expect(note.split('\n')[0]).toBe('[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.')
     expect(note).toContain(SANDBOX_CONTEXT_NOTE)
+  })
+})
+
+describe('buildSandboxOffNote', () => {
+  it('leads with the container -> host switch artifacts line when a transition is known', () => {
+    const note = buildSandboxOffNote({ from: 'Linux 6.1.0 aarch64', to: 'Darwin 24.6.0 arm64' })
+
+    expect(note.split('\n').slice(0, 3)).toEqual([
+      '[Sandbox] Environment changed: container (Linux 6.1.0 aarch64) -> host (Darwin 24.6.0 arm64).',
+      formatSwitchArtifactsLine('container', 'host'),
+      SANDBOX_OFF_NOTE.split('\n')[0],
+    ])
+    expect(note).toContain(SANDBOX_OFF_NOTE)
+  })
+
+  it('starts with the container -> host switch artifacts line when no transition is known', () => {
+    const note = buildSandboxOffNote()
+
+    expect(note.split('\n')[0]).toBe(formatSwitchArtifactsLine('container', 'host'))
+    expect(note).toContain(SANDBOX_OFF_NOTE)
+  })
+})
+
+describe('formatSwitchArtifactsLine', () => {
+  it('names the switch and tells the agent to delete and reinstall dependency directories', () => {
+    expect(formatSwitchArtifactsLine('host', 'container')).toBe(
+      '[Sandbox] The environment just switched from the host to the container. Dependency directories and native build output already in the shared project directory (for example node_modules) were most likely installed for the host and will not work in the container: delete them and reinstall or rebuild before running builds, tests, or the app.',
+    )
   })
 })
 

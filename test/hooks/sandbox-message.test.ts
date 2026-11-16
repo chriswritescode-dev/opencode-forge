@@ -5,7 +5,12 @@ import {
   SANDBOX_TRACKED_SESSION_LIMIT,
   type SessionInstructionEntries,
 } from '../../src/hooks/sandbox-message'
-import { SANDBOX_CONTEXT_NOTE, SANDBOX_OFF_NOTE, SANDBOX_SWITCHED_ON_NOTE } from '../../src/sandbox/context'
+import {
+  SANDBOX_CONTEXT_NOTE,
+  SANDBOX_OFF_NOTE,
+  SANDBOX_SWITCHED_ON_NOTE,
+  formatSwitchArtifactsLine,
+} from '../../src/sandbox/context'
 import type { SandboxContext } from '../../src/sandbox/context'
 import type { Logger } from '../../src/types'
 
@@ -78,6 +83,7 @@ describe('createSandboxMessageHook (session instruction entries)', () => {
     expect(puts[1]!.value).toContain(
       '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64 | macOS 15.6) -> container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).',
     )
+    expect(puts[1]!.value).toContain(formatSwitchArtifactsLine('host', 'container'))
     expect(puts[1]!.value).toContain(SANDBOX_SWITCHED_ON_NOTE)
     expect(puts[1]!.value).toContain(SANDBOX_CONTEXT_NOTE)
   })
@@ -102,6 +108,7 @@ describe('createSandboxMessageHook (session instruction entries)', () => {
     expect(puts[1]!.value).toContain(
       '[Sandbox] Environment changed: container (Linux 6.1.0 aarch64) -> host (Darwin 24.6.0 arm64 | macOS 15.6).',
     )
+    expect(puts[1]!.value).toContain(formatSwitchArtifactsLine('container', 'host'))
 
     describeHost.mockClear()
     await hook('ses_1', entries)
@@ -273,7 +280,7 @@ describe('createSandboxMessageHook (session instruction entries)', () => {
     expect(puts[1]!.value).toContain(SANDBOX_OFF_NOTE)
   })
 
-  test('falls back to the plain notes when neither environment can be probed', async () => {
+  test('falls back to the unprobed notes when neither environment can be probed', async () => {
     let state: SandboxContext | null = context
     const hook = createSandboxMessageHook({
       resolveSandboxForSession: async () => state,
@@ -287,7 +294,7 @@ describe('createSandboxMessageHook (session instruction entries)', () => {
 
     state = null
     await hook('ses_1', entries)
-    expect(puts[1]!.value).toBe(SANDBOX_OFF_NOTE)
+    expect(puts[1]!.value).toBe(`${formatSwitchArtifactsLine('container', 'host')}\n${SANDBOX_OFF_NOTE}`)
   })
 
   test('reports a partially probed transition rather than dropping the change', async () => {
