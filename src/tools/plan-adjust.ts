@@ -7,8 +7,6 @@ const z = tool.schema
 const nonBlankString = z.string().refine((value) => value.trim().length > 0, { error: 'must not be blank or whitespace-only' })
 
 export function createPlanAdjustTool(ctx: ToolContext): ToolDefinition {
-  const loop = ctx.loop
-
   return tool({
     description: 'Adjust the active loop plan during a section audit. Only callable by the loop auditor. Revises the executable section instructions — the section currently being audited (currentSection) and/or the pending suffix (sections). The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative. Amendments are logged; the tool does not semantically validate the adjusted instructions.',
     args: {
@@ -25,6 +23,7 @@ export function createPlanAdjustTool(ctx: ToolContext): ToolDefinition {
       rationale: z.string().min(1).describe('Why the plan needs adjustment. Revisions must not weaken acceptance criteria or verification merely to obtain a clean audit.'),
     },
     execute: async (args, toolCtx) => {
+      const loop = ctx.loop
       const sessionId = toolCtx?.sessionID ?? ''
       const loopName = loop.service.resolveLoopName(sessionId)
 

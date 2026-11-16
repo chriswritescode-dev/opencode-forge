@@ -10,15 +10,12 @@ const z = tool.schema
 const ATTEMPT_PAGE_LIMIT_DEFAULT = 20
 
 export function createReviewTools(ctx: ToolContext) {
-  const { reviewFindingsRepo, projectId, logger } = ctx
-  const loop = ctx.loop
-
   async function resolveLoopName(toolCtx?: { sessionID?: string }): Promise<string | null> {
     const sessionId = toolCtx?.sessionID
     if (!sessionId) return null
     const resolved = await ctx.resolveActiveLoopForSession(sessionId)
     const loopName = resolved?.loopName ?? null
-    logger.log(`review-scope: session=${sessionId} resolved loop=${loopName ?? 'none'}`)
+    ctx.logger.log(`review-scope: session=${sessionId} resolved loop=${loopName ?? 'none'}`)
     return loopName
   }
 
@@ -39,6 +36,7 @@ export function createReviewTools(ctx: ToolContext) {
         sectionIndex: z.number().optional().describe('Explicitly set section index. Defaults to current section in a sectioned loop.'),
       },
       execute: async (args, toolCtx) => {
+        const { reviewFindingsRepo, projectId, logger, loop } = ctx
         const loopName = await resolveLoopName(toolCtx)
         let sectionIndex: number | null = null
         if (loopName) {
@@ -100,6 +98,7 @@ export function createReviewTools(ctx: ToolContext) {
         limit: z.number().optional().describe('Max attempts to return in attempts mode (1-100).'),
       },
       execute: async (args, toolCtx) => {
+        const { reviewFindingsRepo, projectId, logger, loop } = ctx
         if (args.attempts === true) {
           if (args.file !== undefined || args.pattern !== undefined || args.crossSection !== undefined) {
             return 'attempts: true cannot be combined with file, pattern, or crossSection filtering — read findings and attempt history in separate calls.'
@@ -190,6 +189,7 @@ export function createReviewTools(ctx: ToolContext) {
         crossSection: z.boolean().optional().describe('Set to true to delete cross-section findings (sectionIndex=null). Overrides sectionIndex.'),
       },
       execute: async (args, toolCtx) => {
+        const { reviewFindingsRepo, projectId, logger, loop } = ctx
         const loopName = await resolveLoopName(toolCtx)
         let sectionIndex: number | null | undefined = args.sectionIndex
 

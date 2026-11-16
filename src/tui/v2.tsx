@@ -181,6 +181,10 @@ function ForgeLoopsSidebar(props: {
 }) {
   const theme = () => props.context.theme
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
+  const sandboxIndicator = (): SessionSandboxPreference | null => {
+    const preference = props.sandboxPreference()
+    return preference && preference.unavailable !== true ? preference : null
+  }
   const toggleExpanded = (loopName: string) => setExpanded((current) => {
     const next = new Set(current)
     if (!next.delete(loopName)) next.add(loopName)
@@ -201,7 +205,7 @@ function ForgeLoopsSidebar(props: {
         <text fg={theme().text.base}>
           <b>{formatForgeTitle(props.showVersion)}</b>
         </text>
-        <Show when={props.sandboxPreference()}>
+        <Show when={sandboxIndicator()}>
           <SandboxStatusText context={props.context} preference={props.sandboxPreference} sessionId={props.currentSessionId} />
         </Show>
         <Show when={props.autoApprove()}>
@@ -573,16 +577,27 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     dashboardStore.handleResubscribed()
   })
 
-  let sessionChangeSeen = false
+  let changeSeen = false
+  let lastSessionId: string | null = null
+  let lastDirectory: string | null = null
   const disposeSessionChange = createRoot((dispose) => {
     createEffect(() => {
-      currentSessionId()
-      if (!sessionChangeSeen) {
-        sessionChangeSeen = true
+      const sessionId = currentSessionId()
+      const directory = resolveV2TuiDirectory(context)
+      if (!changeSeen) {
+        changeSeen = true
+        lastSessionId = sessionId
+        lastDirectory = directory
         return
       }
+      const sessionChanged = sessionId !== lastSessionId
+      const directoryChanged = directory !== lastDirectory
+      lastSessionId = sessionId
+      lastDirectory = directory
+      if (!sessionChanged && !directoryChanged) return
       autoApprove.refresh()
       hostSandbox.refresh()
+      if (directoryChanged) loopSidebar?.refresh()
     })
     return dispose
   })

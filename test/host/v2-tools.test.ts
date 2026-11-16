@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'vitest'
-import { createTools } from '../../src/tools'
+import { createTools, createToolManifest } from '../../src/tools'
 import { registerForgeToolsV2 } from '../../src/host/v2-tools'
 import { createFakeV2Context, type FakeV2Context, type RecordedTool } from '../helpers/fake-v2-context'
 import type { ToolContext } from '../../src/tools/types'
@@ -52,7 +52,7 @@ async function register(
   fake: FakeV2Context,
   context: ToolContext,
 ): Promise<RecordedTool[]> {
-  unregisters.push(await registerForgeToolsV2(fake.ctx, createTools(context)))
+  unregisters.push(await registerForgeToolsV2(fake.ctx, Promise.resolve(createTools(context))))
   return fake.tools
 }
 
@@ -145,7 +145,7 @@ describe('registerForgeToolsV2', () => {
       tool: { transform: async () => { throw new Error('transform failed') } },
     })
 
-    await expect(registerForgeToolsV2(failing.ctx, createTools(stubContext({ directory: '/project-a' }))))
+    await expect(registerForgeToolsV2(failing.ctx, Promise.resolve(createTools(stubContext({ directory: '/project-a' })))))
       .rejects.toThrow('transform failed')
 
     const result = (await planRead(a.tools).execute({}, callContext('ses_a'))) as Record<string, unknown>
@@ -174,23 +174,48 @@ describe('registerForgeToolsV2', () => {
       .rejects.toThrow(/could not resolve the location of session ses_missing/)
   })
 
+  test('waits for the location tools to load before executing', async () => {
+    const fake = createFakeV2Context({ location: { directory: '/project-a' }, session: { get: sessionAt('/project-a') } })
+    let resolveTools: (tools: ReturnType<typeof createTools>) => void = () => {}
+    const pending = new Promise<ReturnType<typeof createTools>>((resolve) => {
+      resolveTools = resolve
+    })
+    unregisters.push(await registerForgeToolsV2(fake.ctx, pending))
+
+    const execution = planRead(fake.tools).execute({}, callContext('ses_a'))
+    resolveTools(createTools(stubContext({ directory: '/project-a' })))
+
+    const result = (await execution) as Record<string, unknown>
+    expect(result.content).toContain('1: # Plan')
+  })
+
+  test('reports a core startup failure when the location tools reject', async () => {
+    const fake = createFakeV2Context({ location: { directory: '/project-a' }, session: { get: sessionAt('/project-a') } })
+    const failing = Promise.reject(new Error('db unavailable'))
+    failing.catch(() => {})
+    unregisters.push(await registerForgeToolsV2(fake.ctx, failing))
+
+    await expect(planRead(fake.tools).execute({}, callContext('ses_a')))
+      .rejects.toThrow('Forge failed to start: db unavailable')
+  })
+
   test('unregistering a location rejects its sessions and leaves a newer registration intact', async () => {
     const fake = createFakeV2Context({ location: { directory: '/project-a' }, session: { get: sessionAt('/project-a') } })
 
-    const unregisterOld = await registerForgeToolsV2(fake.ctx, createTools(stubContext({
+    const unregisterOld = await registerForgeToolsV2(fake.ctx, Promise.resolve(createTools(stubContext({
       directory: '/project-a',
       plansRepo: { getForSession: () => ({ content: PLAN_A }) } as never,
-    })))
+    }))))
     unregisterOld()
 
     await expect(planRead(fake.tools).execute({}, callContext('ses_a')))
       .rejects.toThrow(/Forge is not loaded for this session's location \(\/project-a\)/)
 
     fake.tools.length = 0
-    const unregisterNew = await registerForgeToolsV2(fake.ctx, createTools(stubContext({
+    const unregisterNew = await registerForgeToolsV2(fake.ctx, Promise.resolve(createTools(stubContext({
       directory: '/project-a',
       plansRepo: { getForSession: () => ({ content: PLAN_B }) } as never,
-    })))
+    }))))
     unregisters.push(unregisterNew)
 
     unregisterOld()
@@ -200,5 +225,25 @@ describe('registerForgeToolsV2', () => {
     unregisterNew()
     await expect(planRead(fake.tools).execute({}, callContext('ses_a')))
       .rejects.toThrow(/Forge is not loaded for this session's location \(\/project-a\)/)
+  })
+})
+
+describe('createToolManifest', () => {
+  test('builds every tool definition without an executable context and matches a real context', () => {
+    const manifest = createToolManifest()
+    const real = createTools(stubContext())
+
+    expect(Object.keys(manifest).sort()).toEqual(Object.keys(real).sort())
+    for (const [name, definition] of Object.entries(real)) {
+      expect(manifest[name].description).toBe(definition.description)
+      expect(Object.keys(manifest[name].args).sort()).toEqual(Object.keys(definition.args).sort())
+    }
+  })
+
+  test('rejects executing a manifest tool because its context is not executable', async () => {
+    const manifest = createToolManifest()
+
+    await expect(manifest['plan-read'].execute({}, callContext('ses_manifest')))
+      .rejects.toThrow('Forge tool manifest context is not executable')
   })
 })

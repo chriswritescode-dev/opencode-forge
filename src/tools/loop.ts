@@ -14,10 +14,8 @@ import { loopBranchExists } from '../workspace/forge-naming'
 const z = tool.schema
 
 export function createLoopTools(ctx: ToolContext) {
-  const { loopHandler, config, logger } = ctx
-
   function auditorModelStatusLabel(state: LoopState): string {
-    const chain = buildAuditorModelChain(config, state)
+    const chain = buildAuditorModelChain(ctx.config, state)
     const index = Math.min(Math.max(state.auditorFallbackIndex ?? 0, 0), chain.length - 1)
     const choice = auditorModelChoiceAt(chain, index)
     const base = choice.model ? `${choice.model.providerID}/${choice.model.modelID}` : 'default'
@@ -29,7 +27,7 @@ export function createLoopTools(ctx: ToolContext) {
       const info = await ctx.client.session.get({ sessionID: sessionId })
       const sessionProject = info.projectID
       if (sessionProject && sessionProject !== ctx.projectId) {
-        logger.error(`loop: project scope mismatch — session ${sessionId} belongs to project ${sessionProject}, but this instance is scoped to ${ctx.projectId}`)
+        ctx.logger.error(`loop: project scope mismatch — session ${sessionId} belongs to project ${sessionProject}, but this instance is scoped to ${ctx.projectId}`)
         return [
           '',
           `WARNING: The new session belongs to project ${sessionProject}, but this opencode instance is scoped to project ${ctx.projectId}.`,
@@ -52,8 +50,8 @@ export function createLoopTools(ctx: ToolContext) {
     const service = createForgeExecutionService({
       projectId: ctx.projectId,
       directory: ctx.directory,
-      config,
-      logger,
+      config: ctx.config,
+      logger: ctx.logger,
       dataDir: ctx.dataDir,
       client: ctx.client,
       plansRepo: ctx.plansRepo,
@@ -81,6 +79,7 @@ export function createLoopTools(ctx: ToolContext) {
           .describe("Execution mode. 'loop' (default) runs an iterative loop in an isolated git worktree. 'new-session' launches the plan in a fresh standalone session running the code agent (no worktree, no loop)."),
       },
       execute: async (args, context) => {
+        const { config, logger } = ctx
         logger.log(`loop: creating loop for plan="${args.title}"`)
 
         let source: PlanSource
@@ -217,6 +216,7 @@ export function createLoopTools(ctx: ToolContext) {
         force: z.boolean().optional().default(false).describe('Force restart an active/stuck loop'),
       },
       execute: async (args) => {
+        const { config, logger, loopHandler } = ctx
         const active = ctx.loop.listActive()
 
         if (args.restart) {

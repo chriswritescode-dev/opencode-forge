@@ -16,7 +16,7 @@ export interface ForgeSharedRegistries {
   'loop-pending-code-graph-snapshots.v1': Map<string, string>
   'session-sandbox-controllers.v1': Map<string, SharedSessionSandboxController>
   'tui-event-emitters.v1': Map<string, Set<ForgeTuiEventEmitter>>
-  'v2-location-tools.v1': Map<string, Record<string, ToolDefinition>>
+  'v2-location-tools.v2': Map<string, Promise<Record<string, ToolDefinition>>>
   'pending-shell-sandboxes.v1': Map<string, SandboxContext>
   'v2-session-status.v1': LRUCache<SessionStatusEntry>
   'loop-registry.v2': Map<string, Set<string>>

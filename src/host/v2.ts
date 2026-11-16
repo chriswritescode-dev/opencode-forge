@@ -7,9 +7,11 @@ import { createV2ForgeWorkspaces, type V2ForgeWorkspacesDeps } from '../client/v
 import { unavailableError } from '../client/errors'
 import type { ForgeClient } from '../client/port'
 import { canonicalizePath } from '../sandbox/path'
+import { isSandboxConfigEnabled } from '../sandbox/context'
+import { errorMessage } from '../utils/error-message'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
-import { createForgeCore, type ForgeCore, type ForgeHostInput } from './forge-core'
+import { createForgeAgentConfig, createForgeCore, type ForgeCore, type ForgeHostInput } from './forge-core'
 import { FORGE_EXECUTION_MODES, FORGE_RPC, toForgeRpcJson, type ForgeRpcError, type ForgeToastInput, type ForgeTuiEvent } from './forge-rpc'
 import { VERSION } from '../version'
 import {
@@ -34,6 +36,7 @@ import { registerForgeAgentsV2, registerForgeCommandsV2, resolveForgeConfigMaps 
 import { registerForgeHooksV2 } from './v2-hooks'
 import { registerForgeToolsV2 } from './v2-tools'
 import type { ForgeWorkspaceAdapter } from '../workspace/forge-adapter'
+import type { ToolDefinition } from '../tools/tool'
 
 type DeferredForgeWorkspacesDeps = Omit<V2ForgeWorkspacesDeps, 'adapter'> & {
   getAdapter: () => ForgeWorkspaceAdapter | null
@@ -163,10 +166,28 @@ function jsonOutput<O>(run: () => O | Promise<O>): () => Promise<JsonValue> {
   return async () => toForgeRpcJson(await run())
 }
 
-const FORGE_STARTING_ERROR = 'Forge is still starting; retry in a moment'
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (cause: unknown) => void
+}
 
-function withCore<T>(core: ForgeCore | null, run: (core: ForgeCore) => T): T | ForgeRpcError {
-  return core ? run(core) : { error: FORGE_STARTING_ERROR }
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  let reject!: (cause: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+function logStartupToastFailure(cause: unknown): void {
+  console.error('[forge] failed to publish the core startup failure toast', cause)
+}
+
+function coreStartError(cause: unknown): ForgeRpcError {
+  return { error: `Forge failed to start: ${errorMessage(cause)}` }
 }
 
 export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<void>> {
@@ -174,61 +195,86 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
   const directory = ctx.location.directory
   const projectId = ctx.location.project.id
   const dataDir = resolveForgeDataDir(config.dataDir)
+  const { applyConfig } = createForgeAgentConfig(config)
 
   let adapter: ForgeWorkspaceAdapter | null = null
 
-  let core: ForgeCore | null = null
-  let publishToast: ((toast: ForgeToastInput) => Promise<void>) | undefined
-  let requestSessionDelete: ((sessionID: string) => Promise<void>) | undefined
-  let publishTuiEvent: ((event: ForgeTuiEvent) => void) | undefined
-  let disposeRpc: (() => Promise<void>) | null = null
-  try {
-    const registration = await ctx.rpc.register(FORGE_RPC, {
-      executePlan: rpcHandler(executePlanRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.executeTuiPlan(input))),
-      loopDefaults: jsonOutput(() => withCore(core, (active) => active.loopDefaults())),
-      autoApproveState: rpcHandler(sessionIdRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.getSessionAutoApproveState(input.sessionId))),
-      autoApproveSet: rpcHandler(autoApproveSetRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.setSessionAutoApprove(input.sessionId, input.enabled))),
-      loops: jsonOutput(() => withCore(core, (active) => active.tui.listLoops())),
-      loopSidebar: rpcHandler(loopSidebarRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.tui.listLoopSidebar(input.limit))),
-      sessionPlan: rpcHandler(sessionPlanRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.tui.getSessionPlan(input.sessionId, input.projectId))),
-      loopRestart: rpcHandler(loopRestartRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.tui.restartLoop(input))),
-      hostSandboxState: jsonOutput(() => withCore(core, (active) => active.tui.getHostSandboxState())),
-      hostSandboxSet: rpcHandler(hostSandboxSetRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.tui.requestHostSandbox(input))),
-      worktrees: jsonOutput(() => withCore(core, (active) => active.tui.listWorktrees())),
-      version: jsonOutput(() => ({ version: VERSION })),
-      dashboardSummary: jsonOutput(() => withCore(core, (active) => active.dashboard.getSummary())),
-      loopDetail: rpcHandler(loopRefRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.dashboard.getLoopDetail(input.projectId, input.loopName))),
-      projectFindings: rpcHandler(projectRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.dashboard.getProjectFindings(input.projectId))),
-      amendmentDiff: rpcHandler(amendmentDiffRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.dashboard.getAmendmentDiff(input.projectId, input.loopName, input.id))),
-      planDelete: rpcHandler(planDeleteRpcInputSchema, async (input) => withCore(core, (active) =>
-        active.dashboard.deletePlan(input.projectId, input.sessionId))),
-    })
-    publishToast = (toast) => registration.events.emit('toast', { projectId, ...toast })
-    requestSessionDelete = (sessionID) => registration.events.emit('sessionDelete', { sessionID })
-    const emitRpcEvent = registration.events.emit.bind(registration.events)
-    publishTuiEvent = (event) => {
+  const coreReady = createDeferred<ForgeCore>()
+  void coreReady.promise.catch(() => {})
+  const availableCore: Promise<ForgeCore | null> = coreReady.promise.catch(() => null)
+  const coreTools: Promise<Record<string, ToolDefinition>> = coreReady.promise.then((active) => active.tools)
+  void coreTools.catch(() => {})
+
+  function withCore<T>(run: (active: ForgeCore) => T | Promise<T>): Promise<T | ForgeRpcError> {
+    return coreReady.promise.then(run, coreStartError)
+  }
+
+  const registrationPromise = (async () => {
+    try {
+      return await ctx.rpc.register(FORGE_RPC, {
+        executePlan: rpcHandler(executePlanRpcInputSchema, async (input) => withCore((active) =>
+          active.executeTuiPlan(input))),
+        loopDefaults: jsonOutput(() => withCore((active) => active.loopDefaults())),
+        autoApproveState: rpcHandler(sessionIdRpcInputSchema, async (input) => withCore((active) =>
+          active.getSessionAutoApproveState(input.sessionId))),
+        autoApproveSet: rpcHandler(autoApproveSetRpcInputSchema, async (input) => withCore((active) =>
+          active.setSessionAutoApprove(input.sessionId, input.enabled))),
+        loops: jsonOutput(() => withCore((active) => active.tui.listLoops())),
+        loopSidebar: rpcHandler(loopSidebarRpcInputSchema, async (input) => withCore((active) =>
+          active.tui.listLoopSidebar(input.limit))),
+        sessionPlan: rpcHandler(sessionPlanRpcInputSchema, async (input) => withCore((active) =>
+          active.tui.getSessionPlan(input.sessionId, input.projectId))),
+        loopRestart: rpcHandler(loopRestartRpcInputSchema, async (input) => withCore((active) =>
+          active.tui.restartLoop(input))),
+        hostSandboxState: jsonOutput(() => withCore((active) => active.tui.getHostSandboxState())),
+        hostSandboxSet: rpcHandler(hostSandboxSetRpcInputSchema, async (input) => withCore((active) =>
+          active.tui.requestHostSandbox(input))),
+        worktrees: jsonOutput(() => withCore((active) => active.tui.listWorktrees())),
+        version: jsonOutput(() => ({ version: VERSION })),
+        dashboardSummary: jsonOutput(() => withCore((active) => active.dashboard.getSummary())),
+        loopDetail: rpcHandler(loopRefRpcInputSchema, async (input) => withCore((active) =>
+          active.dashboard.getLoopDetail(input.projectId, input.loopName))),
+        projectFindings: rpcHandler(projectRpcInputSchema, async (input) => withCore((active) =>
+          active.dashboard.getProjectFindings(input.projectId))),
+        amendmentDiff: rpcHandler(amendmentDiffRpcInputSchema, async (input) => withCore((active) =>
+          active.dashboard.getAmendmentDiff(input.projectId, input.loopName, input.id))),
+        planDelete: rpcHandler(planDeleteRpcInputSchema, async (input) => withCore((active) =>
+          active.dashboard.deletePlan(input.projectId, input.sessionId))),
+      })
+    } catch (err) {
+      console.error('[forge] failed to register toast RPC', err)
+      return null
+    }
+  })()
+
+  const publishToast = async (toast: ForgeToastInput): Promise<void> => {
+    const registration = await registrationPromise
+    if (!registration) return
+    await registration.events.emit('toast', { projectId, ...toast })
+  }
+
+  const requestSessionDelete = async (sessionID: string): Promise<void> => {
+    const registration = await registrationPromise
+    if (!registration) {
+      throw unavailableError('session.delete', 'session.delete is not available on this host')
+    }
+    await registration.events.emit('sessionDelete', { sessionID })
+  }
+
+  const publishTuiEvent = (event: ForgeTuiEvent): void => {
+    void registrationPromise.then((registration) => {
+      if (!registration) return
       const { type, ...data } = event
       try {
-        void Promise.resolve(emitRpcEvent(type, data)).catch((cause: unknown) => {
+        void Promise.resolve(registration.events.emit(type, data)).catch((cause: unknown) => {
           console.error('[forge] failed to emit TUI event', cause)
         })
       } catch (err) {
         console.error('[forge] failed to emit TUI event', err)
       }
-    }
-    disposeRpc = registration.dispose
-  } catch (err) {
-    console.error('[forge] failed to register toast RPC', err)
+    }).catch((cause: unknown) => {
+      console.error('[forge] failed to emit TUI event', cause)
+    })
   }
 
   const clientOptions: V2ForgeClientOptions = {
@@ -240,9 +286,9 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       dataDir,
       sessionMove: ctx.session.move,
     }),
+    publishToast,
+    requestSessionDelete,
   }
-  if (publishToast) clientOptions.publishToast = publishToast
-  if (requestSessionDelete) clientOptions.requestSessionDelete = requestSessionDelete
   const client = createForgeClientFromV2(ctx, clientOptions)
 
   const hostInput: ForgeHostInput = {
@@ -253,30 +299,45 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     registerWorkspaceAdapter: (registered) => {
       adapter = registered
     },
+    publishTuiEvent,
   }
-  if (publishTuiEvent) hostInput.publishTuiEvent = publishTuiEvent
-  core = await createForgeCore(config, hostInput)
+
+  let disposed = false
+  let coreStartBegan = false
+  let rpcDisposed = false
 
   const disposeRpcRegistration = async () => {
-    const rpcDispose = disposeRpc
-    disposeRpc = null
-    await rpcDispose?.()
+    if (rpcDisposed) return
+    rpcDisposed = true
+    const registration = await registrationPromise
+    await registration?.dispose()
+  }
+
+  const startCore = (): void => {
+    if (disposed) return
+    coreStartBegan = true
+    void createForgeCore(config, hostInput).then(
+      (created) => coreReady.resolve(created),
+      (cause: unknown) => {
+        console.error('[forge] core failed to start', cause)
+        coreReady.reject(cause)
+        void publishToast({ title: 'Forge failed to start', message: errorMessage(cause), variant: 'error' })
+          .catch(logStartupToastFailure)
+      },
+    )
   }
 
   let unregisterTools: () => void = () => {}
   try {
-    unregisterTools = await registerForgeToolsV2(ctx, core.tools)
-    const cfg = await resolveForgeConfigMaps(core.applyConfig, ctx.options)
+    unregisterTools = await registerForgeToolsV2(ctx, coreTools)
+    const cfg = await resolveForgeConfigMaps(applyConfig, ctx.options)
     await registerForgeAgentsV2(ctx, cfg.agent)
     await registerForgeCommandsV2(ctx, cfg.command)
-    await registerForgeHooksV2(ctx, core)
+    await registerForgeHooksV2(ctx, () => availableCore, { sandboxRequired: isSandboxConfigEnabled(config) })
   } catch (err) {
     unregisterTools()
-    try {
-      await core.cleanup()
-    } catch (cleanupErr) {
-      console.error('[forge] failed to clean up after a failed V2 setup', cleanupErr)
-    }
+    disposed = true
+    coreReady.reject(new Error('Forge setup failed before its core started'))
     try {
       await disposeRpcRegistration()
     } catch (rpcErr) {
@@ -303,20 +364,31 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     if (!consumeSuppressedIdle(sessionId)) return
     const replayed = v2IdleEvents(sessionId)
     for (const normalized of replayed) client.recordStatusEvent(normalized)
+    const activeCore = await availableCore
+    if (!activeCore || controller.signal.aborted) return
     for (const normalized of replayed) {
       try {
-        await core.onEvent({ event: normalized })
+        await activeCore.onEvent({ event: normalized })
       } catch (err) {
         console.error('[forge] V2 event handler failed', err)
       }
     }
   }
 
-  const dispose = async () => {
-    controller.abort()
-    unregisterTools()
-    await core.cleanup()
-    await disposeRpcRegistration()
+  let disposePromise: Promise<void> | null = null
+  const dispose = (): Promise<void> => {
+    disposePromise ??= (async () => {
+      disposed = true
+      controller.abort()
+      unregisterTools()
+      if (coreStartBegan) {
+        await coreReady.promise.then((created) => created.cleanup(), () => {})
+      } else {
+        coreReady.reject(new Error('Forge was disposed before its core started'))
+      }
+      await disposeRpcRegistration()
+    })()
+    return disposePromise
   }
 
   void (async () => {
@@ -351,9 +423,11 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
         const normalizedEvents = normalizeV2Event(event)
         for (const normalized of normalizedEvents) client.recordStatusEvent(normalized)
         if (normalizedEvents.length === 0 || !(await sessionOwnership.owns(event))) continue
+        const activeCore = await availableCore
+        if (!activeCore || controller.signal.aborted) continue
         for (const normalized of normalizedEvents) {
           try {
-            await core.onEvent({ event: normalized })
+            await activeCore.onEvent({ event: normalized })
           } catch (err) {
             console.error('[forge] V2 event handler failed', err)
           }
@@ -365,6 +439,8 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       }
     }
   })()
+
+  setImmediate(startCore)
 
   return dispose
 }

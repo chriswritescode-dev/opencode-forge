@@ -128,6 +128,14 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
   return { core, before, after, prompts, instructionSyncs }
 }
 
+function registerHooks(
+  ctx: Parameters<typeof registerForgeHooksV2>[0],
+  core: ForgeHooksV2Core | null,
+  sandboxRequired = false,
+) {
+  return registerForgeHooksV2(ctx, async () => core, { sandboxRequired })
+}
+
 async function invokeHook(
   hooks: V2HookRegistration[],
   domain: string,
@@ -180,7 +188,7 @@ describe('registerForgeHooksV2 permission hook', () => {
   test('registers the evaluate hook even without a shell shim', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore({ shellShimPath: null, autoApprovesPermissions: async () => true })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     expect(hooks.some((hook) => hook.domain === 'permission' && hook.event === 'evaluate')).toBe(true)
   })
@@ -188,7 +196,7 @@ describe('registerForgeHooksV2 permission hook', () => {
   test('leaves allow and deny untouched and never overrides a deny', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore({ autoApprovesPermissions: async () => true })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const allowed = permissionEvent({ effect: 'allow' })
     await invokeHook(hooks, 'permission', 'evaluate', allowed)
@@ -202,7 +210,7 @@ describe('registerForgeHooksV2 permission hook', () => {
   test('leaves an ask untouched when the core does not auto-approve', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore({ autoApprovesPermissions: async () => false })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const asked = permissionEvent()
     await invokeHook(hooks, 'permission', 'evaluate', asked)
@@ -212,7 +220,7 @@ describe('registerForgeHooksV2 permission hook', () => {
   test('allows an ask when auto-approve is on and no deny rule matches', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore({ autoApprovesPermissions: async () => true })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const asked = permissionEvent()
     await invokeHook(hooks, 'permission', 'evaluate', asked)
@@ -225,7 +233,7 @@ describe('registerForgeHooksV2 permission hook', () => {
       autoApprovesPermissions: async () => true,
       autoApproveDenyRules: [{ action: 'shell', resource: 'git push *' }],
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const asked = permissionEvent()
     await invokeHook(hooks, 'permission', 'evaluate', asked)
@@ -234,11 +242,115 @@ describe('registerForgeHooksV2 permission hook', () => {
   })
 })
 
+describe('registerForgeHooksV2 core readiness', () => {
+  test('waits for the core before running a hook', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core, before } = createStubCore()
+    let resolveCore: (core: ForgeHooksV2Core) => void = () => {}
+    const pending = new Promise<ForgeHooksV2Core>((resolve) => {
+      resolveCore = resolve
+    })
+    await registerForgeHooksV2(ctx, () => pending, { sandboxRequired: false })
+
+    const event = {
+      tool: 'shell',
+      sessionID: 'ses_1',
+      agent: 'code',
+      messageID: 'msg_1',
+      id: 'call_1',
+      input: { command: 'git push origin main' },
+    }
+    const invocation = invokeHook(hooks, 'tool', 'execute.before', event)
+    resolveCore(core)
+    await invocation
+
+    expect(before).toEqual([{ tool: 'bash', args: { command: 'git push origin main' } }])
+  })
+
+  test('passes hooks and the shell tool through when the core never becomes available', async () => {
+    const fake = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
+    fake.builtinTools.shell!.execute = async (input) => ({
+      content: [{ type: 'text', text: `ran ${(input as { command: string }).command}` }],
+    })
+    await registerHooks(fake.ctx, null)
+
+    await invokeHook(fake.hooks, 'tool', 'execute.before', {
+      tool: 'shell',
+      sessionID: 'ses_1',
+      agent: 'code',
+      messageID: 'msg_1',
+      id: 'call_1',
+      input: { command: 'echo hi' },
+    })
+
+    const shellResult = await fake.builtinTools.shell!.execute({ command: 'echo hi' }, { sessionID: 'ses_1' })
+    expect(shellResult).toEqual({ content: [{ type: 'text', text: 'ran echo hi' }] })
+
+    const event = shellEvent({ cwd: PROJECT })
+    await invokeHook(fake.hooks, 'shell', 'create.before', event)
+    expect(event.shell).toBe('/bin/zsh')
+    expect(event.env[SHIM_ENV_CONTAINER]).toBeUndefined()
+  })
+
+  const SANDBOX_UNAVAILABLE = 'Forge failed to start, so its sandbox is unavailable'
+
+  test('refuses an agent shell call when the core never becomes available and sandboxing is enabled', async () => {
+    const fake = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
+    const execute = vi.fn(async () => ({ content: [] }))
+    fake.builtinTools.shell!.execute = execute
+    await registerHooks(fake.ctx, null, true)
+
+    await expect(fake.builtinTools.shell!.execute({ command: 'echo hi' }, { sessionID: 'ses_1' }))
+      .rejects.toThrow(`${SANDBOX_UNAVAILABLE}; refusing to run this shell command on the host`)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  test('refuses glob and grep when the core never becomes available and sandboxing is enabled', async () => {
+    const { ctx, hooks } = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
+    await registerHooks(ctx, null, true)
+
+    for (const tool of ['glob', 'grep']) {
+      const event = {
+        tool,
+        sessionID: 'ses_1',
+        agent: 'code',
+        messageID: 'msg_1',
+        id: 'call_1',
+        input: { pattern: '**/*.ts' },
+      }
+      await expect(invokeHook(hooks, 'tool', 'execute.before', event))
+        .rejects.toThrow(`${SANDBOX_UNAVAILABLE}; refusing to run this ${tool} search on the host`)
+    }
+
+    await expect(invokeHook(hooks, 'tool', 'execute.before', {
+      tool: 'read',
+      sessionID: 'ses_1',
+      agent: 'code',
+      messageID: 'msg_1',
+      id: 'call_2',
+      input: { filePath: '/etc/passwd' },
+    })).resolves.toBeUndefined()
+  })
+
+  test('leaves shell.create.before untouched when the core never becomes available and sandboxing is enabled', async () => {
+    const { ctx, hooks } = createFakeV2Context({ location: { directory: WORKTREE, project: { directory: PROJECT } } })
+    await registerHooks(ctx, null, true)
+
+    const event = shellEvent()
+    await expect(invokeHook(hooks, 'shell', 'create.before', event)).resolves.toBeUndefined()
+
+    expect(event.command).toBe('echo hi')
+    expect(event.shell).toBe('/bin/zsh')
+    expect(event.cwd).toBe(WORKTREE)
+    expect(event.env[SHIM_ENV_CONTAINER]).toBeUndefined()
+  })
+})
+
 describe('registerForgeHooksV2 tool hooks', () => {
   test('execute.before maps shell to bash and leaves the command unchanged', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, before } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = {
       tool: 'shell',
@@ -257,7 +369,7 @@ describe('registerForgeHooksV2 tool hooks', () => {
   test('execute.before keeps the V2 glob argument names the sandbox hook reads', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, before } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = {
       tool: 'grep',
@@ -275,7 +387,7 @@ describe('registerForgeHooksV2 tool hooks', () => {
   test('execute.before leaves the tool input untouched and still hands valid paths to the hooks', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, before } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const input = { filePath: '/etc/passwd', pattern: 42, query: 'needle' }
     const event = {
@@ -300,7 +412,7 @@ describe('registerForgeHooksV2 tool hooks', () => {
         output.output = 'sandbox glob result'
       },
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = {
       tool: 'glob',
@@ -328,7 +440,7 @@ describe('registerForgeHooksV2 tool hooks', () => {
         output.metadata = { ...output.metadata, handled: true }
       },
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = {
       tool: 'question',
@@ -352,7 +464,7 @@ describe('registerForgeHooksV2 tool hooks', () => {
   test('execute.after reports a failed tool with its error message', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, after } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = {
       tool: 'shell',
@@ -402,13 +514,30 @@ describe('registerForgeHooksV2 subagent default model', () => {
     data: { id: 'default-model', modelID: 'default-model', providerID: 'default-provider' },
   })
 
+  test('sets the default model even when the core failed to start', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    await registerForgeHooksV2(ctx, async () => null, { sandboxRequired: false })
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toEqual({
+      agent: 'minion',
+      prompt: 'do work',
+      model: 'default-provider/default-model',
+    })
+  })
+
   test('sets the default model for a new minion launch whose agent has no model', async () => {
     const { ctx, hooks, calls } = createFakeV2Context({
       agent: { get: agentLookup() },
       model: { default: defaultModel },
     })
     const { core, before } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent()
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -429,7 +558,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       model: { default: defaultModel },
     })
     const { core } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent()
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -444,7 +573,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       model: { default: defaultModel },
     })
     const { core } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent({ agent: 'other' })
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -460,7 +589,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       model: { default: defaultModel },
     })
     const { core, before } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent({ model: 'other-provider/other-model' })
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -476,7 +605,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       model: { default: defaultModel },
     })
     const { core } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent({ sessionID: 'ses_child' })
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -491,7 +620,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       model: { default: defaultModel },
     })
     const { core } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent({}, 'grep')
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -511,7 +640,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       model: { default: defaultModel },
     })
     const { core, before } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent()
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -533,7 +662,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       },
     })
     const { core, before } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent()
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -550,7 +679,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       model: { default: async () => ({ location: { directory: WORKTREE }, data: null }) },
     })
     const { core } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = subagentEvent()
     await invokeHook(hooks, 'tool', 'execute.before', event)
@@ -569,7 +698,7 @@ describe('registerForgeHooksV2 shell hook', () => {
       resolveSandboxForDirectory: async (directory) =>
         directory === WORKTREE ? sandboxContext() : null,
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = shellEvent()
     await invokeHook(hooks, 'shell', 'create.before', event)
@@ -585,7 +714,7 @@ describe('registerForgeHooksV2 shell hook', () => {
       location: { directory: PROJECT, project: { directory: PROJECT } },
     })
     const { core } = createStubCore({ shellShimPath: '/data/forge-shell' })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = shellEvent({ cwd: PROJECT })
     await invokeHook(hooks, 'shell', 'create.before', event)
@@ -606,7 +735,7 @@ describe('registerForgeHooksV2 shell hook', () => {
         return directory === WORKTREE ? sandboxContext() : null
       },
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = shellEvent()
     await invokeHook(hooks, 'shell', 'create.before', event)
@@ -626,7 +755,7 @@ describe('registerForgeHooksV2 shell hook', () => {
         throw new Error('sandbox restore failed')
       },
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = shellEvent()
     await expect(invokeHook(hooks, 'shell', 'create.before', event)).rejects.toThrow('sandbox restore failed')
@@ -642,7 +771,7 @@ describe('registerForgeHooksV2 shell hook', () => {
       shellShimPath: null,
       resolveSandboxForDirectory: async () => sandboxContext(),
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = shellEvent()
     await invokeHook(hooks, 'shell', 'create.before', event)
@@ -665,7 +794,7 @@ describe('registerForgeHooksV2 shell tool sandbox routing', () => {
       return { content: [] }
     }
     const { core } = createStubCore({ shellShimPath: '/data/forge-shell', resolveShellSandbox })
-    await registerForgeHooksV2(fake.ctx, core)
+    await registerHooks(fake.ctx, core)
     return { shell: fake.builtinTools.shell!, shellEvents }
   }
 
@@ -703,7 +832,7 @@ describe('registerForgeHooksV2 shell tool sandbox routing', () => {
       shellShimPath: '/data/forge-shell',
       resolveShellSandbox: async (sessionID) => sandboxContext(`forge-${sessionID}`),
     })
-    await registerForgeHooksV2(fake.ctx, core)
+    await registerHooks(fake.ctx, core)
 
     const first = fake.builtinTools.shell!.execute({ command: 'make test' }, { ...toolContext, sessionID: 'a' })
     const second = fake.builtinTools.shell!.execute({ command: 'make test' }, { ...toolContext, sessionID: 'b' })
@@ -722,7 +851,7 @@ describe('registerForgeHooksV2 shell tool sandbox routing', () => {
   test('keeps an unmatched marker on the command so the shell fails instead of running on the host', async () => {
     const { ctx, hooks } = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
     const { core } = createStubCore({ shellShimPath: '/data/forge-shell' })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const command = 'forge-sandbox-required-00000000-0000-0000-0000-000000000000 && echo hi'
     const event = shellEvent({ command, cwd: PROJECT })
@@ -761,7 +890,7 @@ describe('registerForgeHooksV2 session hooks', () => {
   test('prompt forwards the session, message, and text to the core', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, prompts } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     await invokeHook(hooks, 'session', 'prompt', {
       sessionID: 'ses_1',
@@ -778,7 +907,7 @@ describe('registerForgeHooksV2 session hooks', () => {
     const entries = withInstructionEntries(fake.ctx)
     entries.setExisting([{ key: 'forge-sandbox' }])
     const { core, instructionSyncs } = createStubCore()
-    await registerForgeHooksV2(fake.ctx, core)
+    await registerHooks(fake.ctx, core)
 
     await invokeHook(fake.hooks, 'session', 'prompt', {
       sessionID: 'ses_1',
@@ -802,7 +931,7 @@ describe('registerForgeHooksV2 session hooks', () => {
   test('context appends the architect reminder without touching the system parts', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, instructionSyncs } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const messages = [
       { role: 'user', content: [{ type: 'text', text: 'plan this' }] },
@@ -823,7 +952,7 @@ describe('registerForgeHooksV2 session hooks', () => {
   test('context appends no reminder for a non-architect agent', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const messages = [{ role: 'user', content: [{ type: 'text', text: 'implement this' }] }]
     const event = { sessionID: 'ses_1', agent: 'code', system: [], messages }
@@ -837,7 +966,7 @@ describe('registerForgeHooksV2 session hooks', () => {
     const { core } = createStubCore({
       systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = {
       sessionID: 'ses_1',
@@ -862,7 +991,7 @@ describe('registerForgeHooksV2 session hooks', () => {
     const { core } = createStubCore({
       systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = {
       sessionID: 'ses_1',
@@ -893,7 +1022,7 @@ describe('registerForgeHooksV2 session hooks', () => {
     const { core } = createStubCore({
       systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = { sessionID: 'ses_1', agent: 'code', system: [{ type: 'text', text: 'base' }], messages: [] }
     await invokeHook(hooks, 'session', 'context', event)
@@ -911,7 +1040,7 @@ describe('registerForgeHooksV2 session hooks', () => {
     const { core } = createStubCore({
       systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
     })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = { sessionID: 'ses_1', agent: 'auditor', system: [{ type: 'text', text: 'base' }], messages: [] }
     await invokeHook(hooks, 'session', 'context', event)
@@ -925,7 +1054,7 @@ describe('registerForgeHooksV2 session hooks', () => {
   test('compaction appends the context to the system parts', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore()
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = { sessionID: 'ses_1', system: [], messages: [] }
     await invokeHook(hooks, 'session', 'compaction', event)
@@ -937,7 +1066,7 @@ describe('registerForgeHooksV2 session hooks', () => {
     const sessionHooks = createSessionHooks('proj_compaction', logger)
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore({ compacting: sessionHooks.onCompacting })
-    await registerForgeHooksV2(ctx, core)
+    await registerHooks(ctx, core)
 
     const event = { sessionID: 'ses_1', system: [] as Array<{ type: string; text: string }>, messages: [] }
     await invokeHook(hooks, 'session', 'compaction', event)
@@ -1081,7 +1210,7 @@ describe('createForgeCore integration', () => {
   test('bridges the real core compaction prompt into the V2 system parts', async () => {
     const built = await buildCore()
     const { ctx, hooks } = createFakeV2Context()
-    await registerForgeHooksV2(ctx, built)
+    await registerHooks(ctx, built)
 
     const event = {
       sessionID: 'ses_compaction',
@@ -1099,7 +1228,7 @@ describe('createForgeCore integration', () => {
   test('omits the compaction prompt when the core disables customPrompt', async () => {
     const built = await buildCore({ compaction: { customPrompt: false } })
     const { ctx, hooks } = createFakeV2Context()
-    await registerForgeHooksV2(ctx, built)
+    await registerHooks(ctx, built)
 
     const event = { sessionID: 'ses_compaction', system: [] as Array<{ type: string; text: string }>, messages: [] }
     await invokeHook(hooks, 'session', 'compaction', event)

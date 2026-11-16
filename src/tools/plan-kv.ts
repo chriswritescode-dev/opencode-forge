@@ -5,9 +5,6 @@ import { errorMessage } from '../utils/error-message'
 const z = tool.schema
 
 export function createPlanTools(ctx: ToolContext) {
-  const { plansRepo, projectId, logger } = ctx
-  const loop = ctx.loop
-
   return {
     'plan-read': tool({
       description: 'Read the plan for the current session or loop with the same offset and limit options as the Read tool, or list/search recent project plans.',
@@ -21,6 +18,7 @@ export function createPlanTools(ctx: ToolContext) {
         recent: z.boolean().optional().describe('List or search recent project-scoped plans instead of reading a specific plan'),
       },
       execute: async (args, context) => {
+        const { plansRepo, projectId, logger, loop } = ctx
         if (args.recent) {
           if (args.pattern) {
             let regex: RegExp
