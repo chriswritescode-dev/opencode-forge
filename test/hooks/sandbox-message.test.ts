@@ -6,6 +6,8 @@ import {
   type SessionInstructionEntries,
 } from '../../src/hooks/sandbox-message'
 import {
+  buildSandboxContextNote,
+  buildSandboxOffNote,
   SANDBOX_CONTEXT_NOTE,
   SANDBOX_OFF_NOTE,
   SANDBOX_SWITCHED_ON_NOTE,
@@ -24,14 +26,20 @@ interface RecordedPut {
   value: string
 }
 
-function createEntries(options: { existing?: boolean; failPut?: boolean } = {}) {
+function createEntries(options: { existing?: boolean | string; failPut?: boolean } = {}) {
   const puts: RecordedPut[] = []
   const lists: string[] = []
   const state = { existing: options.existing ?? false, failPut: options.failPut ?? false }
   const entries: SessionInstructionEntries = {
     list: async (sessionID) => {
       lists.push(sessionID)
-      return state.existing ? [{ key: SANDBOX_INSTRUCTION_KEY }] : []
+      if (!state.existing) return []
+      return [
+        {
+          key: SANDBOX_INSTRUCTION_KEY,
+          value: typeof state.existing === 'string' ? state.existing : undefined,
+        },
+      ]
     },
     put: async (input) => {
       if (state.failPut) throw new Error('put failed')
@@ -59,6 +67,63 @@ describe('createSandboxMessageHook (session instruction entries)', () => {
 
     await hook('ses_1', entries)
     expect(puts).toHaveLength(1)
+  })
+
+  test('puts the switched note when the stored entry is a host note after a restart', async () => {
+    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => context,
+      probe: {
+        describeHost,
+        describeSandbox: async () => 'Linux 6.1.0 aarch64 | Debian GNU/Linux 12',
+      },
+      logger,
+    })
+    const { entries, puts } = createEntries({ existing: buildSandboxOffNote() })
+
+    await hook('ses_1', entries)
+
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(
+      '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64 | macOS 15.6) -> container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).',
+    )
+    expect(puts[0]!.value).toContain(formatSwitchArtifactsLine('host', 'container'))
+    expect(puts[0]!.value).toContain(SANDBOX_SWITCHED_ON_NOTE)
+    expect(puts[0]!.value).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(describeHost).toHaveBeenCalledTimes(1)
+  })
+
+  test('puts nothing when the stored entry already equals the steady note', async () => {
+    const hook = makeHook(context)
+    const { entries, puts } = createEntries({ existing: buildSandboxContextNote({ switched: false, to: null }) })
+
+    await hook('ses_1', entries)
+
+    expect(puts).toHaveLength(0)
+  })
+
+  test('puts a steady note when the stored container note has different settings', async () => {
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => ({
+        ...context,
+        settings: { cpus: 6, memoryMib: 12288, allowLan: false },
+      }),
+      logger,
+    })
+    const { entries, puts } = createEntries({
+      existing: buildSandboxContextNote(
+        { switched: false, to: null },
+        { settings: { cpus: 2, memoryMib: 2048, allowLan: false } },
+      ),
+    })
+
+    await hook('ses_1', entries)
+
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(puts[0]!.value).toContain('Resources: 6 CPUs, 12 GiB memory')
+    expect(puts[0]!.value).not.toContain('Environment changed')
+    expect(puts[0]!.value).not.toContain(formatSwitchArtifactsLine('host', 'container'))
   })
 
   test('puts the host -> container note when a tracked host session enters a sandbox', async () => {

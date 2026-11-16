@@ -1,6 +1,7 @@
+import { z } from 'zod'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
-import { buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
+import { SANDBOX_OFF_NOTE, buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
 import type { EnvironmentProbe } from '../sandbox/env-probe'
 import type { ResolveSandboxForSessionOpts } from '../services/unified-sandbox-resolver'
 import { LRUCache } from '../utils/lru-cache'
@@ -10,8 +11,12 @@ export const SANDBOX_TRACKED_SESSION_LIMIT = 500
 export const SANDBOX_INSTRUCTION_KEY = 'forge-sandbox'
 
 export interface SessionInstructionEntries {
-  list(sessionID: string): Promise<ReadonlyArray<{ key: string }>>
+  list(sessionID: string): Promise<ReadonlyArray<{ key: string; value: unknown }>>
   put(input: { sessionID: string; key: string; value: string }): Promise<void>
+}
+
+function isHostNote(value: string): boolean {
+  return value.includes(SANDBOX_OFF_NOTE.split('\n')[0]!)
 }
 
 export interface CreateSandboxMessageHookDeps {
@@ -61,7 +66,18 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
             value: buildSandboxContextNote({ switched: true, from, to: env }, { settings: sandbox.settings }),
           })
         } else {
-          await entries.put({ sessionID, key: SANDBOX_INSTRUCTION_KEY, value: stable })
+          const existing = await entries.list(sessionID)
+          const stored = z.string().safeParse(existing.find((entry) => entry.key === SANDBOX_INSTRUCTION_KEY)?.value)
+          if (stored.success && isHostNote(stored.data)) {
+            const hostEnv = probe ? await probe.describeHost() : null
+            await entries.put({
+              sessionID,
+              key: SANDBOX_INSTRUCTION_KEY,
+              value: buildSandboxContextNote({ switched: true, from: hostEnv, to: env }, { settings: sandbox.settings }),
+            })
+          } else if (!stored.success || stored.data !== stable) {
+            await entries.put({ sessionID, key: SANDBOX_INSTRUCTION_KEY, value: stable })
+          }
         }
         trackedSessions.set(sessionID, { sandbox, env, stable })
         return
