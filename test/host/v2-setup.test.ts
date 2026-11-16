@@ -305,6 +305,22 @@ describe('V2 server setup', () => {
       .resolves.toEqual({ content: [{ type: 'text', text: JSON.stringify({ command: 'echo hi' }) }] })
   })
 
+  test('a registration failure after the tool hooks leaves those hooks passing through', async () => {
+    const fake = createFakeV2Context({
+      session: { hook: vi.fn().mockRejectedValue(new Error('session hooks unavailable')) },
+    })
+
+    await expect(pluginModule.setup(fake.ctx)).rejects.toThrow('session hooks unavailable')
+
+    const before = fake.hooks.find((hook) => hook.domain === 'tool' && hook.event === 'execute.before')!
+    const outcome = await Promise.race([
+      before.callback({ tool: 'shell', sessionID: 'ses_1', id: 'call_1', input: { command: 'echo hi' } })
+        .then(() => 'settled'),
+      new Promise((resolve) => setTimeout(() => resolve('timed out'), 500)),
+    ])
+    expect(outcome).toBe('settled')
+  })
+
   test('cleanup before the core starts never creates it', async () => {
     const fake = createFakeV2Context()
     const cleanup = await pluginModule.setup(fake.ctx)
@@ -564,12 +580,16 @@ describe('V2 server setup', () => {
     expect(errorSpy).toHaveBeenCalledWith('[forge] failed to register toast RPC', expect.any(Error))
     errorSpy.mockRestore()
 
-    await expect((await coreClient()).toast({
+    const client = await coreClient()
+    await expect(client.toast({
       directory: '/tmp/forge-project',
       message: 'Dropped',
       variant: 'warning',
     })).resolves.toBeUndefined()
     expect(fake.rpc.emitted).toEqual([])
+
+    await expect(client.session.delete({ sessionID: 'ses_retired', directory: '/tmp/forge-project' }))
+      .rejects.toMatchObject({ kind: 'unavailable', method: 'session.delete' })
   })
 
   test('cleanup disposes the RPC registration once', async () => {

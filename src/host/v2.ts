@@ -250,7 +250,9 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
 
   const requestSessionDelete = async (sessionID: string): Promise<void> => {
     const registration = await registrationPromise
-    if (!registration) return
+    if (!registration) {
+      throw unavailableError('session.delete', 'session.delete is not available on this host')
+    }
     await registration.events.emit('sessionDelete', { sessionID })
   }
 
