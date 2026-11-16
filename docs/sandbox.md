@@ -312,6 +312,8 @@ Forge creates the sandbox root filesystem with `--root-disk 6g` (sparse, so no r
 
 msb formats a fresh named disk as root-owned `0755` while `msb exec` runs as `agent`, so Forge makes the mount root `agent`-owned and world-writable (`chown agent:agent` plus `chmod 0777`, non-recursive) in a single exec before the sandbox is registered. World-writable matches the image's build-time posture for `/opt/forge`, which the runtime mount would otherwise shadow, and keeps the tree usable when a command is run under `sudo`. The step is memoized per sandbox and re-applied on adoption, so a sandbox whose preparation failed — or one created by an older Forge build — is healed on the next start instead of being adopted with an unwritable cache.
 
+Every bind mount also carries a guest-write quota: msb gives a mount a 4 GiB budget by default, which large build output (for example a Rust `target` directory) exhausts long before the host disk is full, and guest `df` reports that budget rather than the host filesystem's free space. Forge therefore passes `quota=100g` on writable workspace mounts (`-v <host>:<guest>:quota=100g`), so a workspace build has room while the host disk still bounds it; read-only mounts keep the plain `:ro` suffix. msb has no way to change a mount on an existing sandbox, so sandboxes created by an earlier Forge build keep their 4 GiB quota — recreate them (`msb rm <sandbox>`) to pick up the larger one.
+
 Caches that do not honor `XDG_CACHE_HOME` are routed into that directory by image environment variables:
 
 | Cache | Variable |

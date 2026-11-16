@@ -16,7 +16,7 @@ import {
   resolveSandboxMountConfigs,
 } from '../../src/sandbox/context'
 import { resolveCustomMounts } from '../../src/sandbox/manager'
-import { SANDBOX_CACHE_DIR } from '../../src/sandbox/msb'
+import { SANDBOX_CACHE_DIR, SANDBOX_WORKSPACE_QUOTA } from '../../src/sandbox/msb'
 import { createMockLogger } from '../helpers/logger'
 import type { SandboxMount } from '../../src/sandbox/path'
 
@@ -50,6 +50,12 @@ describe('SANDBOX_CONTEXT_NOTE', () => {
     expect(SANDBOX_CONTEXT_NOTE).toContain('run forge-cache-prune to reclaim space when the disk fills')
     expect(SANDBOX_CONTEXT_NOTE).toMatch(/preserving installed toolchains/)
     expect(SANDBOX_CONTEXT_NOTE).not.toMatch(/re-downloadable/i)
+  })
+
+  it('explains the workspace guest-write quota so df and ENOSPC are not mistaken for the host disk', () => {
+    expect(SANDBOX_CONTEXT_NOTE).toContain(`guest-write quota of ${SANDBOX_WORKSPACE_QUOTA}`)
+    expect(SANDBOX_CONTEXT_NOTE).toContain('df on it reports that budget rather than the host disk')
+    expect(SANDBOX_CONTEXT_NOTE).toContain('No space left on device')
   })
 })
 

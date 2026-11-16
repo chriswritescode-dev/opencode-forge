@@ -49,6 +49,8 @@ export const SANDBOX_CACHE_DIR = '/opt/forge/cache'
 
 export const SANDBOX_ROOT_DISK = '6g'
 
+export const SANDBOX_WORKSPACE_QUOTA = '100g'
+
 export function parseMsbCpus(raw: string | undefined, logger: Logger): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined
   const value = Number(raw)
@@ -253,7 +255,12 @@ export function buildMsbCreateArgs(
   if (opts.memory) args.push('-m', opts.memory)
   if (opts.idleTimeout) args.push('--idle-timeout', opts.idleTimeout)
   for (const ws of workspaces) {
-    args.push('-v', ws.readOnly ? `${ws.hostDir}:${ws.containerDir}:ro` : `${ws.hostDir}:${ws.containerDir}`)
+    args.push(
+      '-v',
+      ws.readOnly
+        ? `${ws.hostDir}:${ws.containerDir}:ro`
+        : `${ws.hostDir}:${ws.containerDir}:quota=${SANDBOX_WORKSPACE_QUOTA}`,
+    )
   }
   const dockerDisk = opts.dockerDisk || SANDBOX_RESOURCE_DEFAULTS.dockerDisk
   args.push('--mount-named', `${dockerDataVolumeName(name)}:/var/lib/docker:kind=disk,size=${dockerDisk}`)
