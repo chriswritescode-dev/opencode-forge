@@ -15,8 +15,17 @@ export interface SessionInstructionEntries {
   put(input: { sessionID: string; key: string; value: string }): Promise<void>
 }
 
-function isHostNote(value: string): boolean {
-  return value.includes(SANDBOX_OFF_NOTE.split('\n')[0]!)
+const storedNoteSchema = z.string()
+
+async function readStoredNote(entries: SessionInstructionEntries, sessionID: string): Promise<{ text: string | null } | null> {
+  const stored = (await entries.list(sessionID)).find((entry) => entry.key === SANDBOX_INSTRUCTION_KEY)
+  if (!stored) return null
+  const text = storedNoteSchema.safeParse(stored.value)
+  return { text: text.success ? text.data : null }
+}
+
+function isHostNote(text: string | null): boolean {
+  return text !== null && text.includes(SANDBOX_OFF_NOTE.split('\n')[0]!)
 }
 
 export interface CreateSandboxMessageHookDeps {
@@ -66,16 +75,15 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
             value: buildSandboxContextNote({ switched: true, from, to: env }, { settings: sandbox.settings }),
           })
         } else {
-          const existing = await entries.list(sessionID)
-          const stored = z.string().safeParse(existing.find((entry) => entry.key === SANDBOX_INSTRUCTION_KEY)?.value)
-          if (stored.success && isHostNote(stored.data)) {
+          const stored = await readStoredNote(entries, sessionID)
+          if (stored && isHostNote(stored.text)) {
             const hostEnv = probe ? await probe.describeHost() : null
             await entries.put({
               sessionID,
               key: SANDBOX_INSTRUCTION_KEY,
               value: buildSandboxContextNote({ switched: true, from: hostEnv, to: env }, { settings: sandbox.settings }),
             })
-          } else if (!stored.success || stored.data !== stable) {
+          } else if (stored?.text !== stable) {
             await entries.put({ sessionID, key: SANDBOX_INSTRUCTION_KEY, value: stable })
           }
         }
@@ -96,8 +104,8 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
 
       if (tracked) return
 
-      const existing = await entries.list(sessionID)
-      if (!existing.some((entry) => entry.key === SANDBOX_INSTRUCTION_KEY)) {
+      const stored = await readStoredNote(entries, sessionID)
+      if (!stored || isHostNote(stored.text)) {
         trackedSessions.set(sessionID, { hostEnv: undefined })
         return
       }

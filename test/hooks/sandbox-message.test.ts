@@ -281,6 +281,32 @@ describe('createSandboxMessageHook (session instruction entries)', () => {
     expect(puts).toHaveLength(1)
   })
 
+  test('keeps a stored host note for a host session after a restart and still announces a later switch', async () => {
+    let state: SandboxContext | null = null
+    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => state,
+      probe: { describeHost, describeSandbox: async () => 'Linux 6.1.0 aarch64' },
+      logger,
+    })
+    const { entries, puts } = createEntries({
+      existing: buildSandboxOffNote({ from: 'Linux 6.1.0 aarch64', to: 'Darwin 24.6.0 arm64 | macOS 15.6' }),
+    })
+
+    await hook('ses_1', entries)
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(0)
+    expect(describeHost).not.toHaveBeenCalled()
+
+    state = context
+    await hook('ses_1', entries)
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(
+      '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64 | macOS 15.6) -> container (Linux 6.1.0 aarch64).',
+    )
+    expect(puts[0]!.value).toContain(formatSwitchArtifactsLine('host', 'container'))
+  })
+
   test('logs a failed put and retries it on the next call', async () => {
     const errorLogger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
     const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => context, logger: errorLogger })
