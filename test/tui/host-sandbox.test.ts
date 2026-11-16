@@ -22,12 +22,18 @@ describe('createHostSandboxToggle', () => {
     configEnabled?: boolean
     hostSessionsDefault?: boolean
     readError?: string
+    setError?: string
     sessions?: Record<string, boolean>
     parentSessionId?: string
+    createSession?: () => Promise<string | null>
+    openSession?: (sessionId: string) => void
+    canCreateSession?: boolean
+    setGate?: Promise<void>
   }
 
   function setup(options: SetupOptions) {
     const toasts: ForgeToastInput[] = []
+    const calls: string[] = []
     let state: ForgeHostSandboxState = {
       configEnabled: options.configEnabled ?? true,
       hostSessionsDefault: options.hostSessionsDefault ?? true,
@@ -42,7 +48,10 @@ describe('createHostSandboxToggle', () => {
     const readState = vi.fn(async (): Promise<ForgeHostSandboxStateOutput> =>
       options.readError ? { error: options.readError } : state)
     const setState = vi.fn(async (input: ForgeHostSandboxSetInput): Promise<ForgeHostSandboxSetOutput> => {
+      calls.push('setState')
+      if (options.setGate) await options.setGate
       readsAtSetRequest = readState.mock.calls.length
+      if (options.setError) return { error: options.setError }
       const next = `rev-${++revision}`
       const current = state.desired
       const sessions = { ...(current?.sessions ?? {}) }
@@ -60,11 +69,24 @@ describe('createHostSandboxToggle', () => {
       }
       return { revision: next }
     })
+    const createSessionOption = options.createSession
+    const createSession = createSessionOption && vi.fn(async (): Promise<string | null> => {
+      calls.push('createSession')
+      return await createSessionOption()
+    })
+    const openSessionOption = options.openSession
+    const openSession = openSessionOption && vi.fn((sessionId: string): void => {
+      calls.push('openSession')
+      openSessionOption(sessionId)
+    })
     const toggle = createHostSandboxToggle({
       readState,
       setState,
       currentSessionId: () => options.sessionId,
       getParentSessionId: (id) => (id === options.sessionId ? options.parentSessionId : undefined),
+      ...(createSession ? { createSession } : {}),
+      ...(openSession ? { openSession } : {}),
+      ...(options.canCreateSession !== undefined ? { canCreateSession: () => options.canCreateSession === true } : {}),
       toast: (input) => toasts.push(input),
     })
     toggles.push(toggle)
@@ -89,7 +111,7 @@ describe('createHostSandboxToggle', () => {
       await vi.waitFor(() => expect(toggle.preference()).not.toBeNull())
     }
 
-    return { toasts, toggle, readState, setState, acknowledge, awaitInitialState, readsAtSetRequest: () => readsAtSetRequest }
+    return { toasts, calls, toggle, readState, setState, createSession, openSession, acknowledge, awaitInitialState, readsAtSetRequest: () => readsAtSetRequest }
   }
 
   test('asks for a session when none is open', async () => {
@@ -98,6 +120,106 @@ describe('createHostSandboxToggle', () => {
     await toggle.toggle()
 
     expect(toasts).toEqual([{ message: 'Open a session first', variant: 'info', duration: 3000 }])
+  })
+
+  test('sandbox settings ask for a session instead of creating one', async () => {
+    const { toasts, toggle, createSession } = setup({ sessionId: null, createSession: async () => 'ses_new' })
+
+    await toggle.setOverrides({ allowLan: true })
+
+    expect(createSession).not.toHaveBeenCalled()
+    expect(toasts).toEqual([{ message: 'Open a session first', variant: 'info', duration: 3000 }])
+  })
+
+  test('asks for a session instead of creating one away from the new-session page', async () => {
+    const { toasts, toggle, createSession, setState } = setup({
+      sessionId: null,
+      canCreateSession: false,
+      createSession: async () => 'ses_new',
+    })
+
+    await toggle.toggle()
+
+    expect(createSession).not.toHaveBeenCalled()
+    expect(setState).not.toHaveBeenCalled()
+    expect(toasts).toEqual([{ message: 'Open a session first', variant: 'info', duration: 3000 }])
+  })
+
+  test('creates and opens a session for the choice made before the first message', async () => {
+    let releaseSet: () => void = () => {}
+    const setGate = new Promise<void>((resolve) => { releaseSet = resolve })
+    const { toasts, calls, toggle, setState, acknowledge, openSession } = setup({
+      sessionId: null,
+      setGate,
+      createSession: async () => 'ses_new',
+      openSession: () => {},
+    })
+
+    const pending = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+
+    expect(calls).toEqual(['createSession', 'setState'])
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_new', enabled: false })
+    expect(openSession).not.toHaveBeenCalled()
+
+    releaseSet()
+    await vi.waitFor(() => expect(openSession).toHaveBeenCalledWith('ses_new'))
+    expect(calls).toEqual(['createSession', 'setState', 'openSession'])
+
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(toasts.at(-1)).toMatchObject({
+      variant: 'success',
+      message: 'Sandbox off for this session; its agent shell, glob, and grep calls run on the host. Other sessions keep the sandbox for their folder.',
+    })
+  })
+
+  test('does not create a session when the toggle cannot apply', async () => {
+    const createSession = vi.fn(async () => 'ses_new')
+    const disabled = setup({ sessionId: null, configEnabled: false, createSession })
+
+    await disabled.toggle.toggle()
+
+    expect(createSession).not.toHaveBeenCalled()
+    expect(disabled.toasts.at(-1)).toMatchObject({
+      message: 'Host sandbox is disabled by config (sandbox.enabled: false)',
+      variant: 'warning',
+    })
+
+    const unavailable = setup({ sessionId: null, readError: 'rpc.unavailable', createSession })
+
+    await unavailable.toggle.toggle()
+
+    expect(createSession).not.toHaveBeenCalled()
+    expect(unavailable.toasts.at(-1)?.message).toBe('Sandbox toggle unavailable: rpc.unavailable')
+  })
+
+  test('leaves the created session closed when the preference cannot be written', async () => {
+    const { toasts, toggle, setState, openSession } = setup({
+      sessionId: null,
+      setError: 'rpc down',
+      createSession: async () => 'ses_new',
+      openSession: () => {},
+    })
+
+    await toggle.toggle()
+
+    expect(setState).toHaveBeenCalledTimes(1)
+    expect(openSession).not.toHaveBeenCalled()
+    expect(toasts.at(-1)).toEqual({ message: 'Sandbox toggle failed: rpc down', variant: 'error', duration: 6000 })
+  })
+
+  test('reports a session creation failure without writing a preference', async () => {
+    const { toasts, toggle, setState } = setup({ sessionId: null, createSession: async () => null })
+
+    await toggle.toggle()
+
+    expect(setState).not.toHaveBeenCalled()
+    expect(toasts).toEqual([
+      { message: 'Sandbox toggle failed: could not create a session', variant: 'error', duration: 6000 },
+    ])
   })
 
   test('refuses to toggle when the server reports sandboxing disabled by config', async () => {

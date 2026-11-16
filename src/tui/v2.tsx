@@ -370,6 +370,18 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     ensureClient,
   })
 
+  const createSessionForSandbox = async (): Promise<string | null> => {
+    const directory = resolveV2TuiDirectory(context)
+    if (!directory) return null
+    try {
+      const session = await context.client.session.create({ location: { directory } })
+      return session.id
+    } catch (err) {
+      console.error('[forge] failed to create a session for the sandbox toggle', err)
+      return null
+    }
+  }
+
   const hostSandbox = createHostSandboxToggle({
     readState: () => call(async (rpc, location) => await rpc.hostSandboxState({}, location), readForgeHostSandboxState),
     setState: (input) => call(
@@ -378,6 +390,15 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     ),
     currentSessionId,
     getParentSessionId: (sessionId) => readParentSessionId(context, sessionId),
+    createSession: createSessionForSandbox,
+    canCreateSession: () => context.ui.router.current().type === 'home',
+    openSession: (sessionId) => {
+      try {
+        context.ui.router.navigate({ type: 'session', sessionID: sessionId })
+      } catch (err) {
+        console.error('[forge] failed to open the session created for the sandbox toggle', err)
+      }
+    },
     toast: (input) => host.toast(input),
   })
 
@@ -455,7 +476,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           withKeybind({
             id: 'forge.sandbox.toggleHost',
             title: 'Toggle sandbox',
-            description: 'Turn the host-session sandbox on or off for this session\'s agent shell, glob, and grep calls',
+            description: 'Turn the host-session sandbox on or off for this session\'s agent shell, glob, and grep calls, including before the first message',
             group: 'Forge',
             palette: true,
             run: () => { void hostSandbox.toggle() },
