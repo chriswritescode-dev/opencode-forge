@@ -612,6 +612,36 @@ describe('V2 TUI setup', () => {
     }
   })
 
+  test('refetches every state when the TUI location settles without a session change', async () => {
+    const projects: Record<string, string> = { '/work/a': 'proj-a', '/work/b': 'proj-b' }
+    const fake = createFakeV2TuiContext({ location: { directory: '/work/a' } })
+    fake.locationGet.mockImplementation(async (input) => ({
+      project: { id: projects[input?.location?.directory ?? ''] ?? 'unknown' },
+    }))
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    try {
+      await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(1))
+
+      fake.setRoute({ type: 'session', sessionID: 'ses_a' })
+      await vi.waitFor(() => expect(fake.autoApproveState).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(2))
+
+      fake.setLocation({ directory: '/work/b' })
+
+      await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(3))
+      expect(fake.hostSandboxState.mock.calls.at(-1)?.[1]).toEqual({ location: { directory: '/work/b' } })
+
+      await vi.waitFor(() => expect(fake.autoApproveState).toHaveBeenCalledTimes(2))
+      expect(fake.autoApproveState.mock.calls.at(-1)?.[1]).toEqual({ location: { directory: '/work/b' } })
+
+      await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(2))
+      expect(fake.loopSidebar.mock.calls.at(-1)?.[1]).toEqual({ location: { directory: '/work/b' } })
+    } finally {
+      cleanup()
+    }
+  })
+
   test('the sandbox settings command opens the settings dialog without toggling', async () => {
     const fake = createFakeV2TuiContext({ route: { type: 'session', sessionID: 'ses_1' } })
 
