@@ -645,6 +645,26 @@ describe('V2 server setup', () => {
     ])
   })
 
+  test('an event waiting on the core is not delivered once cleanup has started', async () => {
+    gateCoreStart()
+    const stream = createV2EventStream()
+    const fake = createFakeV2Context({
+      location: { directory: '/project-a' },
+      event: { subscribe: stream.subscribe },
+    })
+
+    const cleanup = await pluginModule.setup(fake.ctx)
+    await waitFor(() => coreGate.created === 1)
+    stream.push({ id: 'evt_started', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_started' } })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const disposed = cleanup()
+    coreGate.release?.()
+    await disposed
+
+    expect(receivedFor('/project-a')).toEqual([])
+  })
+
   test('an inbox event updates the process-wide queue before ownership filtering, and settling clears it', async () => {
     const stream = createV2EventStream()
     const fake = createFakeV2Context({

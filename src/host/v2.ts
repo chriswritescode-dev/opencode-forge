@@ -365,7 +365,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     const replayed = v2IdleEvents(sessionId)
     for (const normalized of replayed) client.recordStatusEvent(normalized)
     const activeCore = await availableCore
-    if (!activeCore) return
+    if (!activeCore || controller.signal.aborted) return
     for (const normalized of replayed) {
       try {
         await activeCore.onEvent({ event: normalized })
@@ -424,7 +424,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
         for (const normalized of normalizedEvents) client.recordStatusEvent(normalized)
         if (normalizedEvents.length === 0 || !(await sessionOwnership.owns(event))) continue
         const activeCore = await availableCore
-        if (!activeCore) continue
+        if (!activeCore || controller.signal.aborted) continue
         for (const normalized of normalizedEvents) {
           try {
             await activeCore.onEvent({ event: normalized })
