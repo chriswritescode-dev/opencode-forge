@@ -336,6 +336,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
   } catch (err) {
     unregisterTools()
     disposed = true
+    coreReady.reject(new Error('Forge setup failed before its core started'))
     try {
       await disposeRpcRegistration()
     } catch (rpcErr) {
