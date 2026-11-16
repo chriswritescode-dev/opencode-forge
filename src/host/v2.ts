@@ -7,6 +7,7 @@ import { createV2ForgeWorkspaces, type V2ForgeWorkspacesDeps } from '../client/v
 import { unavailableError } from '../client/errors'
 import type { ForgeClient } from '../client/port'
 import { canonicalizePath } from '../sandbox/path'
+import { isSandboxConfigEnabled } from '../sandbox/context'
 import { errorMessage } from '../utils/error-message'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
@@ -332,7 +333,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     const cfg = await resolveForgeConfigMaps(applyConfig, ctx.options)
     await registerForgeAgentsV2(ctx, cfg.agent)
     await registerForgeCommandsV2(ctx, cfg.command)
-    await registerForgeHooksV2(ctx, () => availableCore)
+    await registerForgeHooksV2(ctx, () => availableCore, { sandboxRequired: isSandboxConfigEnabled(config) })
   } catch (err) {
     unregisterTools()
     disposed = true

@@ -36,6 +36,18 @@ export type ForgeHooksV2Core = Pick<
 
 export type ForgeHooksV2CoreGetter = () => Promise<ForgeHooksV2Core | null>
 
+export interface ForgeHooksV2Options {
+  sandboxRequired: boolean
+}
+
+function sandboxUnavailableError(what: string): Error {
+  return new Error(
+    `Forge failed to start, so its sandbox is unavailable; refusing to run this ${what} on the host. Fix the startup error shown in the Forge toast or server log, or set sandbox.enabled to false.`,
+  )
+}
+
+const SANDBOX_SEARCH_TOOLS = new Set(['glob', 'grep'])
+
 const SHELL_TOOL = V1_TO_V2_TOOL_NAMES.bash
 const SHELL_MARKER_PREFIX = 'forge-sandbox-required-'
 const SHELL_MARKER_PATTERN = /^(forge-sandbox-required-[0-9a-f-]{36}) && /
@@ -52,13 +64,21 @@ const toolArgsSchema = z.looseObject({
   patchText: z.string().optional().catch(undefined),
 })
 
-async function wrapShellToolForSandbox(ctx: Plugin.Context, getCore: ForgeHooksV2CoreGetter): Promise<void> {
+async function wrapShellToolForSandbox(
+  ctx: Plugin.Context,
+  getCore: ForgeHooksV2CoreGetter,
+  options: ForgeHooksV2Options,
+): Promise<void> {
   await ctx.tool.transform((editor) => {
     editor.update(SHELL_TOOL, (tool) => {
       const execute = tool.execute
       tool.execute = async (input, context) => {
         const core = await getCore()
-        if (!core || !core.shellShimPath) return execute(input, context)
+        if (!core) {
+          if (options.sandboxRequired) throw sandboxUnavailableError('shell command')
+          return execute(input, context)
+        }
+        if (!core.shellShimPath) return execute(input, context)
         const sandbox = await core.resolveShellSandbox(context.sessionID)
         if (!sandbox) return execute(input, context)
         const parsed = shellInputSchema.safeParse(input)
@@ -155,6 +175,7 @@ async function shouldInsertSystemAddendum(ctx: Pick<Plugin.Context, 'agent'>, ag
 export async function registerForgeHooksV2(
   ctx: Plugin.Context,
   getCore: ForgeHooksV2CoreGetter,
+  options: ForgeHooksV2Options,
 ): Promise<void> {
   const locationDirectory = ctx.location.directory
   const isProjectLocation = canonicalizePath(locationDirectory) === canonicalizePath(ctx.location.project.canonical)
@@ -169,7 +190,13 @@ export async function registerForgeHooksV2(
   await ctx.tool.hook('execute.before', async (event) => {
     await applySubagentDefaultModel(ctx, event)
     const core = await getCore()
-    if (!core) return
+    if (!core) {
+      if (options.sandboxRequired) {
+        const tool = toV1ToolName(event.tool)
+        if (SANDBOX_SEARCH_TOOLS.has(tool)) throw sandboxUnavailableError(`${tool} search`)
+      }
+      return
+    }
     const input = { tool: toV1ToolName(event.tool), sessionID: event.sessionID, callID: event.id }
     const output = { args: toolArgsSchema.safeParse(event.input).data ?? {} }
     await core.toolBefore(input, output)
@@ -201,7 +228,7 @@ export async function registerForgeHooksV2(
     }
   })
 
-  await wrapShellToolForSandbox(ctx, getCore)
+  await wrapShellToolForSandbox(ctx, getCore, options)
 
   await ctx.permission.hook('evaluate', async (event) => {
     const core = await getCore()

@@ -74,6 +74,8 @@ The marker makes the routing fail closed: if it is not stripped, the command fai
 
 Commands the user runs directly — `!` commands and terminals — do not pass through the tool wrapper and stay on the host.
 
+If the Forge core fails to start while sandboxing is enabled, the shell tool wrapper refuses agent shell calls and the `glob`/`grep` tool hooks refuse those searches instead of letting them run on the host, while commands the user runs directly still run there (setting `sandbox.enabled` to `false` restores host execution for agent tools as well).
+
 ## Permission Auto-Approval
 
 When a session runs in the host-session sandbox (its preference is on — the default with `sandbox.hostSessions`; `Toggle sandbox` in the TUI writes a desired state through the Forge server RPC and waits for the server's applied acknowledgement), Forge resolves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask is resolved to allow or deny rather than shown. It is denied when it matches an `autoApprove.deny` rule; otherwise it is allowed, including requests that match an explicit OpenCode `ask` rule. OpenCode `deny` rules still deny. This applies only while the session's shell calls actually route into a running sandbox. A request that arrives during initial sandbox startup waits for that resolution: if the sandbox becomes active it is auto-approved under the same policy; otherwise the prompt is shown as usual. When the sandbox is off or failed to start, prompts are shown as usual unless a per-session auto-approve is separately enabled. The attached server's `sandbox.enabled` decides whether the toggle is available at all.

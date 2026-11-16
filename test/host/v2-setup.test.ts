@@ -302,7 +302,7 @@ describe('V2 server setup', () => {
     })).resolves.toBeUndefined()
 
     await expect(fake.builtinTools.shell!.execute({ command: 'echo hi' }, { sessionID: 'ses_1' }))
-      .resolves.toEqual({ content: [{ type: 'text', text: JSON.stringify({ command: 'echo hi' }) }] })
+      .rejects.toThrow(/Forge failed to start/)
   })
 
   test('a registration failure after the tool hooks leaves those hooks passing through', async () => {

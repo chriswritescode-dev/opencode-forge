@@ -128,8 +128,12 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
   return { core, before, after, prompts, instructionSyncs }
 }
 
-function registerHooks(ctx: Parameters<typeof registerForgeHooksV2>[0], core: ForgeHooksV2Core | null) {
-  return registerForgeHooksV2(ctx, async () => core)
+function registerHooks(
+  ctx: Parameters<typeof registerForgeHooksV2>[0],
+  core: ForgeHooksV2Core | null,
+  sandboxRequired = false,
+) {
+  return registerForgeHooksV2(ctx, async () => core, { sandboxRequired })
 }
 
 async function invokeHook(
@@ -246,7 +250,7 @@ describe('registerForgeHooksV2 core readiness', () => {
     const pending = new Promise<ForgeHooksV2Core>((resolve) => {
       resolveCore = resolve
     })
-    await registerForgeHooksV2(ctx, () => pending)
+    await registerForgeHooksV2(ctx, () => pending, { sandboxRequired: false })
 
     const event = {
       tool: 'shell',
@@ -285,6 +289,59 @@ describe('registerForgeHooksV2 core readiness', () => {
     const event = shellEvent({ cwd: PROJECT })
     await invokeHook(fake.hooks, 'shell', 'create.before', event)
     expect(event.shell).toBe('/bin/zsh')
+    expect(event.env[SHIM_ENV_CONTAINER]).toBeUndefined()
+  })
+
+  const SANDBOX_UNAVAILABLE = 'Forge failed to start, so its sandbox is unavailable'
+
+  test('refuses an agent shell call when the core never becomes available and sandboxing is enabled', async () => {
+    const fake = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
+    const execute = vi.fn(async () => ({ content: [] }))
+    fake.builtinTools.shell!.execute = execute
+    await registerHooks(fake.ctx, null, true)
+
+    await expect(fake.builtinTools.shell!.execute({ command: 'echo hi' }, { sessionID: 'ses_1' }))
+      .rejects.toThrow(`${SANDBOX_UNAVAILABLE}; refusing to run this shell command on the host`)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  test('refuses glob and grep when the core never becomes available and sandboxing is enabled', async () => {
+    const { ctx, hooks } = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
+    await registerHooks(ctx, null, true)
+
+    for (const tool of ['glob', 'grep']) {
+      const event = {
+        tool,
+        sessionID: 'ses_1',
+        agent: 'code',
+        messageID: 'msg_1',
+        id: 'call_1',
+        input: { pattern: '**/*.ts' },
+      }
+      await expect(invokeHook(hooks, 'tool', 'execute.before', event))
+        .rejects.toThrow(`${SANDBOX_UNAVAILABLE}; refusing to run this ${tool} search on the host`)
+    }
+
+    await expect(invokeHook(hooks, 'tool', 'execute.before', {
+      tool: 'read',
+      sessionID: 'ses_1',
+      agent: 'code',
+      messageID: 'msg_1',
+      id: 'call_2',
+      input: { filePath: '/etc/passwd' },
+    })).resolves.toBeUndefined()
+  })
+
+  test('leaves shell.create.before untouched when the core never becomes available and sandboxing is enabled', async () => {
+    const { ctx, hooks } = createFakeV2Context({ location: { directory: WORKTREE, project: { directory: PROJECT } } })
+    await registerHooks(ctx, null, true)
+
+    const event = shellEvent()
+    await expect(invokeHook(hooks, 'shell', 'create.before', event)).resolves.toBeUndefined()
+
+    expect(event.command).toBe('echo hi')
+    expect(event.shell).toBe('/bin/zsh')
+    expect(event.cwd).toBe(WORKTREE)
     expect(event.env[SHIM_ENV_CONTAINER]).toBeUndefined()
   })
 })
@@ -462,7 +519,7 @@ describe('registerForgeHooksV2 subagent default model', () => {
       agent: { get: agentLookup() },
       model: { default: defaultModel },
     })
-    await registerForgeHooksV2(ctx, async () => null)
+    await registerForgeHooksV2(ctx, async () => null, { sandboxRequired: false })
 
     const event = subagentEvent()
     await invokeHook(hooks, 'tool', 'execute.before', event)
