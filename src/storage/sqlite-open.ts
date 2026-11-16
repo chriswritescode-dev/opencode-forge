@@ -3,7 +3,7 @@ import { mkdirSync, unlinkSync } from 'fs'
 import { dirname } from 'path'
 import { z } from 'zod'
 
-const integrityCheckRowSchema = z.object({ integrity_check: z.string() })
+const quickCheckRowSchema = z.object({ quick_check: z.string() })
 const statementChangesResultSchema = z.object({ changes: z.number() })
 
 export function statementChanges(result: void): number {
@@ -89,10 +89,10 @@ export function openSqliteWithIntegrityGuard(
     db = new Database(dbPath)
     applyPragmas(db, options.pragmas)
 
-    const integrityResult = integrityCheckRowSchema.parse(db.prepare('PRAGMA integrity_check').get())
-    if (integrityResult.integrity_check !== 'ok') {
+    const quickCheckResult = quickCheckRowSchema.parse(db.prepare('PRAGMA quick_check').get())
+    if (quickCheckResult.quick_check !== 'ok') {
       db.close()
-      console.error(`${options.label} corruption detected at ${dbPath}: ${integrityResult.integrity_check}`)
+      console.error(`${options.label} corruption detected at ${dbPath}: ${quickCheckResult.quick_check}`)
       deleteDatabaseFiles(dbPath)
       needsBootstrap = true
       db = null

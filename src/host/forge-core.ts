@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { ForgeClient, ForgeEvent, SessionGetParams } from '../client/port'
 import { ForgeClientError } from '../client/port'
-import { buildAgents } from '../agents'
+import { buildAgents, type AgentDefinitionsByRole } from '../agents'
 import { createConfigHandler } from '../config'
 import type { ChatMessageOutput } from '../hooks/session'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
@@ -375,6 +375,17 @@ async function releaseSessionSandboxController(
   }
 }
 
+export interface ForgeAgentConfig {
+  agents: AgentDefinitionsByRole
+  applyConfig: ReturnType<typeof createConfigHandler>
+}
+
+export function createForgeAgentConfig(config: PluginConfig): ForgeAgentConfig {
+  const promptsDir = resolvePromptsDir()
+  const agents = buildAgents(promptsDir, { model: config.executionModel, variant: config.executionVariant })
+  return { agents, applyConfig: createConfigHandler(agents, config.agents, promptsDir) }
+}
+
 export async function createForgeCore(config: PluginConfig, host: ForgeHostInput): Promise<ForgeCore> {
   const { directory, projectId, projectRoot, client: forgeClient } = host
 
@@ -620,8 +631,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory, defaultGitService, loopAttemptsRepo)
 
-  const promptsDir = resolvePromptsDir()
-  const agents = buildAgents(promptsDir, { model: config.executionModel, variant: config.executionVariant })
+  const { agents, applyConfig } = createForgeAgentConfig(config)
 
   const compactionConfig: CompactionConfig | undefined = config.compaction
   const messagesTransformConfig = config.messagesTransform
@@ -1047,7 +1057,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   return {
     tools,
-    applyConfig: createConfigHandler(agents, config.agents, promptsDir),
+    applyConfig,
     chatMessage: async (input, output) => {
       touchAutoApproveFlag(input.sessionID)
       await forgeSessionMessageAttachHook(input)

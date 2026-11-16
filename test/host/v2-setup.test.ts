@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -17,6 +17,13 @@ const coreEvents = vi.hoisted(() => ({
   clients: [] as unknown[],
 }))
 
+const coreGate = vi.hoisted(() => ({
+  gate: null as Promise<void> | null,
+  release: null as (() => void) | null,
+  failure: null as Error | null,
+  created: 0,
+}))
+
 vi.mock('../../src/host/forge-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/host/forge-core')>()
   return {
@@ -25,6 +32,9 @@ vi.mock('../../src/host/forge-core', async (importOriginal) => {
       config: Parameters<typeof actual.createForgeCore>[0],
       host: Parameters<typeof actual.createForgeCore>[1],
     ) => {
+      coreGate.created += 1
+      if (coreGate.gate) await coreGate.gate
+      if (coreGate.failure) throw coreGate.failure
       const core = await actual.createForgeCore(config, host)
       coreEvents.clients.push(host.client)
       const onEvent = core.onEvent.bind(core)
@@ -36,6 +46,15 @@ vi.mock('../../src/host/forge-core', async (importOriginal) => {
     },
   }
 })
+
+function gateCoreStart(): void {
+  coreGate.gate = new Promise<void>((resolve) => {
+    coreGate.release = () => {
+      coreGate.gate = null
+      resolve()
+    }
+  })
+}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -54,6 +73,11 @@ function receivedFor(directory: string) {
 
 function lastClient(): ForgeClient {
   return coreEvents.clients[coreEvents.clients.length - 1] as ForgeClient
+}
+
+async function coreClient(): Promise<ForgeClient> {
+  await waitFor(() => coreEvents.clients.length > 0)
+  return lastClient()
 }
 
 interface V2EventStreamSubscriber {
@@ -117,6 +141,10 @@ describe('V2 server setup', () => {
   beforeEach(() => {
     coreEvents.received.length = 0
     coreEvents.clients.length = 0
+    coreGate.gate = null
+    coreGate.release = null
+    coreGate.failure = null
+    coreGate.created = 0
     __resetIdleGate()
     const dataHome = mkdtempSync(join(tmpdir(), 'forge-v2-setup-data-'))
     dataHomes.push(dataHome)
@@ -124,6 +152,8 @@ describe('V2 server setup', () => {
   })
 
   afterEach(async () => {
+    coreGate.release?.()
+    coreGate.release = null
     for (const cleanup of cleanups.splice(0)) {
       await cleanup().catch(() => {})
     }
@@ -162,6 +192,129 @@ describe('V2 server setup', () => {
     )
   })
 
+  test('completes every registration while the core is still starting', async () => {
+    gateCoreStart()
+    const fake = createFakeV2Context()
+
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    expect(coreEvents.clients).toEqual([])
+    expect(fake.tools.map((tool) => tool.name)).toContain('plan-read')
+    expect(fake.agents.map((agent) => agent.id)).toContain('auditor')
+    expect(fake.commands.map((command) => command.name)).toContain('review')
+    expect(fake.hooks.map((hook) => `${hook.domain}.${hook.event}`)).toEqual(
+      expect.arrayContaining([
+        'tool.execute.before',
+        'tool.execute.after',
+        'shell.create.before',
+        'session.prompt',
+        'session.context',
+        'session.compaction',
+      ]),
+    )
+  })
+
+  test('a Forge tool executed before the core is ready waits and then succeeds', async () => {
+    gateCoreStart()
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    const planRead = fake.tools.find((tool) => tool.name === 'plan-read')!
+    let settled = false
+    const execution = planRead.execute({}, {
+      sessionID: 'ses_host',
+      messageID: 'msg_1',
+      agent: 'code',
+      signal: new AbortController().signal,
+    }).then((result) => {
+      settled = true
+      return result
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+
+    coreGate.release?.()
+    const result = (await execution) as { content: string }
+    expect(result.content).toBeDefined()
+  })
+
+  test('an RPC handler called before the core is ready resolves with real data once it is', async () => {
+    gateCoreStart()
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      loops: () => Promise<Record<string, unknown>>
+    }
+
+    const pending = handlers.loops()
+    let settled = false
+    void pending.then(() => {
+      settled = true
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+
+    coreGate.release?.()
+    await expect(pending).resolves.toEqual({ loops: [] })
+  })
+
+  test('a failed core start keeps setup working and reports the failure', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    onTestFinished(() => errorSpy.mockRestore())
+    coreGate.failure = new Error('db is corrupt')
+    const fake = createFakeV2Context()
+
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    await waitFor(() => fake.rpc.emitted.some((entry) => entry.event === 'toast'))
+    expect(fake.rpc.emitted).toContainEqual({
+      event: 'toast',
+      data: {
+        projectId: 'proj_fake',
+        title: 'Forge failed to start',
+        message: 'db is corrupt',
+        variant: 'error',
+      },
+    })
+    expect(errorSpy).toHaveBeenCalledWith('[forge] core failed to start', expect.any(Error))
+
+    const planRead = fake.tools.find((tool) => tool.name === 'plan-read')!
+    await expect(planRead.execute({}, {
+      sessionID: 'ses_host',
+      messageID: 'msg_1',
+      agent: 'code',
+      signal: new AbortController().signal,
+    })).rejects.toThrow(/Forge failed to start/)
+
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      loops: () => Promise<Record<string, unknown>>
+    }
+    await expect(handlers.loops()).resolves.toEqual({ error: expect.stringContaining('Forge failed to start') })
+
+    const before = fake.hooks.find((hook) => hook.domain === 'tool' && hook.event === 'execute.before')!
+    await expect(before.callback({
+      tool: 'shell',
+      sessionID: 'ses_1',
+      id: 'call_1',
+      input: { command: 'echo hi' },
+    })).resolves.toBeUndefined()
+
+    await expect(fake.builtinTools.shell!.execute({ command: 'echo hi' }, { sessionID: 'ses_1' }))
+      .resolves.toEqual({ content: [{ type: 'text', text: JSON.stringify({ command: 'echo hi' }) }] })
+  })
+
+  test('cleanup before the core starts never creates it', async () => {
+    const fake = createFakeV2Context()
+    const cleanup = await pluginModule.setup(fake.ctx)
+
+    await cleanup()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(coreGate.created).toBe(0)
+  })
+
   test('registers FORGE_RPC once and bridges client toasts to the registration emitter', async () => {
     const fake = createFakeV2Context()
 
@@ -171,7 +324,7 @@ describe('V2 server setup', () => {
     expect(registerCalls).toHaveLength(1)
     expect(registerCalls[0]?.args[0]).toBe(FORGE_RPC)
 
-    await lastClient().toast({
+    await (await coreClient()).toast({
       directory: '/tmp/forge-project',
       title: 'Loop done',
       message: 'All sections passed',
@@ -237,7 +390,7 @@ describe('V2 server setup', () => {
 
     cleanups.push(await pluginModule.setup(fake.ctx))
 
-    await lastClient().session.delete({ sessionID: 'ses_retired', directory: '/tmp/forge-project' })
+    await (await coreClient()).session.delete({ sessionID: 'ses_retired', directory: '/tmp/forge-project' })
 
     expect(fake.rpc.emitted).toContainEqual({ event: 'sessionDelete', data: { sessionID: 'ses_retired' } })
   })
@@ -411,7 +564,7 @@ describe('V2 server setup', () => {
     expect(errorSpy).toHaveBeenCalledWith('[forge] failed to register toast RPC', expect.any(Error))
     errorSpy.mockRestore()
 
-    await expect(lastClient().toast({
+    await expect((await coreClient()).toast({
       directory: '/tmp/forge-project',
       message: 'Dropped',
       variant: 'warning',
@@ -616,7 +769,7 @@ describe('V2 server setup', () => {
     cleanups.push(cleanupA)
     const cleanupB = await pluginModule.setup(b.ctx)
     cleanups.push(cleanupB)
-    expect(process.listenerCount('SIGINT')).toBe(baselineSigint + 2)
+    await waitFor(() => process.listenerCount('SIGINT') === baselineSigint + 2)
 
     stream.push({ id: 'evt_shutdown_b', type: V2_EVENT_TYPES.locationShutdown, location: { directory: '/project-b' }, data: {} })
     await waitFor(() => process.listenerCount('SIGINT') === baselineSigint + 1)
@@ -701,7 +854,7 @@ describe('V2 server setup', () => {
     await waitFor(() => receivedFor('/project-host').some((event) => event.properties.sessionID === 'ses_local'))
 
     expect(receivedFor('/project-host').map((event) => event.properties.sessionID)).toEqual(['ses_unknown', 'ses_local'])
-    const statuses = await lastClient().session.status({ directory: '/project-worktree' })
+    const statuses = await (await coreClient()).session.status({ directory: '/project-worktree' })
     expect(statuses?.ses_foreign).toEqual({ type: 'idle' })
     expect(statuses?.ses_foreign_busy).toEqual({ type: 'busy' })
     expect(fake.calls.filter((call) => call.method === 'session.get' && (call.args[0] as { sessionID: string }).sessionID === 'ses_foreign')).toHaveLength(1)
