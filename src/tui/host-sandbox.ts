@@ -21,6 +21,9 @@ export interface HostSandboxToggleDeps {
   setState(input: ForgeHostSandboxSetInput): Promise<ForgeHostSandboxSetOutput>
   currentSessionId(): string | null
   getParentSessionId?(sessionId: string): string | null | undefined
+  createSession?(): Promise<string | null>
+  canCreateSession?(): boolean
+  openSession?(sessionId: string): void
   toast(input: ForgeToastInput): void
 }
 
@@ -157,11 +160,14 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     success(applied: SessionSandboxAppliedState): string
     guidance(): string
     tolerateAppliedError?(): boolean
+    createSession?: boolean
+    afterSet?(sessionId: string): void
   }
 
   const request = async (spec: HostSandboxRequest): Promise<void> => {
-    const sessionId = deps.currentSessionId()
-    if (!sessionId) {
+    const openSessionId = deps.currentSessionId()
+    const createSession = spec.createSession === true && deps.canCreateSession?.() !== false ? deps.createSession : undefined
+    if (!openSessionId && !createSession) {
       deps.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
       return
     }
@@ -182,6 +188,18 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
       current = preferenceFrom(state)
     }
     if (!current) return
+    let createdSession = false
+    let sessionId = openSessionId
+    if (!sessionId) {
+      const newSessionId = createSession ? await createSession() : null
+      if (lifecycle.signal.aborted) return
+      if (!newSessionId) {
+        deps.toast({ message: `${spec.label} failed: could not create a session`, variant: 'error', duration: 6000 })
+        return
+      }
+      sessionId = newSessionId
+      createdSession = true
+    }
     const change = spec.build(current, sessionId)
     if (!change) return
     let revision: string | null = null
@@ -195,6 +213,7 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
         deps.toast({ message: `${spec.label} failed: ${result.error}`, variant: 'error', duration: 6000 })
         return
       }
+      if (createdSession) spec.afterSet?.(sessionId)
       revision = result.revision
       const created = createSandboxWaiter(revision, {
         timeoutMs: spec.timeoutMs,
@@ -223,6 +242,8 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     await request({
       label: 'Sandbox toggle',
       timeoutMs: TOGGLE_ACK_TIMEOUT_MS,
+      createSession: true,
+      afterSet: (sessionId) => deps.openSession?.(sessionId),
       build: (current, sessionId) => {
         enabling = !isSessionSandboxWanted(current, sessionId, deps.getParentSessionId)
         return { enabled: enabling }

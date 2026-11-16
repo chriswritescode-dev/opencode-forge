@@ -114,6 +114,10 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
 
   const sessionRemove = vi.fn(async (_input: { sessionID: string }) => {})
   const sessionList = vi.fn(async () => ({ data: [], cursor: {} }))
+  const sessionCreate = vi.fn(async (input?: { location?: { directory: string } }) => ({
+    id: 'ses_created',
+    location: { directory: input?.location?.directory ?? '/test/project' },
+  }))
 
   const worktrees = fakeOptions.worktrees ?? { root: forgeWorktreesRoot(resolveForgeDataDir()), dirs: [] }
   const worktreesMock = vi.fn(async () => worktrees)
@@ -213,7 +217,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
         get: (sessionID: string) => fakeOptions.sessions?.find((session) => session.id === sessionID),
       },
     },
-    client: { location: { get: locationGet }, rpc, session: { list: sessionList, remove: sessionRemove } },
+    client: { location: { get: locationGet }, rpc, session: { list: sessionList, remove: sessionRemove, create: sessionCreate } },
     theme: { text: { base: '#ffffff', muted: '#888888' } },
     keymap: {
       layer: vi.fn((input: () => RecordedLayer) => {
@@ -266,6 +270,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     locationGet,
     sessionRemove,
     sessionList,
+    sessionCreate,
     rpc,
     rpcDefinitions,
     rpcSubscriptions,
@@ -607,6 +612,24 @@ describe('V2 TUI setup', () => {
         variant: 'success',
         message: expect.stringContaining('Sandbox on for this session'),
       })))
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('creates and opens a session when toggling on the new-session page', async () => {
+    const fake = createFakeV2TuiContext({ location: { directory: '/work/a' }, route: { type: 'home' } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    try {
+      await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(1))
+
+      findCommand(fake, 'forge.sandbox.toggleHost').run?.()
+
+      await vi.waitFor(() => expect(fake.hostSandboxSet).toHaveBeenCalledTimes(1))
+      expect(fake.sessionCreate).toHaveBeenCalledWith({ location: { directory: '/work/a' } })
+      expect(fake.hostSandboxSet.mock.calls[0]?.[0]).toEqual({ sessionId: 'ses_created', enabled: false })
+      expect(fake.navigations).toEqual([{ type: 'session', sessionID: 'ses_created' }])
     } finally {
       cleanup()
     }
