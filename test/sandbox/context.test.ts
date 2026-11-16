@@ -56,6 +56,7 @@ describe('SANDBOX_CONTEXT_NOTE', () => {
     expect(SANDBOX_CONTEXT_NOTE).toContain(`guest-write quota of ${SANDBOX_WORKSPACE_QUOTA}`)
     expect(SANDBOX_CONTEXT_NOTE).toContain('df on it reports that budget rather than the host disk')
     expect(SANDBOX_CONTEXT_NOTE).toContain('No space left on device')
+    expect(SANDBOX_CONTEXT_NOTE).toContain('ask the user to recreate the sandbox')
   })
 })
 
