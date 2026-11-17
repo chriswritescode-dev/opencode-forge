@@ -1,6 +1,12 @@
-import { describe, expect, test } from 'vitest'
-import type { ForgeSandboxTemplateBuildStatus } from '../../src/host/forge-rpc'
-import { describeSandboxBuildStatus } from '../../src/tui/sandbox-build-dialog'
+import { describe, expect, test, vi } from 'vitest'
+
+vi.mock('solid-js', async () => await import('solid-js/dist/dev.js'))
+
+import { createComponent, testRender } from '@opentui/solid'
+import type { ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus, ForgeToastInput } from '../../src/host/forge-rpc'
+import type { ForgeTuiHost } from '../../src/tui/host'
+import { CONCURRENT_BUILD_MESSAGE } from '../../src/sandbox/template'
+import { describeSandboxBuildStatus, SandboxBuildDialog } from '../../src/tui/sandbox-build-dialog'
 
 function status(overrides: Partial<ForgeSandboxTemplateBuildStatus> = {}): ForgeSandboxTemplateBuildStatus {
   return {
@@ -75,5 +81,80 @@ describe('describeSandboxBuildStatus', () => {
       statusLine: 'Failed after 0:42: docker: not found',
       detailLine: '',
     })
+  })
+})
+
+function idleStatus(): ForgeSandboxTemplateBuildStatus {
+  return { phase: 'idle', image: 'oc-forge-sandbox:latest', contextDir: '/server/container', tail: [] }
+}
+
+function createHost() {
+  const toasts: ForgeToastInput[] = []
+  const host: ForgeTuiHost = {
+    colors: () => ({
+      text: '#ffffff',
+      textMuted: '#808080',
+      error: '#ff0000',
+      selectedText: '#000000',
+      selectedBackground: '#ffffff',
+    }),
+    toast: vi.fn((input: ForgeToastInput) => { toasts.push(input) }),
+    showDialog: vi.fn(),
+    clearDialog: vi.fn(),
+    select: async () => undefined,
+    prompt: async () => undefined,
+  }
+  return { host, toasts }
+}
+
+describe('SandboxBuildDialog start conflict', () => {
+  test('follows a build another client already started instead of failing', async () => {
+    const { host, toasts } = createHost()
+    const readStatus = vi.fn()
+      .mockResolvedValueOnce(idleStatus())
+      .mockResolvedValue(status({ stage: 'build' }))
+    const start = vi.fn(async (): Promise<ForgeSandboxTemplateBuildOutput> => ({ error: CONCURRENT_BUILD_MESSAGE }))
+    const dialog = await testRender(() => createComponent(SandboxBuildDialog, { host, start, readStatus }))
+    try {
+      await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(dialog.renderer.currentFocusedRenderable).not.toBeNull())
+
+      dialog.mockInput.pressEnter()
+
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(readStatus.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 2000 })
+
+      expect(toasts.filter((toast) => toast.variant === 'error')).toEqual([])
+      expect(toasts.map((toast) => toast.message)).toContain('Building oc-forge-sandbox:latest...')
+    } finally {
+      dialog.renderer.destroy()
+    }
+  })
+
+  test('reports the start error when the follow-up status is not running', async () => {
+    const { host, toasts } = createHost()
+    const readStatus = vi.fn()
+      .mockResolvedValueOnce(idleStatus())
+      .mockResolvedValue(idleStatus())
+    const start = vi.fn(async (): Promise<ForgeSandboxTemplateBuildOutput> => ({ error: CONCURRENT_BUILD_MESSAGE }))
+    const dialog = await testRender(() => createComponent(SandboxBuildDialog, { host, start, readStatus }))
+    try {
+      await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(dialog.renderer.currentFocusedRenderable).not.toBeNull())
+
+      dialog.mockInput.pressEnter()
+
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(toasts.some((toast) => toast.variant === 'error')).toBe(true))
+
+      const errorToast = toasts.find((toast) => toast.variant === 'error')
+      expect(errorToast?.message).toBe(CONCURRENT_BUILD_MESSAGE)
+
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      expect(readStatus).toHaveBeenCalledTimes(2)
+    } finally {
+      dialog.renderer.destroy()
+    }
   })
 })

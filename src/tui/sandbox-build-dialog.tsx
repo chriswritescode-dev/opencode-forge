@@ -170,6 +170,14 @@ export function SandboxBuildDialog(props: {
     starting = false
     if (disposed) return
     if ('error' in output) {
+      const current = await readStatus()
+      if (disposed) return
+      if (!('error' in current) && current.phase === 'running') {
+        setStatus(current)
+        setEngaged(true)
+        schedulePoll()
+        return
+      }
       setStartError(output.error)
       props.host.toast({ message: output.error, variant: 'error', duration: 10_000 })
       return
