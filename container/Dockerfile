@@ -148,9 +148,11 @@ RUN CARGO_HOME=/opt/forge/.cargo RUSTUP_HOME=/opt/forge/.rustup \
 # sandbox manager, which chowns and chmods the mounted cache disk at create time;
 # no build step establishes them.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/forge/.local/share/ms-playwright
+ARG PLAYWRIGHT_LEGACY_FFMPEG_VERSION=1.63.0
 RUN pnpm add -g playwright-core@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
     && playwright_root="$(readlink -f "$(find "$(pnpm root -g)" -maxdepth 4 -path '*/node_modules/playwright-core' -print -quit)")" \
     && node "$playwright_root/cli.js" install --with-deps chromium \
+    && pnpm dlx "playwright-core@${PLAYWRIGHT_LEGACY_FFMPEG_VERSION}" install ffmpeg \
     && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$playwright_root/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium \
     && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?* \
     && chmod -R 0777 /opt/forge
