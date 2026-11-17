@@ -122,7 +122,7 @@ export function SandboxBuildDialog(props: {
 
   void (async () => {
     const output = await readStatus()
-    if (disposed) return
+    if (disposed || engaged()) return
     if ('error' in output) {
       setStatusError(output.error)
       return
