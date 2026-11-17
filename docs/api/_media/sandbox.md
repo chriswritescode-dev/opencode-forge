@@ -44,6 +44,8 @@ chromium --no-sandbox --disable-dev-shm-usage --headless
 
 The browser lives at `/opt/forge/.local/share/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`), deliberately off the cache disk so the image-shipped build is not hidden by the cache-disk mount (see [Tool Caches and Disk Space](#tool-caches-and-disk-space)).
 
+Playwright records video (`recordVideo`) with its own ffmpeg build, looked up in that directory by the revision the project's Playwright version pins. The image ships two revisions: the one pinned by the image's `playwright-core@latest`, and revision 1011, used by Playwright 1.55 through 1.63 (installed through `playwright-core@1.63.0`, the `PLAYWRIGHT_LEGACY_FFMPEG_VERSION` build argument). Video recording therefore works without `playwright install ffmpeg` on either range.
+
 ### Recording
 
 The image ships `ffmpeg` (with `ffprobe`) and `ttyd` from Ubuntu's repository and a pinned `vhs` (v0.12.1) from its GitHub release, so a loop can record a terminal session, or convert and join video clips into an mp4, without installing anything. Together they add about 270 MB to the image.

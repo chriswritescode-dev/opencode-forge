@@ -158,6 +158,16 @@ test('the image installs ffmpeg, ttyd, and a pinned vhs that can launch the imag
   expect(argStart).toBeLessThan(dockerfile.lastIndexOf('USER agent'))
 })
 
+test('the image ships the Playwright ffmpeg revision older Playwright versions record video with', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+
+  expect(dockerfile).toContain('ARG PLAYWRIGHT_LEGACY_FFMPEG_VERSION=1.63.0')
+  const chromiumInstall = dockerfile.indexOf('install --with-deps chromium')
+  const legacyFfmpegInstall = dockerfile.indexOf('pnpm dlx "playwright-core@${PLAYWRIGHT_LEGACY_FFMPEG_VERSION}" install ffmpeg')
+  expect(legacyFfmpegInstall).toBeGreaterThan(chromiumInstall)
+  expect(chromiumInstall).toBeGreaterThan(dockerfile.indexOf('ENV PLAYWRIGHT_BROWSERS_PATH='))
+})
+
 test('globally installed CLIs are built against a store the cache-disk mount cannot shadow', () => {
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
   const globalInstalls = dockerfile.split('\n').filter((line) => line.includes('pnpm add -g'))
