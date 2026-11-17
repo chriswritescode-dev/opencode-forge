@@ -10,6 +10,7 @@ export const V2_EVENT_TYPES = {
   sessionRetryScheduled: 'session.retry.scheduled',
   sessionCreated: 'session.created',
   sessionDeleted: 'session.deleted',
+  sessionMoved: 'session.moved',
   locationShutdown: 'location.shutdown',
   sessionTextStarted: 'session.text.started',
   sessionTextDelta: 'session.text.delta',
@@ -39,6 +40,7 @@ export const FORGE_EVENT_TYPES = {
   sessionError: 'session.error',
   sessionCreated: 'session.created',
   sessionDeleted: 'session.deleted',
+  sessionMoved: 'session.moved',
   messagePartUpdated: 'message.part.updated',
 } as const
 
@@ -148,6 +150,11 @@ export function createV2SessionOwnership(deps: V2SessionOwnershipDeps): V2Sessio
         const owned = deps.ownsDirectory(event.data.location.directory)
         ownedBySession.set(sessionID, owned)
         return owned
+      }
+
+      if (event.type === V2_EVENT_TYPES.sessionMoved) {
+        ownedBySession.set(sessionID, deps.ownsDirectory(event.data.location.directory))
+        return true
       }
 
       const cached = ownedBySession.get(sessionID)
@@ -298,6 +305,11 @@ export function normalizeV2Event(event: V2Event): ForgeEvent[] {
       }]
     case V2_EVENT_TYPES.sessionDeleted:
       return [{ type: FORGE_EVENT_TYPES.sessionDeleted, properties: { sessionID: event.data.sessionID } }]
+    case V2_EVENT_TYPES.sessionMoved:
+      return [{
+        type: FORGE_EVENT_TYPES.sessionMoved,
+        properties: { sessionID: event.data.sessionID, projectID: event.data.projectID },
+      }]
     default:
       return []
   }

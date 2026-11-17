@@ -119,6 +119,72 @@ describe('SessionSandboxPreferencesRepo', () => {
     })
   })
 
+  describe('moveDesiredSession', () => {
+    const PROJECT_C = 'project-c'
+
+    test('moves the entry to the target project and keeps each project own overrides', () => {
+      repo.setDesired(PROJECT_A, makeDesired({
+        revision: 'rev-a',
+        sessions: { 'sess-1': false, 'sess-2': true },
+        requestedAt: 1000,
+        overrides: { allowLan: true },
+      }))
+      repo.setDesired(PROJECT_B, makeDesired({
+        revision: 'rev-b',
+        sessions: { 'sess-9': true },
+        requestedAt: 500,
+        overrides: { resources: { cpus: '4' } },
+      }))
+
+      expect(repo.moveDesiredSession('sess-1', PROJECT_B, 'rev-move')).toEqual([PROJECT_A, PROJECT_B])
+
+      expect(repo.getDesired(PROJECT_A)).toEqual({
+        version: 2,
+        revision: 'rev-move',
+        sessions: { 'sess-2': true },
+        requestedAt: expect.any(Number),
+        overrides: { allowLan: true },
+      })
+      expect(repo.getDesired(PROJECT_B)).toEqual({
+        version: 2,
+        revision: 'rev-move',
+        sessions: { 'sess-9': true, 'sess-1': false },
+        requestedAt: expect.any(Number),
+        overrides: { resources: { cpus: '4' } },
+      })
+    })
+
+    test('does nothing when the entry is absent or only in the target project', () => {
+      expect(repo.moveDesiredSession('sess-1', PROJECT_B, 'rev-move')).toEqual([])
+      expect(repo.getDesired(PROJECT_A)).toBeNull()
+      expect(repo.getDesired(PROJECT_B)).toBeNull()
+
+      const target = makeDesired({ revision: 'rev-b', sessions: { 'sess-1': true }, requestedAt: 10 })
+      repo.setDesired(PROJECT_B, target)
+      expect(repo.moveDesiredSession('sess-1', PROJECT_B, 'rev-move')).toEqual([])
+      expect(repo.getDesired(PROJECT_B)).toEqual(target)
+
+      const otherOnly = makeDesired({ revision: 'rev-a', sessions: { 'sess-2': true } })
+      repo.setDesired(PROJECT_A, otherOnly)
+      expect(repo.moveDesiredSession('sess-1', PROJECT_B, 'rev-move')).toEqual([])
+      expect(repo.getDesired(PROJECT_A)).toEqual(otherOnly)
+      expect(repo.getDesired(PROJECT_B)).toEqual(target)
+    })
+
+    test('takes the value from the newest-requested source when several projects hold the session', () => {
+      repo.setDesired(PROJECT_A, makeDesired({ revision: 'rev-a', sessions: { 'sess-1': true }, requestedAt: 1000 }))
+      repo.setDesired(PROJECT_C, makeDesired({ revision: 'rev-c', sessions: { 'sess-1': false }, requestedAt: 2000 }))
+
+      const affected = repo.moveDesiredSession('sess-1', PROJECT_B, 'rev-move')
+
+      expect(affected.at(-1)).toBe(PROJECT_B)
+      expect([...affected].sort()).toEqual([PROJECT_A, PROJECT_B, PROJECT_C])
+      expect(repo.getDesired(PROJECT_B)?.sessions).toEqual({ 'sess-1': false })
+      expect(repo.getDesired(PROJECT_A)?.sessions).toEqual({})
+      expect(repo.getDesired(PROJECT_C)?.sessions).toEqual({})
+    })
+  })
+
   describe('legacy desired rows', () => {
     function writeRaw(projectId: string, key: string, data: string): void {
       db.run(

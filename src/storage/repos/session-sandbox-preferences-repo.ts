@@ -7,6 +7,7 @@ import {
   type SessionSandboxAppliedState,
   type SessionSandboxControllerState,
   type SessionSandboxDesiredState,
+  withoutSandboxSession,
 } from '../session-sandbox-state'
 import { runImmediateTransaction } from '../sqlite-open'
 
@@ -17,6 +18,7 @@ export const SESSION_SANDBOX_APPLIED_KEY = 'session-sandbox.applied'
 export const SESSION_SANDBOX_CONTROLLER_KEY = 'session-sandbox.controller'
 
 const preferenceRowSchema = z.object({ data: z.string() })
+const scopedPreferenceRowSchema = z.object({ project_id: z.string(), data: z.string() })
 
 export interface SessionSandboxPreferencesRepo {
   getDesired(projectId: string): SessionSandboxDesiredState | null
@@ -25,6 +27,7 @@ export interface SessionSandboxPreferencesRepo {
     projectId: string,
     build: (current: SessionSandboxDesiredState | null) => SessionSandboxDesiredState,
   ): SessionSandboxDesiredState
+  moveDesiredSession(sessionId: string, toProjectId: string, revision: string): string[]
   getApplied(projectId: string): SessionSandboxAppliedState | null
   setApplied(projectId: string, state: SessionSandboxAppliedState): void
   getControllerState(projectId: string): SessionSandboxControllerState | null
@@ -53,7 +56,21 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
       updated_at = excluded.updated_at
   `)
 
+  const listDesiredElsewhereStmt = db.prepare(`
+    SELECT project_id, data FROM tui_preferences
+    WHERE key = ? AND project_id != ?
+  `)
+
   const now = () => Date.now()
+
+  function parseState<TSchema extends z.ZodType>(schema: TSchema, data: string): z.output<TSchema> | null {
+    try {
+      const parsed = schema.safeParse(JSON.parse(data))
+      return parsed.success ? parsed.data : null
+    } catch {
+      return null
+    }
+  }
 
   function readState<TSchema extends z.ZodType>(
     projectId: string,
@@ -62,12 +79,7 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
   ): z.output<TSchema> | null {
     const row = preferenceRowSchema.nullish().parse(getStmt.get(projectId, key))
     if (!row) return null
-    try {
-      const parsed = schema.safeParse(JSON.parse(row.data))
-      return parsed.success ? parsed.data : null
-    } catch {
-      return null
-    }
+    return parseState(schema, row.data)
   }
 
   function readDesired(projectId: string): SessionSandboxDesiredState | null {
@@ -95,6 +107,39 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
         const next = build(readDesired(projectId))
         upsertStmt.run(projectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(next), now())
         return next
+      })
+    },
+
+    moveDesiredSession(sessionId, toProjectId, revision) {
+      return runImmediateTransaction(db, () => {
+        const sources = scopedPreferenceRowSchema
+          .array()
+          .parse(listDesiredElsewhereStmt.all(SESSION_SANDBOX_DESIRED_KEY, toProjectId))
+          .flatMap((row) => {
+            const state = parseState(desiredStateSchema, row.data)
+            if (!state || !Object.hasOwn(state.sessions, sessionId)) return []
+            return [{ projectId: row.project_id, state }]
+          })
+        if (sources.length === 0) return []
+
+        const newest = sources.reduce((best, source) => (source.state.requestedAt > best.state.requestedAt ? source : best))
+        for (const source of sources) {
+          const next = withoutSandboxSession(source.state, sessionId, revision)
+          if (!next) continue
+          upsertStmt.run(source.projectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(next), now())
+        }
+
+        const current = readDesired(toProjectId)
+        const target: SessionSandboxDesiredState = {
+          version: 2,
+          revision,
+          sessions: { ...current?.sessions, [sessionId]: newest.state.sessions[sessionId] },
+          requestedAt: Date.now(),
+        }
+        if (current?.overrides) target.overrides = current.overrides
+        upsertStmt.run(toProjectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(target), now())
+
+        return [...sources.map((source) => source.projectId), toProjectId]
       })
     },
 
