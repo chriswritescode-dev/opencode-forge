@@ -172,10 +172,10 @@ export function SandboxBuildDialog(props: {
     if ('error' in output) {
       const current = await readStatus()
       if (disposed) return
-      if (!('error' in current) && current.phase === 'running') {
+      if (!('error' in current) && current.phase !== 'idle') {
         setStatus(current)
         setEngaged(true)
-        schedulePoll()
+        if (current.phase === 'running') schedulePoll()
         return
       }
       setStartError(output.error)

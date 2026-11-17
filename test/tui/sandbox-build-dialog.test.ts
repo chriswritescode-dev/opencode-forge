@@ -131,7 +131,30 @@ describe('SandboxBuildDialog start conflict', () => {
     }
   })
 
-  test('reports the start error when the follow-up status is not running', async () => {
+  test('shows the outcome of a build that finished before the follow-up read without polling', async () => {
+    const { host, toasts } = createHost()
+    const readStatus = vi.fn()
+      .mockResolvedValueOnce(idleStatus())
+      .mockResolvedValue(status({ phase: 'success', elapsedMs: 1000 }))
+    const start = vi.fn(async (): Promise<ForgeSandboxTemplateBuildOutput> => ({ error: CONCURRENT_BUILD_MESSAGE }))
+    const dialog = await testRender(() => createComponent(SandboxBuildDialog, { host, start, readStatus }))
+    try {
+      await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(dialog.renderer.currentFocusedRenderable).not.toBeNull())
+
+      dialog.mockInput.pressEnter()
+
+      await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(2))
+      await new Promise((resolve) => setTimeout(resolve, 700))
+
+      expect(readStatus).toHaveBeenCalledTimes(2)
+      expect(toasts.filter((toast) => toast.variant === 'error')).toEqual([])
+    } finally {
+      dialog.renderer.destroy()
+    }
+  })
+
+  test('reports the start error when the follow-up status is idle', async () => {
     const { host, toasts } = createHost()
     const readStatus = vi.fn()
       .mockResolvedValueOnce(idleStatus())
