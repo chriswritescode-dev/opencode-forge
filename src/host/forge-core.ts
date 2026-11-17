@@ -787,6 +787,18 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     }
   }
 
+  const moveHostSandboxSession = (sessionID: string | undefined, projectID: string | undefined): void => {
+    if (!sessionID || !projectID) return
+    try {
+      const affectedProjectIds = sandboxPreferences.moveDesiredSession(sessionID, projectID, randomUUID())
+      for (const affectedProjectId of affectedProjectIds) {
+        emitTuiEvent(affectedProjectId, { type: 'hostSandboxChanged', projectId: affectedProjectId })
+      }
+    } catch (err) {
+      logger.log(`[sandbox] failed to move sandbox preference for session ${sessionID} to project ${projectID}: ${errorMessage(err)}`)
+    }
+  }
+
   const resolveSandboxForSession = createUnifiedSandboxResolver({
     resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     resolveLoopSandbox: (resolved, opts) => resolveSandboxContextForLoop(sandboxManager, resolved, logger, opts),
@@ -1075,6 +1087,9 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       await sessionHooks.onEvent(input)
       await planApprovalEventHook(input)
       if (input.event.type === FORGE_EVENT_TYPES.sessionDeleted) forgetHostSandboxSession(input.event.properties.sessionID)
+      if (input.event.type === FORGE_EVENT_TYPES.sessionMoved) {
+        moveHostSandboxSession(input.event.properties.sessionID, input.event.properties.projectID)
+      }
     },
     toolBefore: async (input, output) => {
       let resolved: Awaited<ReturnType<typeof sessionLoopResolver.resolveActiveLoopForSession>> | null = null

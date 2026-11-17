@@ -227,6 +227,7 @@ export type SessionErrorInfo = {
 
 export type ForgeEventProperties = {
   sessionID?: string
+  projectID?: string
   status?: SessionStatusEntry
   info?: Session
   part?: SessionMessagePart

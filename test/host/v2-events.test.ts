@@ -3,6 +3,7 @@ import type { V2Event } from '@opencode/client'
 import {
   FORGE_EVENT_TYPES,
   V2_EVENT_TYPES,
+  createV2SessionOwnership,
   mapV2SessionInfo,
   normalizeV2Event,
   readV2InboxEvent,
@@ -573,13 +574,6 @@ describe('normalizeV2Event', () => {
   })
 
   test('returns an empty list for V2 events with no V1 consumer', () => {
-    const moved: V2Event = {
-      id: 'evt-1',
-      created: 1,
-      type: 'session.moved',
-      durable: durableV1,
-      data: { sessionID: 's1', location: { directory: '/repo' }, projectID: 'proj-1' },
-    }
     const renamed: V2Event = {
       id: 'evt-3',
       created: 3,
@@ -594,9 +588,79 @@ describe('normalizeV2Event', () => {
       data: { message: 'hello', variant: 'info' },
     }
 
-    expect(normalizeV2Event(moved)).toEqual([])
     expect(normalizeV2Event(renamed)).toEqual([])
     expect(normalizeV2Event(toast)).toEqual([])
+  })
+
+  test('maps session.moved onto the session and its new project', () => {
+    const moved: V2Event = {
+      id: 'evt-1',
+      created: 1,
+      type: 'session.moved',
+      durable: durableV1,
+      data: { sessionID: 's1', location: { directory: '/other-repo' }, projectID: 'proj-2' },
+    }
+
+    expect(normalizeV2Event(moved)).toEqual([
+      {
+        type: FORGE_EVENT_TYPES.sessionMoved,
+        properties: { sessionID: 's1', projectID: 'proj-2' },
+      },
+    ])
+  })
+})
+
+describe('createV2SessionOwnership', () => {
+  function created(directory: string): V2Event {
+    return {
+      id: 'evt-created',
+      created: 1,
+      type: 'session.created',
+      durable: durableV1,
+      location: { directory },
+      data: { sessionID: 's1', projectID: 'proj-1', location: { directory }, slug: 's1', version: '2.0.14' },
+    }
+  }
+
+  function moved(directory: string): V2Event {
+    return {
+      id: 'evt-moved',
+      created: 2,
+      type: 'session.moved',
+      durable: durableV1,
+      location: { directory },
+      data: { sessionID: 's1', location: { directory }, projectID: 'proj-2' },
+    }
+  }
+
+  function renamed(): V2Event {
+    return {
+      id: 'evt-renamed',
+      created: 3,
+      type: 'session.renamed',
+      durable: durableV1,
+      data: { sessionID: 's1', title: 'Renamed' },
+    }
+  }
+
+  test('a moved session is delivered everywhere and later events follow the new directory', async () => {
+    const oldLocation = createV2SessionOwnership({
+      ownsDirectory: (directory) => directory === '/repo-a',
+      getSessionDirectory: async () => '/repo-a',
+    })
+    const newLocation = createV2SessionOwnership({
+      ownsDirectory: (directory) => directory === '/repo-b',
+      getSessionDirectory: async () => '/repo-b',
+    })
+
+    await expect(oldLocation.owns(created('/repo-a'))).resolves.toBe(true)
+    await expect(newLocation.owns(created('/repo-a'))).resolves.toBe(false)
+
+    await expect(oldLocation.owns(moved('/repo-b'))).resolves.toBe(true)
+    await expect(newLocation.owns(moved('/repo-b'))).resolves.toBe(true)
+
+    await expect(oldLocation.owns(renamed())).resolves.toBe(false)
+    await expect(newLocation.owns(renamed())).resolves.toBe(true)
   })
 })
 

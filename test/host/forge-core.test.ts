@@ -173,6 +173,41 @@ describe('createForgeCore', () => {
     expect(events.filter((event) => event.type === 'hostSandboxChanged').length).toBeGreaterThan(0)
   })
 
+  test('a moved session carries its host sandbox preference entry to the new project', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { hostSessions: false } }, undefined, {
+      publishTuiEvent: (event) => events.push(event),
+    })
+    const otherProjectId = `${built.projectId}-other`
+
+    const seedDb = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createSessionSandboxPreferencesRepo(seedDb).setDesired(otherProjectId, {
+        version: 2,
+        revision: 'rev-other',
+        sessions: { ses_host_1: false, ses_other: true },
+        requestedAt: 1,
+      })
+    } finally {
+      closeDatabase(seedDb)
+    }
+
+    await built.core.onEvent({
+      event: { type: 'session.moved', properties: { sessionID: 'ses_host_1', projectID: built.projectId } },
+    })
+    await settleTuiEvents()
+
+    const readDb = initializeDatabase(join(testDir, 'memory'))
+    try {
+      const preferences = createSessionSandboxPreferencesRepo(readDb)
+      expect(preferences.getDesired(built.projectId)?.sessions).toEqual({ ses_host_1: false })
+      expect(preferences.getDesired(otherProjectId)?.sessions).toEqual({ ses_other: true })
+    } finally {
+      closeDatabase(readDb)
+    }
+    expect(events.filter((event) => event.type === 'hostSandboxChanged').length).toBeGreaterThan(0)
+  })
+
   test('autoApprovesPermissions honors the per-session auto-approve flag', async () => {
     const built = await buildCore()
 
