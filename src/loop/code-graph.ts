@@ -40,6 +40,14 @@ const AFFECTED_MAX_DEPTH = 1
 const CALLER_LIMIT = 20
 const SYMBOL_LIMIT = 100
 const PROBED_CONTAINER_LIMIT = 100
+const PROMPT_SUMMARY_CHAR_LIMIT = 8000
+const CHANGED_FILES_HEADING = '## Changed or planned files'
+const IMPORTING_TESTS_HEADING = '## Tests that import these files'
+const CALLERS_HEADING = '## Callers of changed symbols'
+const REMOVED_SYMBOLS_HEADING = '## Removed or renamed symbols still referenced'
+const SUMMARY_SECTION_HEADINGS = new Set(
+  [CHANGED_FILES_HEADING, IMPORTING_TESTS_HEADING, CALLERS_HEADING, REMOVED_SYMBOLS_HEADING].map((heading) => heading.slice(3)),
+)
 
 export interface CodeGraphTarget {
   key: string
@@ -100,18 +108,38 @@ export function attemptCodeGraphReportPath(attempt: { scope: string; attemptNumb
   return codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
 }
 
-export function buildCodeGraphPromptBlock(relPath: string, point: 'section start' | 'audit checkpoint'): string {
+function truncatePromptSummary(summary: string, relPath: string): string {
+  if (summary.length <= PROMPT_SUMMARY_CHAR_LIMIT) return summary
+  const head = summary.slice(0, PROMPT_SUMMARY_CHAR_LIMIT)
+  const lastBreak = head.lastIndexOf('\n')
+  const kept = (lastBreak === -1 ? head : head.slice(0, lastBreak)).trimEnd()
+  return `${kept}\n\n- … truncated; the rest is in \`${relPath}\` (grep it or read it in parts).`
+}
+
+export function buildCodeGraphPromptBlock(
+  relPath: string,
+  point: 'section start' | 'audit checkpoint',
+  summary?: string,
+): string {
   const contents =
     point === 'audit checkpoint'
       ? 'the tests that import each file, its dependents, its symbols, the callers of changed symbols, and the references still pointing at removed or renamed symbols'
       : 'the tests that import each file, its dependents, and its symbols'
+  const inlined = point === 'audit checkpoint' && summary ? truncatePromptSummary(summary, relPath) : null
+  const pointer = inlined
+    ? [
+        `Forge ran \`codegraph\` at the audit checkpoint. The changed files, the tests that import them, the callers of changed symbols, and the references still pointing at removed or renamed symbols are below; the symbols of each changed file are in \`${relPath}\`.`,
+        '',
+        inlined,
+      ]
+    : [`Forge ran \`codegraph\` at the ${point}; the full output (${contents}) is in \`${relPath}\`; read it in parts or grep it.`]
   return [
     '',
     '',
     '---',
     '## Code graph',
     '',
-    `Forge ran \`codegraph\` at the ${point}; the full output (${contents}) is in \`${relPath}\`; read it in parts or grep it.`,
+    ...pointer,
     '',
     'The index at `.codegraph` reflects that snapshot. Run `codegraph explore <query>`, `codegraph node <symbol|--file path>`, `codegraph callers|callees|impact <symbol>`, or `codegraph affected <files> -d 2` (tests that reach the files indirectly) in bash, and prefer them over grep-driven exploration.',
     '',
@@ -121,6 +149,22 @@ export function buildCodeGraphPromptBlock(relPath: string, point: 'section start
     '',
     'Never run `codegraph init`, `uninit`, or `index`, and never delete `.codegraph`.',
   ].join('\n')
+}
+
+export function summarizeCodeGraphReport(report: string): string {
+  const sections = report
+    .split(/^## /m)
+    .slice(1)
+    .filter((section) => {
+      const end = section.indexOf('\n')
+      const heading = (end === -1 ? section : section.slice(0, end)).trim()
+      return SUMMARY_SECTION_HEADINGS.has(heading)
+    })
+  return sections
+    .map((section) => `## ${section}`)
+    .join('')
+    .replace(/^(#{2,3}) /gm, '#$1 ')
+    .trim()
 }
 
 export function isForgeCodeGraphLink(worktreeDir: string): boolean {
@@ -221,7 +265,7 @@ function formatFileSection(file: CodeGraphFileReport, tests: Set<string>): strin
 function formatCallerSections(impact: CodeGraphImpactReport): string[] {
   const withCallers = impact.changedSymbols.filter((symbol) => symbol.callerCount > 0)
   const withoutCallers = impact.changedSymbols.length - withCallers.length
-  const lines = ['', '## Callers of changed symbols', '', 'Callers outside the files changed in this attempt.']
+  const lines = ['', CALLERS_HEADING, '', 'Callers outside the files changed in this attempt.']
   if (withCallers.length === 0) lines.push('', '_No changed symbol has callers outside the changed files._')
   for (const symbol of withCallers) {
     lines.push('', `### \`${symbol.name}\` (${symbol.kind}) — ${symbol.path}:${symbol.startLine}`, '')
@@ -247,7 +291,7 @@ function formatRemovedSymbolSections(removedSymbols: CodeGraphImpactReport['remo
   if (removedSymbols.length === 0) return []
   const lines = [
     '',
-    '## Removed or renamed symbols still referenced',
+    REMOVED_SYMBOLS_HEADING,
     '',
     'These names no longer exist in the index, but code still refers to them. Fix each reference or confirm it is intended.',
   ]
@@ -291,11 +335,11 @@ function formatCodeGraphReport(input: {
     '',
     `Snapshot taken at ${input.takenAt.toISOString()} and reflects the worktree at that moment.`,
     '',
-    '## Changed or planned files',
+    CHANGED_FILES_HEADING,
     '',
     ...input.files.map((file) => `- ${file.path}`),
     '',
-    '## Tests that import these files',
+    IMPORTING_TESTS_HEADING,
     ...formatAffectedTestSections(input.files, tests),
     '',
     'For tests that reach these files indirectly, run `codegraph affected <files> -d 2`.',
