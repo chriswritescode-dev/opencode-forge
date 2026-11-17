@@ -167,6 +167,7 @@ export function SandboxBuildDialog(props: {
     setStartError('')
     props.host.toast({ message: `Building ${image()}...`, variant: 'info', duration: 4000 })
     const output = await start()
+    starting = false
     if (disposed) return
     if ('error' in output) {
       setStartError(output.error)
