@@ -5,9 +5,11 @@ import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CODE_GRAPH_PROBE_COMMAND,
+  buildCodeGraphPromptBlock,
   codeGraphReportPath,
   createCodeGraphSnapshotter,
   resolveLoopCodeGraphTarget,
+  summarizeCodeGraphReport,
   type CodeGraphTarget,
 } from '../../src/loop/code-graph'
 import { runCodeGraphSnapshot, type CodeGraphRunnerInput } from '../../src/loop/code-graph-runner'
@@ -487,6 +489,149 @@ describe('createCodeGraphSnapshotter', () => {
     expect(report).toContain('# Code graph: audit attempt 1 (section:0)')
     expect(report).not.toContain('## Callers of changed symbols')
     expect(report).not.toContain('## Removed or renamed symbols still referenced')
+  })
+
+  it('summarizes a report to its reference sections with demoted headings and no per-file symbols', async () => {
+    const worktreeDir = createWorktree()
+    mkdirSync(join(worktreeDir, 'src'), { recursive: true })
+    mkdirSync(join(worktreeDir, 'test'))
+    writeFileSync(join(worktreeDir, 'src/lib.ts'), 'export function keepMe() {}\n')
+    writeFileSync(join(worktreeDir, 'test/lib.test.ts'), 'export {}\n')
+    const report = await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(
+      scriptedTarget(worktreeDir, {
+        ok: true,
+        index: 'synced',
+        files: [
+          {
+            path: 'src/lib.ts',
+            symbols: [{ name: 'keepMe', kind: 'function', signature: null, startLine: 9 }],
+            dependents: ['test/lib.test.ts'],
+          },
+        ],
+        affectedTests: ['test/lib.test.ts'],
+        impact: {
+          changedSymbols: [
+            {
+              name: 'keepMe',
+              kind: 'function',
+              path: 'src/lib.ts',
+              startLine: 9,
+              callers: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }],
+              callerCount: 1,
+              callerQueryLimit: 20,
+            },
+          ],
+          removedSymbols: [
+            { name: 'removeMe', path: 'src/lib.ts', references: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }] },
+          ],
+        },
+      }),
+      { title: 'audit attempt 1 (section:0)', files: ['src/lib.ts'], changedRanges: { 'src/lib.ts': [{ start: 9, end: 9 }] } },
+    )
+
+    const summary = summarizeCodeGraphReport(report!)
+
+    expect(summary).toContain(
+      [
+        '### Changed or planned files',
+        '',
+        '- src/lib.ts',
+        '',
+        '### Tests that import these files',
+        '',
+        '#### src/lib.ts',
+        '',
+        '- test/lib.test.ts',
+        '',
+        'For tests that reach these files indirectly, run `codegraph affected <files> -d 2`.',
+      ].join('\n'),
+    )
+    expect(summary).toContain(
+      ['### Callers of changed symbols', '', 'Callers outside the files changed in this attempt.', '', '#### `keepMe` (function) — src/lib.ts:9'].join(
+        '\n',
+      ),
+    )
+    expect(summary).toContain(
+      ['### Removed or renamed symbols still referenced', '', 'These names no longer exist in the index, but code still refers to them.'].join(
+        '\n',
+      ),
+    )
+    expect(summary).toContain('#### `removeMe` (was in src/lib.ts)')
+    expect(summary.startsWith('### Changed or planned files')).toBe(true)
+    expect(summary).not.toContain('# Code graph:')
+    expect(summary).not.toContain('Snapshot taken at')
+    expect(summary).not.toContain('- `keepMe` (function) — line 9')
+  })
+
+  it('inlines the summary at the audit checkpoint and keeps the section-start pointer unchanged', () => {
+    const guidance = [
+      'The index at `.codegraph` reflects that snapshot. Run `codegraph explore <query>`, `codegraph node <symbol|--file path>`, `codegraph callers|callees|impact <symbol>`, or `codegraph affected <files> -d 2` (tests that reach the files indirectly) in bash, and prefer them over grep-driven exploration.',
+      '',
+      'The `codegraph_*` MCP tools are unavailable here. When `codegraph` output suggests one (for example `codegraph_node`), run the matching command (`codegraph node`) instead.',
+      '',
+      'Files edited since the snapshot must be read directly.',
+      '',
+      'Never run `codegraph init`, `uninit`, or `index`, and never delete `.codegraph`.',
+    ]
+    const summary = '### Changed or planned files\n\n- src/lib.ts'
+
+    expect(buildCodeGraphPromptBlock('.forge/codegraph/section-1.md', 'section start')).toBe(
+      [
+        '',
+        '',
+        '---',
+        '## Code graph',
+        '',
+        'Forge ran `codegraph` at the section start; the full output (the tests that import each file, its dependents, and its symbols) is in `.forge/codegraph/section-1.md`; read it in parts or grep it.',
+        '',
+        ...guidance,
+      ].join('\n'),
+    )
+    expect(buildCodeGraphPromptBlock('.forge/codegraph/audit-section-0-attempt-1.md', 'audit checkpoint')).toBe(
+      [
+        '',
+        '',
+        '---',
+        '## Code graph',
+        '',
+        'Forge ran `codegraph` at the audit checkpoint; the full output (the tests that import each file, its dependents, its symbols, the callers of changed symbols, and the references still pointing at removed or renamed symbols) is in `.forge/codegraph/audit-section-0-attempt-1.md`; read it in parts or grep it.',
+        '',
+        ...guidance,
+      ].join('\n'),
+    )
+    expect(buildCodeGraphPromptBlock('.forge/codegraph/audit-section-0-attempt-1.md', 'audit checkpoint', summary)).toBe(
+      [
+        '',
+        '',
+        '---',
+        '## Code graph',
+        '',
+        'Forge ran `codegraph` at the audit checkpoint. The changed files, the tests that import them, the callers of changed symbols, and the references still pointing at removed or renamed symbols are below; the symbols of each changed file are in `.forge/codegraph/audit-section-0-attempt-1.md`.',
+        '',
+        summary,
+        '',
+        ...guidance,
+      ].join('\n'),
+    )
+  })
+
+  it('cuts an oversized summary at a line boundary and names the report for the rest', () => {
+    const relPath = '.forge/codegraph/audit-section-0-attempt-1.md'
+    const lines = ['### Changed or planned files', '', ...Array.from({ length: 900 }, (_, index) => `- src/file-${index}.ts`)].join('\n')
+    const block = buildCodeGraphPromptBlock(relPath, 'audit checkpoint', lines)
+    const truncation = `- … truncated; the rest is in \`${relPath}\` (grep it or read it in parts).`
+    const start = block.indexOf('### Changed or planned files')
+    const end = block.indexOf(`\n\n${truncation}`)
+
+    expect(end).toBeGreaterThan(start)
+    const inlined = block.slice(start, end)
+    expect(inlined.length).toBeLessThanOrEqual(8000)
+    expect(lines.startsWith(inlined)).toBe(true)
+    for (const line of inlined.split('\n')) {
+      expect(line === '' || line === '### Changed or planned files' || /^- src\/file-\d+\.ts$/.test(line)).toBe(true)
+    }
+    expect(block).not.toContain('- src/file-899.ts')
+    expect(block).toContain(`\n\n${truncation}\n\nThe index at \`.codegraph\``)
   })
 
   it('lists only the tests that import a changed file directly and drops empty file sections', async () => {

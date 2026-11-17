@@ -31,7 +31,7 @@ import { errorMessage } from '../utils/error-message'
 import { blockingBugFindings, isFindingInSectionScope, resolveSectionScope, type SectionScope } from './section-scope'
 import { generatedSectionId, isLastOpenSectionIndex, selectNextSection, validateSectionGraph, type SectionGraphNode } from './section-graph'
 import type { PlanSection } from '../services/deterministic-decomposer'
-import { attemptCodeGraphReportPath, buildCodeGraphPromptBlock, sectionCodeGraphReportPath } from './code-graph'
+import { attemptCodeGraphReportPath, buildCodeGraphPromptBlock, sectionCodeGraphReportPath, summarizeCodeGraphReport } from './code-graph'
 import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
 import { stripLeadingStructuralOrdinal } from '../utils/format'
 
@@ -715,7 +715,7 @@ export function createLoopService(
     if (!state.sandbox || !codeGraphEnabled) return ''
     const attempt = getLatestAttempt(state)
     if (!attempt?.codeGraph) return ''
-    return buildCodeGraphPromptBlock(attemptCodeGraphReportPath(attempt), 'audit checkpoint')
+    return buildCodeGraphPromptBlock(attemptCodeGraphReportPath(attempt), 'audit checkpoint', summarizeCodeGraphReport(attempt.codeGraph))
   }
 
   function getNextReadySectionPlan(state: LoopState): SectionPlanRow | null {
