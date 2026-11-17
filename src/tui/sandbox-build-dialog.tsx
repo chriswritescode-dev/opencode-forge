@@ -1,5 +1,5 @@
 import type { ForgeTuiHost } from './host'
-import type { ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus } from '../host/forge-rpc'
+import type { ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus, ForgeToastInput } from '../host/forge-rpc'
 import type { SelectRenderable } from '@opentui/core'
 import type { SandboxBuildStage } from '../sandbox/template'
 import { createMemo, createSignal, For, onCleanup, Show, untrack } from 'solid-js'
@@ -62,14 +62,16 @@ export function describeSandboxBuildStatus(view: SandboxBuildDialogStatusView): 
   return { statusLine, detailLine }
 }
 
-export function SandboxBuildDialog(props: {
-  host: ForgeTuiHost
+export interface SandboxBuildDialogStateOptions {
   start: () => Promise<ForgeSandboxTemplateBuildOutput>
   readStatus: () => Promise<ForgeSandboxTemplateBuildOutput>
-}) {
-  const colors = () => props.host.colors()
-  const readStatus = untrack(() => props.readStatus)
-  const start = untrack(() => props.start)
+  toast: (input: ForgeToastInput) => void
+}
+
+export function createSandboxBuildDialogState(options: SandboxBuildDialogStateOptions) {
+  const readStatus = options.readStatus
+  const start = options.start
+  const toast = options.toast
 
   const [status, setStatus] = createSignal<ForgeSandboxTemplateBuildStatus | null>(null)
   const [statusError, setStatusError] = createSignal('')
@@ -79,8 +81,6 @@ export function SandboxBuildDialog(props: {
   let disposed = false
   let pollTimer: ReturnType<typeof setTimeout> | undefined
   let starting = false
-  let selectRef: SelectRenderable | undefined
-  claimFocusOnMount(() => selectRef)
 
   const stopPolling = () => {
     if (pollTimer) clearTimeout(pollTimer)
@@ -145,27 +145,12 @@ export function SandboxBuildDialog(props: {
 
   const tail = () => (startError() ? [] : (status()?.tail ?? []))
 
-  const statusColor = createMemo(() => (phase() === 'error' ? colors().error : colors().text))
-
-  const selectOptions = createMemo(() => {
-    if (phase() === 'confirm') {
-      return [
-        { name: 'Build', description: 'Press enter to build the sandbox image', value: 'build' },
-        { name: 'Cancel', description: 'Press enter to close this dialog', value: 'cancel' },
-      ]
-    }
-    if (phase() === 'running') {
-      return [{ name: 'Close', description: 'The build keeps running and reports with a toast', value: 'cancel' }]
-    }
-    return [{ name: 'Close', description: 'Press enter to close this dialog', value: 'cancel' }]
-  })
-
   const doBuild = async () => {
     if (starting) return
     starting = true
     setStatusError('')
     setStartError('')
-    props.host.toast({ message: `Building ${image()}...`, variant: 'info', duration: 4000 })
+    toast({ message: `Building ${image()}...`, variant: 'info', duration: 4000 })
     try {
       const output = await start()
       if (disposed) return
@@ -179,7 +164,7 @@ export function SandboxBuildDialog(props: {
           return
         }
         setStartError(output.error)
-        props.host.toast({ message: output.error, variant: 'error', duration: 10_000 })
+        toast({ message: output.error, variant: 'error', duration: 10_000 })
         return
       }
       setStatus(output)
@@ -189,6 +174,39 @@ export function SandboxBuildDialog(props: {
       starting = false
     }
   }
+
+  return { status, statusError, startError, engaged, phase, text, tail, image, contextDir, start: doBuild }
+}
+
+export function SandboxBuildDialog(props: {
+  host: ForgeTuiHost
+  start: () => Promise<ForgeSandboxTemplateBuildOutput>
+  readStatus: () => Promise<ForgeSandboxTemplateBuildOutput>
+}) {
+  const colors = () => props.host.colors()
+  const state = createSandboxBuildDialogState({
+    start: untrack(() => props.start),
+    readStatus: untrack(() => props.readStatus),
+    toast: (input) => props.host.toast(input),
+  })
+
+  let selectRef: SelectRenderable | undefined
+  claimFocusOnMount(() => selectRef)
+
+  const statusColor = createMemo(() => (state.phase() === 'error' ? colors().error : colors().text))
+
+  const selectOptions = createMemo(() => {
+    if (state.phase() === 'confirm') {
+      return [
+        { name: 'Build', description: 'Press enter to build the sandbox image', value: 'build' },
+        { name: 'Cancel', description: 'Press enter to close this dialog', value: 'cancel' },
+      ]
+    }
+    if (state.phase() === 'running') {
+      return [{ name: 'Close', description: 'The build keeps running and reports with a toast', value: 'cancel' }]
+    }
+    return [{ name: 'Close', description: 'Press enter to close this dialog', value: 'cancel' }]
+  })
 
   return (
     <box flexDirection="column" paddingX={2}>
@@ -204,20 +222,20 @@ export function SandboxBuildDialog(props: {
         </text>
       </box>
       <box paddingBottom={1}>
-        <text fg={colors().textMuted}>Image: {image()}</text>
+        <text fg={colors().textMuted}>Image: {state.image()}</text>
       </box>
       <box paddingBottom={1}>
-        <text fg={colors().textMuted}>Context (server): {contextDir()}</text>
+        <text fg={colors().textMuted}>Context (server): {state.contextDir()}</text>
       </box>
 
       <box paddingBottom={1} flexDirection="column">
-        <text fg={statusColor()}>{text().statusLine}</text>
-        <text fg={colors().textMuted}>{text().detailLine}</text>
+        <text fg={statusColor()}>{state.text().statusLine}</text>
+        <text fg={colors().textMuted}>{state.text().detailLine}</text>
       </box>
 
-      <Show when={phase() === 'error'}>
+      <Show when={state.phase() === 'error'}>
         <box paddingBottom={1} flexDirection="column">
-          <For each={tail()}>{(line) => <text fg={colors().textMuted}>{line.slice(0, 96)}</text>}</For>
+          <For each={state.tail()}>{(line) => <text fg={colors().textMuted}>{line.slice(0, 96)}</text>}</For>
         </box>
       </Show>
 
@@ -229,7 +247,7 @@ export function SandboxBuildDialog(props: {
           options={selectOptions()}
           onSelect={(_, option) => {
             if (option?.value === 'build') {
-              void doBuild()
+              void state.start()
               return
             }
             if (option?.value === 'cancel') {

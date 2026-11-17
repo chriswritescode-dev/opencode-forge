@@ -2,11 +2,11 @@ import { describe, expect, test, vi } from 'vitest'
 
 vi.mock('solid-js', async () => await import('solid-js/dist/dev.js'))
 
-import { createComponent, testRender } from '@opentui/solid'
+import { createRoot } from 'solid-js'
 import type { ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus, ForgeToastInput } from '../../src/host/forge-rpc'
 import type { ForgeTuiHost } from '../../src/tui/host'
 import { CONCURRENT_BUILD_MESSAGE } from '../../src/sandbox/template'
-import { describeSandboxBuildStatus, SandboxBuildDialog } from '../../src/tui/sandbox-build-dialog'
+import { createSandboxBuildDialogState, describeSandboxBuildStatus, type SandboxBuildDialogStateOptions } from '../../src/tui/sandbox-build-dialog'
 
 function status(overrides: Partial<ForgeSandboxTemplateBuildStatus> = {}): ForgeSandboxTemplateBuildStatus {
   return {
@@ -107,6 +107,16 @@ function createHost() {
   return { host, toasts }
 }
 
+function mountSandboxBuildDialogState(options: SandboxBuildDialogStateOptions) {
+  let state: ReturnType<typeof createSandboxBuildDialogState> | undefined
+  const dispose = createRoot((disposeRoot) => {
+    state = createSandboxBuildDialogState(options)
+    return disposeRoot
+  })
+  if (!state) throw new Error('sandbox build dialog state did not mount')
+  return { state, dispose }
+}
+
 describe('SandboxBuildDialog start conflict', () => {
   test('follows a build another client already started instead of failing', async () => {
     const { host, toasts } = createHost()
@@ -114,12 +124,11 @@ describe('SandboxBuildDialog start conflict', () => {
       .mockResolvedValueOnce(idleStatus())
       .mockResolvedValue(status({ stage: 'build' }))
     const start = vi.fn(async (): Promise<ForgeSandboxTemplateBuildOutput> => ({ error: CONCURRENT_BUILD_MESSAGE }))
-    const dialog = await testRender(() => createComponent(SandboxBuildDialog, { host, start, readStatus }))
+    const { state, dispose } = mountSandboxBuildDialogState({ start, readStatus, toast: host.toast })
     try {
       await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(1))
-      await vi.waitFor(() => expect(dialog.renderer.currentFocusedRenderable).not.toBeNull())
 
-      dialog.mockInput.pressEnter()
+      void state.start()
 
       await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
       await vi.waitFor(() => expect(readStatus.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 2000 })
@@ -127,7 +136,7 @@ describe('SandboxBuildDialog start conflict', () => {
       expect(toasts.filter((toast) => toast.variant === 'error')).toEqual([])
       expect(toasts.map((toast) => toast.message)).toContain('Building oc-forge-sandbox:latest...')
     } finally {
-      dialog.renderer.destroy()
+      dispose()
     }
   })
 
@@ -137,19 +146,18 @@ describe('SandboxBuildDialog start conflict', () => {
       .mockResolvedValueOnce(idleStatus())
       .mockResolvedValue(status({ phase: 'success', elapsedMs: 1000 }))
     const start = vi.fn(async (): Promise<ForgeSandboxTemplateBuildOutput> => ({ error: 'Sandbox build context is missing' }))
-    const dialog = await testRender(() => createComponent(SandboxBuildDialog, { host, start, readStatus }))
+    const { state, dispose } = mountSandboxBuildDialogState({ start, readStatus, toast: host.toast })
     try {
       await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(1))
-      await vi.waitFor(() => expect(dialog.renderer.currentFocusedRenderable).not.toBeNull())
 
-      dialog.mockInput.pressEnter()
+      void state.start()
 
       await vi.waitFor(() => expect(toasts.some((toast) => toast.variant === 'error')).toBe(true))
       expect(toasts.find((toast) => toast.variant === 'error')?.message).toBe('Sandbox build context is missing')
       await new Promise((resolve) => setTimeout(resolve, 700))
       expect(readStatus).toHaveBeenCalledTimes(2)
     } finally {
-      dialog.renderer.destroy()
+      dispose()
     }
   })
 
@@ -159,12 +167,11 @@ describe('SandboxBuildDialog start conflict', () => {
       .mockResolvedValueOnce(idleStatus())
       .mockResolvedValue(idleStatus())
     const start = vi.fn(async (): Promise<ForgeSandboxTemplateBuildOutput> => ({ error: CONCURRENT_BUILD_MESSAGE }))
-    const dialog = await testRender(() => createComponent(SandboxBuildDialog, { host, start, readStatus }))
+    const { state, dispose } = mountSandboxBuildDialogState({ start, readStatus, toast: host.toast })
     try {
       await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(1))
-      await vi.waitFor(() => expect(dialog.renderer.currentFocusedRenderable).not.toBeNull())
 
-      dialog.mockInput.pressEnter()
+      void state.start()
 
       await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
       await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(2))
@@ -176,7 +183,7 @@ describe('SandboxBuildDialog start conflict', () => {
       await new Promise((resolve) => setTimeout(resolve, 700))
       expect(readStatus).toHaveBeenCalledTimes(2)
     } finally {
-      dialog.renderer.destroy()
+      dispose()
     }
   })
 })

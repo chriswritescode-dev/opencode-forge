@@ -18,8 +18,14 @@ vi.mock('../../src/tui/dashboard/store', () => ({
   createDashboardStore: dashboardStoreMock.createDashboardStore,
 }))
 
+const sandboxBuildDialogMock = vi.hoisted(() => ({ openSandboxBuildDialog: vi.fn() }))
+
+vi.mock('../../src/tui/sandbox-build-dialog', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/tui/sandbox-build-dialog')>()
+  return { ...actual, openSandboxBuildDialog: sandboxBuildDialogMock.openSandboxBuildDialog }
+})
+
 import { createSignal } from 'solid-js'
-import { testRender, type JSX } from '@opentui/solid'
 import type { Plugin } from '@opencode/plugin/tui'
 import type { ForgeHostSandboxSetInput, ForgeHostSandboxState } from '../../src/host/forge-rpc'
 import { resolveV2TuiProjectId, setupForgeTuiV2, VERSION_CHECK_MAX_ATTEMPTS, VERSION_CHECK_RETRY_DELAY_MS } from '../../src/tui/v2'
@@ -146,6 +152,12 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     contextDir: '/server/container',
     tail: [],
   }))
+  const sandboxTemplateBuildStart = vi.fn(async () => ({
+    phase: 'running',
+    image: 'oc-forge-sandbox:latest',
+    contextDir: '/server/container',
+    tail: [],
+  }))
 
   const locationGet = vi.fn(
     fakeOptions.locationGet ?? (async () => ({ project: { id: 'proj-1' } })),
@@ -165,6 +177,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
       version,
       sessionPlan,
       sandboxTemplateBuildStatus,
+      sandboxTemplateBuildStart,
       events: {
         subscribe: vi.fn((name: string, options?: { signal?: AbortSignal }) => {
           type Event = { data: Record<string, unknown> }
@@ -313,6 +326,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     version,
     sessionPlan,
     sandboxTemplateBuildStatus,
+    sandboxTemplateBuildStart,
     setRoute,
     setLocation,
     findRpcSubscription: (name: string) => rpcSubscriptions.find((subscription) => subscription.name === name),
@@ -337,6 +351,7 @@ describe('V2 TUI setup', () => {
 
   beforeEach(() => {
     for (const mock of Object.values(dashboardStoreMock.store)) mock.mockClear()
+    sandboxBuildDialogMock.openSandboxBuildDialog.mockClear()
   })
 
   test('the TUI module exports the V2 setup', () => {
@@ -712,17 +727,25 @@ describe('V2 TUI setup', () => {
     const fake = createFakeV2TuiContext()
 
     const cleanup = setupForgeTuiV2(fake.ctx)
-    findCommand(fake, 'forge.sandbox.buildImage').run?.()
-
-    expect(fake.dialogRenders).toHaveLength(1)
-    const render = fake.dialogRenders[0] as () => JSX.Element
-    const dialog = await testRender(render)
     try {
-      await vi.waitFor(() => expect(fake.sandboxTemplateBuildStatus).toHaveBeenCalledTimes(1))
+      findCommand(fake, 'forge.sandbox.buildImage').run?.()
+
+      expect(sandboxBuildDialogMock.openSandboxBuildDialog).toHaveBeenCalledTimes(1)
+      const deps = sandboxBuildDialogMock.openSandboxBuildDialog.mock.calls[0]?.[1] as {
+        start: () => Promise<unknown>
+        readStatus: () => Promise<unknown>
+      }
+
+      await deps.readStatus()
+      expect(fake.sandboxTemplateBuildStatus).toHaveBeenCalledTimes(1)
       expect(fake.sandboxTemplateBuildStatus.mock.calls[0]?.[1]).toEqual({ location: { directory: '/test/project' } })
+
+      await deps.start()
+      expect(fake.sandboxTemplateBuildStart).toHaveBeenCalledTimes(1)
+      expect(fake.sandboxTemplateBuildStart.mock.calls[0]?.[1]).toEqual({ location: { directory: '/test/project' } })
+
       expect(fake.toasts.map((toast) => toast['title'])).not.toContain('Sandbox build context missing')
     } finally {
-      dialog.renderer.destroy()
       cleanup()
     }
   })
