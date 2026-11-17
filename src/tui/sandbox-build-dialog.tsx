@@ -1,17 +1,13 @@
 import type { ForgeTuiHost } from './host'
+import type { ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus } from '../host/forge-rpc'
 import type { SelectRenderable } from '@opentui/core'
-import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
-import { tmpdir } from 'os'
+import type { SandboxBuildStage } from '../sandbox/template'
+import { createMemo, createSignal, For, onCleanup, Show, untrack } from 'solid-js'
 import { claimFocusOnMount } from './focus'
-import { createMsbRuntime } from '../sandbox/msb'
-import { buildAndLoadSandboxTemplate, DEFAULT_SANDBOX_IMAGE, resolveTemplateBuildArgs, type SandboxBuildStage } from '../sandbox/template'
-import { resolveBundledContainerDir } from '../setup'
-import type { PluginConfig } from '../types'
-import { runCommand } from '../sandbox/process'
 
 const BUILD_PROGRESS_BAR_WIDTH = 24
-const BUILD_TAIL_LIMIT = 12
-const BUILD_REPAINT_INTERVAL_MS = 100
+const BUILD_POLL_INTERVAL_MS = 500
+const CONFIRM_DETAIL = 'A first build downloads and installs everything; expect several minutes.'
 
 const BUILD_STAGE_LABELS = {
   build: 'Building image',
@@ -19,62 +15,135 @@ const BUILD_STAGE_LABELS = {
   load: 'Loading into msb',
 } satisfies Record<SandboxBuildStage, string>
 
+export type SandboxBuildDialogPhase = 'confirm' | 'running' | 'success' | 'error'
+
+export interface SandboxBuildDialogStatusView {
+  phase: SandboxBuildDialogPhase
+  status: ForgeSandboxTemplateBuildStatus | null
+  error?: string
+}
+
 function renderProgressBar(ratio: number): string {
   const filled = Math.max(0, Math.min(BUILD_PROGRESS_BAR_WIDTH, Math.round(ratio * BUILD_PROGRESS_BAR_WIDTH)))
   return `[${'█'.repeat(filled)}${'░'.repeat(BUILD_PROGRESS_BAR_WIDTH - filled)}]`
 }
 
-function formatElapsed(totalSeconds: number): string {
+function formatElapsed(elapsedMs: number | undefined): string {
+  const totalSeconds = Math.max(0, Math.floor((elapsedMs ?? 0) / 1000))
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
+export interface SandboxBuildStatusText {
+  statusLine: string
+  detailLine: string
+}
+
+export function describeSandboxBuildStatus(view: SandboxBuildDialogStatusView): SandboxBuildStatusText {
+  const status = view.status
+  const elapsed = formatElapsed(status?.elapsedMs)
+  if (view.phase === 'confirm') {
+    return { statusLine: 'Ready to build.', detailLine: view.error || CONFIRM_DETAIL }
+  }
+  if (view.phase === 'success') {
+    return { statusLine: `Built and loaded in ${elapsed}.`, detailLine: '' }
+  }
+  if (view.phase === 'error') {
+    return { statusLine: `Failed after ${elapsed}: ${view.error ?? status?.failure ?? 'unknown error'}`, detailLine: '' }
+  }
+  const label = status?.stage ? BUILD_STAGE_LABELS[status.stage] : BUILD_STAGE_LABELS.build
+  const step = status?.step
+  const ratio = step && step.total > 0 ? step.current / step.total : null
+  const statusLine = ratio === null
+    ? `${label}... ${elapsed}`
+    : `${renderProgressBar(ratio)} ${Math.round(ratio * 100)}%  ${label} ${step?.current}/${step?.total}  ${elapsed}`
+  const detailLine = view.error || (step?.description ?? status?.lastLine ?? '').slice(0, 96)
+  return { statusLine, detailLine }
+}
+
 export function SandboxBuildDialog(props: {
   host: ForgeTuiHost
-  buildContextDir: string
-  image: string
-  buildArgs: string[]
+  start: () => Promise<ForgeSandboxTemplateBuildOutput>
+  readStatus: () => Promise<ForgeSandboxTemplateBuildOutput>
 }) {
   const colors = () => props.host.colors()
+  const readStatus = untrack(() => props.readStatus)
+  const start = untrack(() => props.start)
 
-  type BuildPhase = 'confirm' | 'running' | 'success' | 'error'
-  const [phase, setPhase] = createSignal<BuildPhase>('confirm')
-  const [stage, setStage] = createSignal<SandboxBuildStage>('build')
-  const [step, setStep] = createSignal<{ current: number; total: number; description: string } | null>(null)
-  const [lastLine, setLastLine] = createSignal('')
-  const [elapsedSeconds, setElapsedSeconds] = createSignal(0)
-  const [errorMessage, setErrorMessage] = createSignal('')
-  const [tail, setTail] = createSignal<string[]>([])
+  const [status, setStatus] = createSignal<ForgeSandboxTemplateBuildStatus | null>(null)
+  const [statusError, setStatusError] = createSignal('')
+  const [startError, setStartError] = createSignal('')
+  const [engaged, setEngaged] = createSignal(false)
 
-  const outputTail: string[] = []
-  let timer: ReturnType<typeof setInterval> | undefined
-  let lastRepaintAt = 0
+  let disposed = false
+  let pollTimer: ReturnType<typeof setTimeout> | undefined
+  let starting = false
   let selectRef: SelectRenderable | undefined
   claimFocusOnMount(() => selectRef)
 
-  const stopTimer = () => {
-    if (timer) clearInterval(timer)
-    timer = undefined
+  const stopPolling = () => {
+    if (pollTimer) clearTimeout(pollTimer)
+    pollTimer = undefined
   }
-  onCleanup(stopTimer)
-
-  const statusLine = createMemo(() => {
-    if (phase() === 'confirm') return 'Ready to build.'
-    if (phase() === 'success') return `Built and loaded in ${formatElapsed(elapsedSeconds())}.`
-    if (phase() === 'error') return `Failed after ${formatElapsed(elapsedSeconds())}: ${errorMessage()}`
-    const label = BUILD_STAGE_LABELS[stage()]
-    const current = step()
-    if (!current) return `${label}... ${formatElapsed(elapsedSeconds())}`
-    const ratio = current.current / current.total
-    return `${renderProgressBar(ratio)} ${Math.round(ratio * 100)}%  ${label} ${current.current}/${current.total}  ${formatElapsed(elapsedSeconds())}`
+  onCleanup(() => {
+    disposed = true
+    stopPolling()
   })
 
-  const detailLine = createMemo(() => {
-    if (phase() === 'confirm') return 'A first build downloads and installs everything; expect several minutes.'
-    if (phase() !== 'running') return ''
-    return (step()?.description ?? lastLine()).slice(0, 96)
+  const phase = createMemo<SandboxBuildDialogPhase>(() => {
+    if (startError()) return 'error'
+    const current = engaged() ? status() : null
+    if (!current || current.phase === 'idle') return 'confirm'
+    return current.phase
   })
+
+  const schedulePoll = () => {
+    if (disposed) return
+    stopPolling()
+    pollTimer = setTimeout(() => {
+      pollTimer = undefined
+      void pollOnce()
+    }, BUILD_POLL_INTERVAL_MS)
+  }
+
+  const pollOnce = async () => {
+    const output = await readStatus()
+    if (disposed) return
+    if ('error' in output) {
+      setStatusError(output.error)
+    } else {
+      setStatusError('')
+      setStatus(output)
+    }
+    if (phase() === 'running') schedulePoll()
+    else stopPolling()
+  }
+
+  void (async () => {
+    const output = await readStatus()
+    if (disposed) return
+    if ('error' in output) {
+      setStatusError(output.error)
+      return
+    }
+    setStatus(output)
+    if (output.phase === 'running') {
+      setEngaged(true)
+      schedulePoll()
+    }
+  })()
+
+  const image = () => status()?.image ?? '...'
+  const contextDir = () => status()?.contextDir ?? '...'
+
+  const text = createMemo(() => describeSandboxBuildStatus({
+    phase: phase(),
+    status: status(),
+    error: phase() === 'error' ? startError() || undefined : statusError() || undefined,
+  }))
+
+  const tail = () => (startError() ? [] : (status()?.tail ?? []))
 
   const statusColor = createMemo(() => (phase() === 'error' ? colors().error : colors().text))
 
@@ -91,54 +160,22 @@ export function SandboxBuildDialog(props: {
     return [{ name: 'Close', description: 'Press enter to close this dialog', value: 'cancel' }]
   })
 
-  let started = false
-
   const doBuild = async () => {
-    if (started) return
-    started = true
-    setPhase('running')
-    props.host.toast({ message: `Building ${props.image}...`, variant: 'info', duration: 4000 })
-    const startedAt = Date.now()
-    timer = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000)
-
-    const logger = { log: () => {}, error: () => {}, debug: () => {} }
-
-    try {
-      await buildAndLoadSandboxTemplate(props.buildContextDir, props.image, {
-        runCommand,
-        loadTemplate: (tar, ref) => createMsbRuntime(logger).loadTemplate(tar, ref),
-        logger,
-        tmpDir: tmpdir(),
-        buildArgs: props.buildArgs,
-        onProgress: (progress) => {
-          outputTail.push(progress.line)
-          if (outputTail.length > BUILD_TAIL_LIMIT) outputTail.shift()
-          if (progress.stage !== stage()) {
-            setStage(progress.stage)
-            setStep(null)
-          }
-          if (progress.step && progress.step.current >= (step()?.current ?? 0)) setStep(progress.step)
-          const now = Date.now()
-          if (now - lastRepaintAt < BUILD_REPAINT_INTERVAL_MS) return
-          lastRepaintAt = now
-          setLastLine(progress.line)
-        },
-      })
-      stopTimer()
-      setPhase('success')
-      props.host.toast({
-        message: `Sandbox template ${props.image} built and loaded successfully`,
-        variant: 'success',
-        duration: 5000,
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      stopTimer()
-      setTail([...outputTail])
-      setErrorMessage(message)
-      setPhase('error')
-      props.host.toast({ message, variant: 'error', duration: 10_000 })
+    if (starting) return
+    starting = true
+    setStatusError('')
+    setStartError('')
+    props.host.toast({ message: `Building ${image()}...`, variant: 'info', duration: 4000 })
+    const output = await start()
+    if (disposed) return
+    if ('error' in output) {
+      setStartError(output.error)
+      props.host.toast({ message: output.error, variant: 'error', duration: 10_000 })
+      return
     }
+    setStatus(output)
+    setEngaged(true)
+    schedulePoll()
   }
 
   return (
@@ -151,19 +188,19 @@ export function SandboxBuildDialog(props: {
 
       <box paddingBottom={1}>
         <text fg={colors().textMuted}>
-          This builds the sandbox image with Docker, then loads it into msb.
+          This builds the sandbox image with Docker on the machine running the OpenCode server, then loads it into msb.
         </text>
       </box>
       <box paddingBottom={1}>
-        <text fg={colors().textMuted}>Image: {props.image}</text>
+        <text fg={colors().textMuted}>Image: {image()}</text>
       </box>
       <box paddingBottom={1}>
-        <text fg={colors().textMuted}>Context: {props.buildContextDir}</text>
+        <text fg={colors().textMuted}>Context (server): {contextDir()}</text>
       </box>
 
       <box paddingBottom={1} flexDirection="column">
-        <text fg={statusColor()}>{statusLine()}</text>
-        <text fg={colors().textMuted}>{detailLine()}</text>
+        <text fg={statusColor()}>{text().statusLine}</text>
+        <text fg={colors().textMuted}>{text().detailLine}</text>
       </box>
 
       <Show when={phase() === 'error'}>
@@ -202,11 +239,14 @@ export function SandboxBuildDialog(props: {
   )
 }
 
-export function openSandboxBuildDialog(host: ForgeTuiHost, pluginConfig: PluginConfig): void {
-  const buildContextDir = resolveBundledContainerDir()
-  const image = pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
-  const buildArgs = resolveTemplateBuildArgs(pluginConfig)
+export function openSandboxBuildDialog(
+  host: ForgeTuiHost,
+  deps: {
+    start: () => Promise<ForgeSandboxTemplateBuildOutput>
+    readStatus: () => Promise<ForgeSandboxTemplateBuildOutput>
+  },
+): void {
   host.showDialog('medium', () => (
-    <SandboxBuildDialog host={host} buildContextDir={buildContextDir} image={image} buildArgs={buildArgs} />
+    <SandboxBuildDialog host={host} start={deps.start} readStatus={deps.readStatus} />
   ))
 }

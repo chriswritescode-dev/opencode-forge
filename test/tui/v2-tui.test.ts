@@ -19,6 +19,7 @@ vi.mock('../../src/tui/dashboard/store', () => ({
 }))
 
 import { createSignal } from 'solid-js'
+import { testRender, type JSX } from '@opentui/solid'
 import type { Plugin } from '@opencode/plugin/tui'
 import type { ForgeHostSandboxSetInput, ForgeHostSandboxState } from '../../src/host/forge-rpc'
 import { resolveV2TuiProjectId, setupForgeTuiV2, VERSION_CHECK_MAX_ATTEMPTS, VERSION_CHECK_RETRY_DELAY_MS } from '../../src/tui/v2'
@@ -104,6 +105,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const rpcSubscriptions: RecordedRpcSubscription[] = []
   const dataHandlers = new Map<string, DataHandler[]>()
   const navigations: unknown[] = []
+  const dialogRenders: Array<() => unknown> = []
   const prompts: Array<Record<string, unknown>> = []
   const pages: RecordedPage[] = []
   const unregisterPage = vi.fn()
@@ -138,6 +140,12 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const autoApproveSet = vi.fn(async () => ({ enabled: true, inherited: false }))
   const version = vi.fn(async () => fakeOptions.version ?? { version: VERSION })
   const sessionPlan = vi.fn(async () => ({ plan: null }))
+  const sandboxTemplateBuildStatus = vi.fn(async () => ({
+    phase: 'idle',
+    image: 'oc-forge-sandbox:latest',
+    contextDir: '/server/container',
+    tail: [],
+  }))
 
   const locationGet = vi.fn(
     fakeOptions.locationGet ?? (async () => ({ project: { id: 'proj-1' } })),
@@ -156,6 +164,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
       autoApproveSet,
       version,
       sessionPlan,
+      sandboxTemplateBuildStatus,
       events: {
         subscribe: vi.fn((name: string, options?: { signal?: AbortSignal }) => {
           type Event = { data: Record<string, unknown> }
@@ -218,7 +227,18 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
       },
     },
     client: { location: { get: locationGet }, rpc, session: { list: sessionList, remove: sessionRemove, create: sessionCreate } },
-    theme: { text: { base: '#ffffff', muted: '#888888' } },
+    theme: {
+      text: { base: '#ffffff', muted: '#888888' },
+      surface: () => ({
+        text: {
+          base: '#ffffff',
+          muted: '#888888',
+          feedback: { error: { base: '#ff0000' } },
+          action: { primary: { focused: '#000000' } },
+        },
+        background: { action: { primary: { focused: '#ffffff' } } },
+      }),
+    },
     keymap: {
       layer: vi.fn((input: () => RecordedLayer) => {
         layers.push(input())
@@ -246,7 +266,9 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
         }),
       },
       dialog: {
-        show: vi.fn(),
+        show: vi.fn((render: () => unknown) => {
+          dialogRenders.push(render)
+        }),
         set: vi.fn(),
         clear: vi.fn(),
         select: vi.fn(async () => undefined),
@@ -277,6 +299,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     navigations,
     prompts,
     pages,
+    dialogRenders,
     unregisterPage,
     emit,
     dataHandlers,
@@ -289,6 +312,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     autoApproveSet,
     version,
     sessionPlan,
+    sandboxTemplateBuildStatus,
     setRoute,
     setLocation,
     findRpcSubscription: (name: string) => rpcSubscriptions.find((subscription) => subscription.name === name),
@@ -680,6 +704,25 @@ describe('V2 TUI setup', () => {
       expect(fake.loopDefaults).toHaveBeenCalled()
       expect(fake.hostSandboxSet).not.toHaveBeenCalled()
     } finally {
+      cleanup()
+    }
+  })
+
+  test('the sandbox build command reads the server build status over RPC and does not warn about a local build context', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    findCommand(fake, 'forge.sandbox.buildImage').run?.()
+
+    expect(fake.dialogRenders).toHaveLength(1)
+    const render = fake.dialogRenders[0] as () => JSX.Element
+    const dialog = await testRender(render)
+    try {
+      await vi.waitFor(() => expect(fake.sandboxTemplateBuildStatus).toHaveBeenCalledTimes(1))
+      expect(fake.sandboxTemplateBuildStatus.mock.calls[0]?.[1]).toEqual({ location: { directory: '/test/project' } })
+      expect(fake.toasts.map((toast) => toast['title'])).not.toContain('Sandbox build context missing')
+    } finally {
+      dialog.renderer.destroy()
       cleanup()
     }
   })

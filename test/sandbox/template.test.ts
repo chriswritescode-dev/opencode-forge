@@ -1,9 +1,9 @@
-import { describe, test, expect, vi } from 'vitest'
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { spawnSync } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { buildAndLoadSandboxTemplate, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep, resolveTemplateBuildArgs } from '../../src/sandbox/template'
+import { buildAndLoadSandboxTemplate, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep, readSandboxTemplateBuildStatus, resolveTemplateBuildArgs, startSandboxTemplateBuild } from '../../src/sandbox/template'
 import type { BuildTemplateDeps, SandboxBuildProgress } from '../../src/sandbox/template'
 import type { Logger } from '../../src/types'
 
@@ -404,54 +404,246 @@ describe('build progress reporting', () => {
   })
 })
 
-describe('concurrent build guard', () => {
-  test('a second overlapping build is rejected and never touches the shared tar', async () => {
+describe('sandbox template build tracker', () => {
+  beforeEach(() => {
+    delete globalThis.__opencodeForgeShared?.['sandbox-template-build.v1']
+  })
+
+  function makeContextDir(): string {
+    return mkdtempSync(join(tmpdir(), 'forge-ctx-'))
+  }
+
+  function makeGatedDeps(tmp: string, progress?: SandboxBuildProgress[], record?: Array<{ command: string; args: string[] }>): {
+    deps: BuildTemplateDeps
+    release: () => void
+    emit: (chunk: string) => void
+  } {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let emit: (chunk: string) => void = () => {}
+    const deps: BuildTemplateDeps = {
+      runCommand: async (command: string, args: string[], opts) => {
+        record?.push({ command, args })
+        if (args[0] === 'build') {
+          emit = opts.onOutput ?? (() => {})
+          await gate
+        }
+        if (args[0] === 'save') writeFileSync(args[args.indexOf('-o') + 1], 'fake-tar')
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+      loadTemplate: vi.fn(async () => {}),
+      logger,
+      tmpDir: tmp,
+      ...(progress ? { onProgress: (entry: SandboxBuildProgress) => progress.push(entry) } : {}),
+    }
+    return { deps, release, emit: (chunk: string) => emit(chunk) }
+  }
+
+  test('reports idle status before any build starts', () => {
+    expect(readSandboxTemplateBuildStatus({ contextDir: '/ctx', tag: 'tag:1' })).toEqual({
+      phase: 'idle',
+      image: 'tag:1',
+      contextDir: '/ctx',
+      tail: [],
+    })
+  })
+
+  test('a running build caps the tail, keeps the latest line, and keeps the step monotonic', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    const contextDir = makeContextDir()
+    try {
+      const progress: SandboxBuildProgress[] = []
+      const { deps, release, emit } = makeGatedDeps(tmp, progress)
+      let resolveSettled: () => void = () => {}
+      const settled = new Promise<void>((resolve) => { resolveSettled = resolve })
+      const started = startSandboxTemplateBuild({
+        contextDir,
+        tag: 'tag:1',
+        deps,
+        onSettled: () => { resolveSettled() },
+      })
+
+      expect(started).toMatchObject({ phase: 'running', image: 'tag:1', contextDir, stage: 'build', tail: [] })
+
+      for (let step = 1; step <= 14; step += 1) emit(`#${step} [ ${step}/20] step ${step}\n`)
+      emit('#15 [ 3/20] step 3\n')
+
+      const running = readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })
+      expect(running.phase).toBe('running')
+      expect(running.stage).toBe('build')
+      expect(running.tail).toHaveLength(12)
+      expect(running.tail[0]).toBe('#4 [ 4/20] step 4')
+      expect(running.tail[11]).toBe('#15 [ 3/20] step 3')
+      expect(running.lastLine).toBe('#15 [ 3/20] step 3')
+      expect(running.step).toEqual({ current: 14, total: 20, description: 'step 14' })
+      expect(running.elapsedMs).toBeGreaterThanOrEqual(0)
+      expect(progress).toHaveLength(15)
+
+      release()
+      await settled
+
+      const finished = readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })
+      expect(finished.phase).toBe('success')
+      expect(finished.stage).toBe('load')
+      expect(finished.step).toBeUndefined()
+      expect(finished.tail.at(-1)).toBe('Loading tag:1 into the msb image store...')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+      rmSync(contextDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a successful build settles to success and reports it to onSettled', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    const contextDir = makeContextDir()
     try {
       const record: Array<{ command: string; args: string[] }> = []
-      let releaseBuild: () => void = () => {}
-      const buildGate = new Promise<void>((resolve) => { releaseBuild = resolve })
-      const deps: BuildTemplateDeps = {
-        runCommand: async (command: string, args: string[]) => {
-          record.push({ command, args })
-          if (args[0] === 'build') await buildGate
-          if (args[0] === 'save') writeFileSync(args[args.indexOf('-o') + 1], 'fake-tar')
-          return { stdout: '', stderr: '', exitCode: 0 }
-        },
-        loadTemplate: vi.fn(async () => {}),
-        logger,
-        tmpDir: tmp,
-      }
+      const settled: Array<{ ok: true } | { ok: false; message: string }> = []
+      const started = startSandboxTemplateBuild({
+        contextDir,
+        tag: 'tag:1',
+        deps: { runCommand: makeFakeRun(record), loadTemplate: vi.fn(async () => {}), logger, tmpDir: tmp },
+        onSettled: (result) => settled.push(result),
+      })
+      expect(started.phase).toBe('running')
 
-      const first = buildAndLoadSandboxTemplate('/ctx', 'tag:1', deps)
-      await expect(buildAndLoadSandboxTemplate('/ctx', 'tag:1', deps)).rejects.toThrow(CONCURRENT_BUILD_MESSAGE)
-      releaseBuild()
-      await first
+      await vi.waitFor(() => {
+        expect(readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' }).phase).toBe('success')
+      })
 
-      expect(record.filter((r) => r.args[0] === 'build')).toHaveLength(1)
+      const finished = readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })
+      expect(finished.failure).toBeUndefined()
+      expect(typeof finished.elapsedMs).toBe('number')
+      expect(settled).toEqual([{ ok: true }])
       expect(leftoverTars(tmp)).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+      rmSync(contextDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a failed build settles to error with the message and releases the guard', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    const contextDir = makeContextDir()
+    try {
+      const record: Array<{ command: string; args: string[] }> = []
+      const settled: Array<{ ok: true } | { ok: false; message: string }> = []
+      startSandboxTemplateBuild({
+        contextDir,
+        tag: 'tag:1',
+        deps: {
+          runCommand: makeFakeRun(record, { exitCode: 1, stderr: 'boom' }),
+          loadTemplate: vi.fn(async () => {}),
+          logger,
+          tmpDir: tmp,
+        },
+        onSettled: (result) => settled.push(result),
+      })
+
+      await vi.waitFor(() => {
+        expect(readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' }).phase).toBe('error')
+      })
+
+      const failed = readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })
+      expect(failed.failure).toBe('Docker build failed: boom')
+      expect(settled).toEqual([{ ok: false, message: 'Docker build failed: boom' }])
+
+      const retry = startSandboxTemplateBuild({
+        contextDir,
+        tag: 'tag:1',
+        deps: { runCommand: makeFakeRun(record), loadTemplate: vi.fn(async () => {}), logger, tmpDir: tmp },
+      })
+      expect(retry.phase).toBe('running')
+      await vi.waitFor(() => {
+        expect(readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' }).phase).toBe('success')
+      })
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+      rmSync(contextDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a second overlapping start is rejected and never runs another build', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    const contextDir = makeContextDir()
+    try {
+      const record: Array<{ command: string; args: string[] }> = []
+      const progress: SandboxBuildProgress[] = []
+      const { deps, release } = makeGatedDeps(tmp, progress, record)
+      let resolveSettled: () => void = () => {}
+      const settled = new Promise<void>((resolve) => { resolveSettled = resolve })
+      const first = startSandboxTemplateBuild({
+        contextDir,
+        tag: 'tag:1',
+        deps,
+        onSettled: () => { resolveSettled() },
+      })
+      expect(first.phase).toBe('running')
+
+      expect(startSandboxTemplateBuild({ contextDir, tag: 'tag:1', deps })).toEqual({ error: CONCURRENT_BUILD_MESSAGE })
+
+      release()
+      await settled
+
+      expect(readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' }).phase).toBe('success')
+      expect(record.filter((entry) => entry.args[0] === 'build')).toHaveLength(1)
+      expect(leftoverTars(tmp)).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+      rmSync(contextDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a missing build context returns an error without running commands', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    const contextDir = join(tmp, 'missing-context')
+    try {
+      const runCommandFn = vi.fn(makeFakeRun([]))
+      expect(startSandboxTemplateBuild({
+        contextDir,
+        tag: 'tag:1',
+        deps: { runCommand: runCommandFn, loadTemplate: vi.fn(async () => {}), logger, tmpDir: tmp },
+      })).toEqual({ error: `Sandbox build context is missing at ${contextDir}. Reinstall opencode-forge.` })
+      expect(runCommandFn).not.toHaveBeenCalled()
+      expect(readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })).toEqual({
+        phase: 'idle',
+        image: 'tag:1',
+        contextDir,
+        tail: [],
+      })
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
   })
 
-  test('the guard is released after a failed build so a retry can start', async () => {
+  test('a returned snapshot is a copy of the live run', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    const contextDir = makeContextDir()
     try {
-      const record: Array<{ command: string; args: string[] }> = []
-      const failing: BuildTemplateDeps = {
-        runCommand: makeFakeRun(record, { exitCode: 1, stderr: 'boom' }),
-        loadTemplate: vi.fn(async () => {}),
-        logger,
-        tmpDir: tmp,
-      }
+      const { deps, release, emit } = makeGatedDeps(tmp)
+      let resolveSettled: () => void = () => {}
+      const settled = new Promise<void>((resolve) => { resolveSettled = resolve })
+      startSandboxTemplateBuild({
+        contextDir,
+        tag: 'tag:1',
+        deps,
+        onSettled: () => { resolveSettled() },
+      })
+      emit('#4 [ 4/20] RUN copy\n')
 
-      await expect(buildAndLoadSandboxTemplate('/ctx', 'tag:1', failing)).rejects.toThrow(/boom/)
-      await expect(
-        buildAndLoadSandboxTemplate('/ctx', 'tag:1', { ...failing, runCommand: makeFakeRun(record) }),
-      ).resolves.toBeUndefined()
+      const live = readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })
+      live.tail.push('mutated')
+      live.step!.current = 99
+
+      const reread = readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })
+      expect(reread.tail).toEqual(['#4 [ 4/20] RUN copy'])
+      expect(reread.step).toEqual({ current: 4, total: 20, description: 'RUN copy' })
+
+      release()
+      await settled
     } finally {
       rmSync(tmp, { recursive: true, force: true })
+      rmSync(contextDir, { recursive: true, force: true })
     }
   })
 })

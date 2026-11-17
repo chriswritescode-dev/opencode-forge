@@ -120,7 +120,7 @@ Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with dr
 - **SandboxManager** (`sandbox/manager.ts`) - Sandbox lifecycle management
 - **SandboxContext** (`sandbox/context.ts`) - Tool call redirection
 - **SandboxTools** (`hooks/sandbox-tools.ts`) - Hooks for sandbox integration
-- **SandboxMessage** (`hooks/sandbox-message.ts`) - Adds the sandbox context note to every sandboxed request, and after a session's sandbox preference is turned off repeats the host note on every request until it is turned back on
+- **SandboxMessage** (`hooks/sandbox-message.ts`) - Keeps the sandbox context note in the session's `forge-sandbox` OpenCode instruction entry and rewrites it only when the session's sandbox is turned on or off, restarted, or recreated; OpenCode places the first value in the system prompt and appends each later change to the history, so the cached prompt prefix survives a toggle
 - **SessionSandboxController** (`sandbox/session-controller.ts`) - Shared host-session sandbox plus per-session preference reconciliation
 - **Shell shim** (`sandbox/shell-shim.ts`) - Generated shim routing the native `shell` tool through `msb exec`
 
