@@ -131,12 +131,12 @@ describe('SandboxBuildDialog start conflict', () => {
     }
   })
 
-  test('shows the outcome of a build that finished before the follow-up read without polling', async () => {
+  test('reports the start error instead of an earlier finished build', async () => {
     const { host, toasts } = createHost()
     const readStatus = vi.fn()
       .mockResolvedValueOnce(idleStatus())
       .mockResolvedValue(status({ phase: 'success', elapsedMs: 1000 }))
-    const start = vi.fn(async (): Promise<ForgeSandboxTemplateBuildOutput> => ({ error: CONCURRENT_BUILD_MESSAGE }))
+    const start = vi.fn(async (): Promise<ForgeSandboxTemplateBuildOutput> => ({ error: 'Sandbox build context is missing' }))
     const dialog = await testRender(() => createComponent(SandboxBuildDialog, { host, start, readStatus }))
     try {
       await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(1))
@@ -144,11 +144,10 @@ describe('SandboxBuildDialog start conflict', () => {
 
       dialog.mockInput.pressEnter()
 
-      await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(toasts.some((toast) => toast.variant === 'error')).toBe(true))
+      expect(toasts.find((toast) => toast.variant === 'error')?.message).toBe('Sandbox build context is missing')
       await new Promise((resolve) => setTimeout(resolve, 700))
-
       expect(readStatus).toHaveBeenCalledTimes(2)
-      expect(toasts.filter((toast) => toast.variant === 'error')).toEqual([])
     } finally {
       dialog.renderer.destroy()
     }

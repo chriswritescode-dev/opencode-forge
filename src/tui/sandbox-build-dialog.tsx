@@ -166,25 +166,28 @@ export function SandboxBuildDialog(props: {
     setStatusError('')
     setStartError('')
     props.host.toast({ message: `Building ${image()}...`, variant: 'info', duration: 4000 })
-    const output = await start()
-    starting = false
-    if (disposed) return
-    if ('error' in output) {
-      const current = await readStatus()
+    try {
+      const output = await start()
       if (disposed) return
-      if (!('error' in current) && current.phase !== 'idle') {
-        setStatus(current)
-        setEngaged(true)
-        if (current.phase === 'running') schedulePoll()
+      if ('error' in output) {
+        const current = await readStatus()
+        if (disposed) return
+        if (!('error' in current) && current.phase === 'running') {
+          setStatus(current)
+          setEngaged(true)
+          schedulePoll()
+          return
+        }
+        setStartError(output.error)
+        props.host.toast({ message: output.error, variant: 'error', duration: 10_000 })
         return
       }
-      setStartError(output.error)
-      props.host.toast({ message: output.error, variant: 'error', duration: 10_000 })
-      return
+      setStatus(output)
+      setEngaged(true)
+      schedulePoll()
+    } finally {
+      starting = false
     }
-    setStatus(output)
-    setEngaged(true)
-    schedulePoll()
   }
 
   return (
