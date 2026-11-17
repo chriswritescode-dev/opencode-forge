@@ -130,14 +130,15 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
         }
 
         const current = readDesired(toProjectId)
+        const ts = now()
         const target: SessionSandboxDesiredState = {
+          ...current,
           version: 2,
           revision,
           sessions: { ...current?.sessions, [sessionId]: newest.state.sessions[sessionId] },
-          requestedAt: Date.now(),
+          requestedAt: ts,
         }
-        if (current?.overrides) target.overrides = current.overrides
-        upsertStmt.run(toProjectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(target), now())
+        upsertStmt.run(toProjectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(target), ts)
 
         return [...sources.map((source) => source.projectId), toProjectId]
       })
