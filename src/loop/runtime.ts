@@ -345,7 +345,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   async function findBusyLoopSessions(state: LoopState): Promise<string[]> {
     const statuses = await fetchSessionStatuses(state.worktreeDir)
     if (!statuses) throw new Error('Session status is unavailable')
-    const active = await activeLoopSessions(statuses, state.loopName, sessionId => resolveSessionLoopName(sessionId, true))
+    const active = await activeLoopSessions(statuses, state.loopName, sessionId => tolerateUndeterminedParent(resolveSessionLoopName(sessionId, true)))
     return active
       .map(([sessionId]) => sessionId)
       .filter((sessionId) => sessionId !== state.standbySessionId)
