@@ -19,6 +19,7 @@ export interface ForgeSharedRegistries {
   'v2-location-tools.v2': Map<string, Promise<Record<string, ToolDefinition>>>
   'pending-shell-sandboxes.v1': Map<string, SandboxContext>
   'v2-session-status.v1': LRUCache<SessionStatusEntry>
+  'v2-deleted-sessions.v1': LRUCache<true>
   'loop-registry.v2': Map<string, Set<string>>
   'sandbox-secret-providers.v1': Map<string, SandboxSecretProvider>
 }

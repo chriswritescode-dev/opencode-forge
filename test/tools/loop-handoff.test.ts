@@ -7,6 +7,7 @@ import { createLoopHandoffTools } from '../../src/tools/loop-handoff'
 import type { ToolDefinition } from '../../src/tools/tool'
 import { LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
 import { coderHandoffSchema } from '../../src/loop/handoff'
+import { ParentLookupUndeterminedError } from '../../src/utils/session-ancestry'
 import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
@@ -36,6 +37,7 @@ describe('loop handoff tools', () => {
   let statusError: Error | null
   let statusHook: (() => void) | null
   let parentMap: Record<string, string | null>
+  let parentErrors: Record<string, Error>
 
   beforeEach(() => {
     testDb = createTestDb()
@@ -48,6 +50,7 @@ describe('loop handoff tools', () => {
     statusError = null
     statusHook = null
     parentMap = {}
+    parentErrors = {}
 
     const { client } = createFakeForgeClient({
       session: {
@@ -63,7 +66,11 @@ describe('loop handoff tools', () => {
       projectId: PROJECT_ID,
       client,
       config,
-      getParentSessionId: async (sessionId) => parentMap[sessionId] ?? null,
+      getParentSessionId: async (sessionId) => {
+        const failure = parentErrors[sessionId]
+        if (failure) throw failure
+        return parentMap[sessionId] ?? null
+      },
     })
     loop = runtime.loop
     service = runtime.loopService
@@ -182,6 +189,29 @@ describe('loop handoff tools', () => {
 
       expect(result.ok).toBe(true)
       expect(handoffs()).toHaveLength(1)
+    })
+
+    test('ignores a busy session whose parent lookup reports it as gone', async () => {
+      startLoop()
+      statuses['gone-session'] = { type: 'busy' }
+      parentErrors['gone-session'] = new ParentLookupUndeterminedError('gone-session', 'not-found')
+
+      const result = await execute(LOOP_HANDOFF_TOOL_NAME, coderPayload(), CODER_SESSION)
+
+      expect(result.ok).toBe(true)
+      expect(handoffs()).toHaveLength(1)
+    })
+
+    test('still rejects when the parent lookup fails for another reason', async () => {
+      startLoop()
+      statuses['unreachable-session'] = { type: 'busy' }
+      parentErrors['unreachable-session'] = new Error('connection refused')
+
+      const result = await execute(LOOP_HANDOFF_TOOL_NAME, coderPayload(), CODER_SESSION)
+
+      expect(result.error).toContain('Could not check subagent sessions')
+      expect(result.error).toContain('connection refused')
+      expect(handoffs()).toHaveLength(0)
     })
   })
 
