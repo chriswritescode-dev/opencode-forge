@@ -1,16 +1,28 @@
 import type { Logger } from '../types'
 import { processShared, projectLoopKey } from '../utils/process-shared'
 
+export type BackgroundJob = {
+  kind: string
+  label: string
+}
+
+export type PendingBackgroundWork = {
+  recordedAt: number
+  jobs: BackgroundJob[]
+}
+
 export type IdleGateStore = {
   sessionsAwaitingBusy: Map<string, { sessionId: string; sentAt: number }>
   queuedPrompts: Map<string, Map<string, number>>
   suppressedIdles: Set<string>
+  pendingBackgroundWork: Map<string, PendingBackgroundWork>
 }
 
 const store = processShared('idle-gate.v2', () => ({
   sessionsAwaitingBusy: new Map(),
   queuedPrompts: new Map(),
   suppressedIdles: new Set(),
+  pendingBackgroundWork: new Map(),
 }))
 
 const sessionsAwaitingBusy = store.sessionsAwaitingBusy
@@ -21,6 +33,7 @@ export const QUEUED_PROMPT_MAX_AGE_MS = 10 * 60 * 1000
 
 const queuedPrompts = store.queuedPrompts
 const suppressedIdles = store.suppressedIdles
+const pendingBackgroundWork = store.pendingBackgroundWork
 
 function sweepExpiredQueuedPrompts(now: number): void {
   for (const [sessionId, items] of queuedPrompts) {
@@ -61,6 +74,28 @@ export function isPromptQueued(sessionId: string, now = Date.now()): boolean {
   return true
 }
 
+export function recordIdleBackgroundWork(sessionId: string, jobs: BackgroundJob[], now = Date.now()): void {
+  if (jobs.length === 0) {
+    pendingBackgroundWork.delete(sessionId)
+    return
+  }
+  pendingBackgroundWork.set(sessionId, { recordedAt: now, jobs: [...jobs] })
+}
+
+export function clearBackgroundWorkStartedAt(sessionId: string, startedAt: number): void {
+  const pending = pendingBackgroundWork.get(sessionId)
+  if (!pending || pending.recordedAt > startedAt) return
+  pendingBackgroundWork.delete(sessionId)
+}
+
+export function getPendingBackgroundWork(sessionId: string): PendingBackgroundWork | null {
+  return pendingBackgroundWork.get(sessionId) ?? null
+}
+
+export function hasPendingBackgroundWork(sessionId: string): boolean {
+  return pendingBackgroundWork.has(sessionId)
+}
+
 export function recordSuppressedIdle(sessionId: string): void {
   suppressedIdles.add(sessionId)
 }
@@ -80,12 +115,14 @@ export function consumeSuppressedIdle(sessionId: string): boolean {
 export function clearIdleGateForSession(sessionId: string): void {
   queuedPrompts.delete(sessionId)
   suppressedIdles.delete(sessionId)
+  pendingBackgroundWork.delete(sessionId)
 }
 
 export function __resetIdleGate(): void {
   sessionsAwaitingBusy.clear()
   queuedPrompts.clear()
   suppressedIdles.clear()
+  pendingBackgroundWork.clear()
 }
 
 export function markPromptSent(projectId: string, loopName: string, sessionId: string, logger: Logger): void {

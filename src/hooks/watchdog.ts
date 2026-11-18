@@ -5,6 +5,7 @@ import { classifyProviderLimit } from '../loop/provider-limit'
 import { isAuditorPhase } from '../utils/loop-helpers'
 import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
+import type { PendingBackgroundWork } from '../loop/idle-gate'
 import { LRUCache } from '../utils/lru-cache'
 
 export type LoopWatchdogStallReason =
@@ -12,6 +13,7 @@ export type LoopWatchdogStallReason =
   | 'missing_status'
   | 'status_error'
   | 'busy_no_progress'
+  | 'background_no_progress'
 
 export interface LoopWatchdogStallInfo {
   consecutiveStalls: number
@@ -69,10 +71,12 @@ export function createLoopWatchdog(input: {
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
   nudge(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
+  nudgeBackground(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
   terminate(loopName: string, state: LoopState, reason: TerminationReason): Promise<void>
   handleAuditorProviderLimit?: (loopName: string, limitReason: string) => Promise<boolean>
   resolveSessionLoopName?: (sessionId: string) => Promise<string | null>
   isPromptQueued?: (sessionId: string) => boolean
+  getPendingBackgroundWork?: (sessionId: string) => PendingBackgroundWork | null
   statusRetryAttempts?: number
   statusRetryBackoffMs?: number
 }): LoopWatchdog {
@@ -154,11 +158,15 @@ export function createLoopWatchdog(input: {
 
     if (reason === 'status_error') {
       input.logger.log(`Loop watchdog: stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, reason=status_error, elapsed=${elapsedMs}ms), re-triggering`)
+    } else if (reason === 'background_no_progress') {
+      input.logger.log(`Loop watchdog: stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, reason=background_no_progress, elapsed=${elapsedMs}ms), nudging the session about its background work`)
     } else {
       input.logger.log(`Loop watchdog: stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, reason=${reason}, status=${status ?? 'missing'}, elapsed=${elapsedMs}ms), re-triggering`)
     }
 
-    const action = reason === 'busy_no_progress' ? input.nudge : input.recover
+    const action = reason === 'busy_no_progress'
+      ? input.nudge
+      : reason === 'background_no_progress' ? input.nudgeBackground : input.recover
     await action(loopName, state, {
       reason,
       status,
@@ -272,6 +280,22 @@ export function createLoopWatchdog(input: {
         if (anyRetrying) {
           resetActivity(loopName, 'status:retry')
           input.logger.debug(`Loop watchdog: provider retry in progress for ${loopName}, resetting timer`)
+          return
+        }
+
+        const pendingBackground = input.getPendingBackgroundWork?.(state.sessionId) ?? null
+        if (pendingBackground) {
+          const busyTimeout = input.loopService.getBusyStallTimeoutMs()
+          const backgroundElapsed = Date.now() - Math.max(lastActivity, pendingBackground.recordedAt)
+          if (busyTimeout <= 0 || backgroundElapsed < busyTimeout) {
+            input.logger.debug(`Loop watchdog: background work pending for ${loopName} (${pendingBackground.jobs.length} job(s), ${backgroundElapsed}ms without progress), skipping stall tick`)
+            return
+          }
+          input.logger.error(`Loop watchdog: loop ${loopName} has background work with no progress for ${backgroundElapsed}ms (ceiling ${busyTimeout}ms), nudging session`)
+          await handleStall(loopName, state, {
+            reason: 'background_no_progress',
+            elapsedMs: backgroundElapsed,
+          })
           return
         }
 

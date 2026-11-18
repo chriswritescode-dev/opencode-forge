@@ -23,7 +23,7 @@ import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permissi
 import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatLoopSessionTitle, formatPostActionSessionTitle } from '../utils/session-titles'
-import { clearPromptPending, isAwaitingBusy, isAwaitingBusyExpired, isPromptQueued, recordSuppressedIdle } from './idle-gate'
+import { clearPromptPending, getPendingBackgroundWork, hasPendingBackgroundWork, isAwaitingBusy, isAwaitingBusyExpired, isPromptQueued, recordSuppressedIdle } from './idle-gate'
 import {
   clearPromptInFlight,
   clearPromptInFlightBySession,
@@ -54,7 +54,7 @@ import { resolvePostActionConfig } from './post-action-config'
 import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
 import { truncateAtWordBoundary } from '../utils/format'
-import { buildHandoffNudgePrompt } from './prompts'
+import { buildBackgroundStallPrompt, buildHandoffNudgePrompt } from './prompts'
 import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, parseHandoffWriteInput, type HandoffArgs, type LoopHandoffRecordFor, type LoopHandoffRole } from './handoff'
 import { z, type ZodError } from 'zod'
 
@@ -470,6 +470,35 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
+  async function sendLoopTurnPrompt(
+    loopName: string,
+    state: LoopState,
+    role: LoopHandoffRole,
+    promptText: string,
+    errorContext: string,
+  ): Promise<void> {
+    if (role === 'post_action') {
+      const { error } = await sendPostActionPrompt(loopName, state.sessionId, promptText)
+      if (error) {
+        await handlePromptError(loopName, state, `failed to send ${errorContext}`, error)
+      }
+      return
+    }
+
+    const choice = role === 'auditor' ? resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger) : undefined
+    await sendPromptWithRetryRecovery({
+      loopName,
+      sessionId: state.sessionId,
+      promptText,
+      agent: role === 'auditor' ? 'auditor-loop' : 'code',
+      model: choice ? choice.model : resolveLoopModel(getConfig(), loopService, loopName),
+      variant: choice ? choice.variant : state.executionVariant,
+      errorContext,
+      errorState: state,
+      isRetryValid: (fresh) => fresh.sessionId === state.sessionId && fresh.phase === state.phase,
+    })
+  }
+
   async function nudgeForMissingHandoff(
     loopName: string,
     state: LoopState,
@@ -478,6 +507,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   ): Promise<void> {
     const role = handoffRoleForPhase(state.phase)
     if (!role) return
+
+    if (hasPendingBackgroundWork(state.sessionId)) {
+      logger.log(`Loop: ${state.phase} turn ended without a handoff for ${loopName}; skipping the nudge because the session's background work will wake it`)
+      return
+    }
 
     const owner = { sessionId: state.sessionId, phase: state.phase, iteration: state.iteration }
     const stored = handoffNudges.get(loopName)
@@ -500,26 +534,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const promptText = unanswered ? phasePrompt() : buildHandoffNudgePrompt(role)
     logger.log(`Loop: ${state.phase} turn ended without a handoff for ${loopName}; sending ${unanswered ? 'the full phase prompt' : 'a handoff nudge'} (${nudges + 1}/${MAX_HANDOFF_NUDGES})`)
 
-    if (role === 'post_action') {
-      const { error } = await sendPostActionPrompt(loopName, state.sessionId, promptText)
-      if (error) {
-        await handlePromptError(loopName, state, 'failed to send post-action handoff nudge', error)
-      }
-      return
-    }
-
-    const choice = role === 'auditor' ? resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger) : undefined
-    await sendPromptWithRetryRecovery({
-      loopName,
-      sessionId: state.sessionId,
-      promptText,
-      agent: role === 'auditor' ? 'auditor-loop' : 'code',
-      model: choice ? choice.model : resolveLoopModel(getConfig(), loopService, loopName),
-      variant: choice ? choice.variant : state.executionVariant,
-      errorContext: 'handoff nudge',
-      errorState: state,
-      isRetryValid: (fresh) => fresh.sessionId === state.sessionId && fresh.phase === state.phase,
-    })
+    await sendLoopTurnPrompt(loopName, state, role, promptText, 'handoff nudge')
   }
 
   function reportUnappliedPendingHandoff(loopName: string, sessionId: string, expectedRole: LoopHandoffRole): void {
@@ -1572,6 +1587,35 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
+  async function nudgeBackground(
+    loopName: string,
+    _state: LoopState,
+    context: LoopWatchdogRecoveryContext,
+  ): Promise<void> {
+    await withStateLock(loopName, async () => {
+      const fresh = loopService.getActiveState(loopName)
+      if (!fresh?.active) return
+      const pending = getPendingBackgroundWork(fresh.sessionId)
+      if (!pending) return
+      const role = handoffRoleForPhase(fresh.phase)
+      if (!role) return
+
+      logger.error(`Loop: background work for ${loopName} showed no progress for ${context.elapsedMs}ms (stall #${context.stallCount}); prompting session ${fresh.sessionId}`)
+
+      try {
+        await sendLoopTurnPrompt(
+          loopName,
+          fresh,
+          role,
+          buildBackgroundStallPrompt(role, pending.jobs, context.elapsedMs),
+          'background-stall nudge',
+        )
+      } catch (err) {
+        await handlePromptError(loopName, fresh, 'background-stall nudge', err)
+      }
+    })
+  }
+
   async function tryTerminateLoop(loopName: string, _state: LoopState, reason: TerminationReason): Promise<void> {
     await withStateLock(loopName, async () => {
       const fresh = loopService.getActiveState(loopName)
@@ -1586,11 +1630,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     logger,
     recover: recoverWatchdogStall,
     nudge: nudgeStuckSession,
+    nudgeBackground,
     terminate: tryTerminateLoop,
     handleAuditorProviderLimit: (loopName: string, limitReason: string) =>
       withStateLock(loopName, () => handleAuditorProviderLimit(loopName, limitReason)),
     resolveSessionLoopName,
     isPromptQueued,
+    getPendingBackgroundWork,
   })
 
   const codeGraphSnapshotter = createCodeGraphSnapshotter({ logger })
