@@ -11,6 +11,7 @@ import { findLastIndex } from '../utils/array'
 import { resolveAutoApproveDecision, type PermissionEffectLike } from '../utils/auto-approve-policy'
 import { z } from 'zod'
 import { processShared } from '../utils/process-shared'
+import { recordIdleBackgroundWork, type BackgroundJob } from '../loop/idle-gate'
 
 const V2_TO_V1_TOOL_NAME_TABLE = invertRenameTable(V1_TO_V2_TOOL_NAMES)
 
@@ -62,6 +63,16 @@ const toolArgsSchema = z.looseObject({
   include: z.string().optional().catch(undefined),
   pattern: z.string().optional().catch(undefined),
   patchText: z.string().optional().catch(undefined),
+})
+
+const backgroundJobSchema = z.looseObject({
+  kind: z.string(),
+  sessionID: z.string(),
+  command: z.string().optional().catch(undefined),
+  description: z.string().optional().catch(undefined),
+  agent: z.string().optional().catch(undefined),
+  path: z.string().optional().catch(undefined),
+  jobID: z.string().optional().catch(undefined),
 })
 
 async function wrapShellToolForSandbox(
@@ -291,5 +302,18 @@ export async function registerForgeHooksV2(
     await core.compacting({ sessionID: event.sessionID }, output)
     if (output.prompt !== undefined) event.system.push({ type: 'text', text: output.prompt })
     for (const text of output.context) event.system.push({ type: 'text', text })
+  })
+
+  await ctx.session.hook('experimental.idle', (event) => {
+    const jobs: BackgroundJob[] = []
+    for (const entry of event.background) {
+      const parsed = backgroundJobSchema.safeParse(entry)
+      if (!parsed.success || parsed.data.sessionID !== event.sessionID) continue
+      const job = parsed.data
+      const label = [job.command, job.description, job.agent, job.path, job.jobID]
+        .find((value) => value !== undefined && value.length > 0) ?? job.kind
+      jobs.push({ kind: job.kind, label })
+    }
+    recordIdleBackgroundWork(event.sessionID, jobs)
   })
 }

@@ -7,6 +7,7 @@ import { buildAgents } from '../../src/agents'
 import { buildArchitectReminder, createForgeCore, type ForgeCore } from '../../src/host/forge-core'
 import { closeDatabase, createLoopsRepo, initializeDatabase } from '../../src/storage'
 import { registerForgeHooksV2, toV1ToolName, type ForgeHooksV2Core } from '../../src/host/v2-hooks'
+import { getPendingBackgroundWork, hasPendingBackgroundWork, recordIdleBackgroundWork, __resetIdleGate } from '../../src/loop/idle-gate'
 import { createSessionHooks } from '../../src/hooks/session'
 import { resolvePromptsDir } from '../../src/install/paths'
 import {
@@ -1075,6 +1076,46 @@ describe('registerForgeHooksV2 session hooks', () => {
       expect.stringContaining('Your summary will be the ONLY context after compaction'),
       'compaction context',
     ])
+  })
+})
+
+describe('registerForgeHooksV2 experimental idle hook', () => {
+  async function idleEvent(sessionID: string, background: unknown[]) {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore()
+    await registerHooks(ctx, core)
+    await invokeHook(hooks, 'session', 'experimental.idle', { sessionID, background })
+  }
+
+  test('records background work owned by the idle session with its labels', async () => {
+    __resetIdleGate()
+    await idleEvent('ses_own', [
+      { kind: 'shell', sessionID: 'ses_own', shellID: 'shell_1', command: 'pnpm dev' },
+      { kind: 'subagent', sessionID: 'ses_own', childSessionID: 'ses_child', agent: 'code', description: 'audit helpers' },
+    ])
+    expect(getPendingBackgroundWork('ses_own')?.jobs).toEqual([
+      { kind: 'shell', label: 'pnpm dev' },
+      { kind: 'subagent', label: 'audit helpers' },
+    ])
+  })
+
+  test('records a newer job kind such as codemode by its job ID', async () => {
+    __resetIdleGate()
+    await idleEvent('ses_own', [{ kind: 'codemode', sessionID: 'ses_own', jobID: 'job_123' }])
+    expect(getPendingBackgroundWork('ses_own')?.jobs).toEqual([{ kind: 'codemode', label: 'job_123' }])
+  })
+
+  test('ignores background work owned only by a descendant session', async () => {
+    __resetIdleGate()
+    await idleEvent('ses_parent', [{ kind: 'subagent', sessionID: 'ses_child', agent: 'code', description: 'audit helpers' }])
+    expect(hasPendingBackgroundWork('ses_parent')).toBe(false)
+  })
+
+  test('clears the marker when the session has no remaining work', async () => {
+    __resetIdleGate()
+    recordIdleBackgroundWork('ses_done', [{ kind: 'shell', label: 'pnpm dev' }])
+    await idleEvent('ses_done', [])
+    expect(hasPendingBackgroundWork('ses_done')).toBe(false)
   })
 })
 

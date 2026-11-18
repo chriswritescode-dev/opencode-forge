@@ -51,7 +51,7 @@
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
   "engines": {
-    "opencode": ">=2.0.14"
+    "opencode": ">=2.2.2"
   },
   "dependencies": {
     "@opencode/plugin": "2.2.2",

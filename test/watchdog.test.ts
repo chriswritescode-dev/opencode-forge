@@ -51,6 +51,7 @@ describe('createLoopWatchdog', () => {
       client: createMockClient(async () => ({ 'coding-session': { type: 'busy', message: 'working' } })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -89,6 +90,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -130,6 +132,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -167,6 +170,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -203,6 +207,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -244,6 +249,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async (_ln, state, reason) => {
         terminateCalls.push(reason)
@@ -291,6 +297,7 @@ describe('createLoopWatchdog', () => {
       }),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -328,6 +335,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -366,6 +374,7 @@ describe('createLoopWatchdog', () => {
       statusRetryAttempts: 1,
       statusRetryBackoffMs: 1,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -412,6 +421,7 @@ describe('createLoopWatchdog', () => {
       statusRetryAttempts: 1,
       statusRetryBackoffMs: 1,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -445,6 +455,7 @@ describe('createLoopWatchdog', () => {
       client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -481,6 +492,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -522,6 +534,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -563,6 +576,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -600,6 +614,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -645,6 +660,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -691,6 +707,7 @@ describe('createLoopWatchdog', () => {
         nudgeCalls.push(ctx)
         watchdog.stop(ln)
       },
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -731,6 +748,7 @@ describe('createLoopWatchdog', () => {
       nudge: async (_ln, _s, ctx) => {
         nudgeCalls.push(ctx)
       },
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -769,6 +787,7 @@ describe('createLoopWatchdog', () => {
       nudge: async (_ln, _s, ctx) => {
         nudgeCalls.push(ctx)
       },
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async () => {},
     })
@@ -809,6 +828,7 @@ describe('createLoopWatchdog', () => {
       nudge: async (_ln, _s, ctx) => {
         nudgeCalls.push(ctx)
       },
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async () => {},
     })
@@ -852,6 +872,7 @@ describe('createLoopWatchdog', () => {
       nudge: async (_ln, _s, ctx) => {
         nudgeCalls.push(ctx)
       },
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async () => {},
     })
@@ -890,6 +911,7 @@ describe('createLoopWatchdog', () => {
         nudgeCalls.push(ctx)
         watchdog.stop(ln)
       },
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async () => {},
     })
@@ -926,6 +948,7 @@ describe('createLoopWatchdog', () => {
         nudgeCalls.push(ctx)
         watchdog.stop(ln)
       },
+      nudgeBackground: vi.fn(),
       recover: async () => {},
       terminate: async () => {},
     })
@@ -958,6 +981,7 @@ describe('createLoopWatchdog', () => {
       nudge: async (_ln, _s, ctx) => {
         nudgeCalls.push(ctx)
       },
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -998,6 +1022,7 @@ describe('createLoopWatchdog', () => {
       nudge: async (_ln, _s, ctx) => {
         nudgeCalls.push(ctx)
       },
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -1035,6 +1060,7 @@ describe('createLoopWatchdog', () => {
       client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -1048,6 +1074,173 @@ describe('createLoopWatchdog', () => {
 
     expect(recoverCalls.length).toBe(0)
     expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('does not count a stall while the current session has background work below the busy ceiling', async () => {
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
+    const nudgeCalls: unknown[] = []
+    const nudgeBackgroundCalls: unknown[] = []
+    const recoverCalls: unknown[] = []
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 500,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      nudgeBackground: async (_ln, _s, ctx) => {
+        nudgeBackgroundCalls.push(ctx)
+      },
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+      getPendingBackgroundWork: (sessionId) => sessionId === 'coding-session'
+        ? { recordedAt: Date.now(), jobs: [{ kind: 'shell', label: 'pnpm dev' }] }
+        : null,
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(80)
+
+    expect(nudgeCalls.length).toBe(0)
+    expect(nudgeBackgroundCalls.length).toBe(0)
+    expect(recoverCalls.length).toBe(0)
+    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('nudges the background work past the busy ceiling instead of recovering or interrupting', async () => {
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
+    const nudgeCalls: unknown[] = []
+    const nudgeBackgroundCalls: unknown[] = []
+    const recoverCalls: unknown[] = []
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 20,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      nudgeBackground: async (ln, _s, ctx) => {
+        nudgeBackgroundCalls.push(ctx)
+        watchdog.stop(ln)
+      },
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+      getPendingBackgroundWork: (sessionId) => sessionId === 'coding-session'
+        ? { recordedAt: Date.now() - 100, jobs: [{ kind: 'shell', label: 'pnpm dev' }] }
+        : null,
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(120)
+
+    expect(nudgeBackgroundCalls.length).toBe(1)
+    expect(nudgeBackgroundCalls[0]).toMatchObject({ reason: 'background_no_progress', stallCount: 1 })
+    expect((nudgeBackgroundCalls[0] as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(20)
+    expect(nudgeCalls.length).toBe(0)
+    expect(recoverCalls.length).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('never nudges background work when the busy ceiling is 0', async () => {
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
+    const nudgeBackgroundCalls: unknown[] = []
+    const recoverCalls: unknown[] = []
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 0,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
+      logger,
+      nudge: vi.fn(),
+      nudgeBackground: async (_ln, _s, ctx) => {
+        nudgeBackgroundCalls.push(ctx)
+      },
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+      getPendingBackgroundWork: (sessionId) => sessionId === 'coding-session'
+        ? { recordedAt: Date.now() - 100, jobs: [{ kind: 'shell', label: 'pnpm dev' }] }
+        : null,
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(150)
+
+    expect(nudgeBackgroundCalls.length).toBe(0)
+    expect(recoverCalls.length).toBe(0)
+    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('lets a busy child session take the busy path while background work is pending', async () => {
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
+    const nudgeCalls: unknown[] = []
+    const nudgeBackgroundCalls: unknown[] = []
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 20,
+        }),
+      },
+      client: createMockClient(async () => ({
+        'coding-session': { type: 'idle' },
+        'audit-session': { type: 'busy' },
+      })),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      nudgeBackground: async (_ln, _s, ctx) => {
+        nudgeBackgroundCalls.push(ctx)
+      },
+      recover: vi.fn(),
+      terminate: async () => {},
+      getPendingBackgroundWork: () => ({ recordedAt: Date.now() - 100, jobs: [{ kind: 'shell', label: 'pnpm dev' }] }),
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(120)
+
+    expect(nudgeCalls.length).toBeGreaterThanOrEqual(1)
+    expect(nudgeCalls[0]).toMatchObject({ reason: 'busy_no_progress' })
+    expect(nudgeBackgroundCalls.length).toBe(0)
 
     watchdog.stop(loopName)
   })
@@ -1068,6 +1261,7 @@ describe('createLoopWatchdog', () => {
       client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -1113,6 +1307,7 @@ describe('createLoopWatchdog', () => {
       client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
       logger,
       nudge: vi.fn(),
+      nudgeBackground: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
