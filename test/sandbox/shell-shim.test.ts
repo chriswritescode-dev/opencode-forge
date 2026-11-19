@@ -11,6 +11,7 @@ import {
   SHIM_ENV_CONTAINER,
 } from '../../src/sandbox/shell-shim'
 import { buildMsbShimExecLine } from '../../src/sandbox/msb'
+import { createMacosRuntime, ensureSpacesdToken, macosStatePaths } from '../../src/sandbox/macos'
 import type { Logger } from '../../src/types'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
@@ -144,6 +145,98 @@ describe('shim content', () => {
   test('embeds the msb routed exec line verbatim', () => {
     const script = buildShimScript('/bin/zsh', buildMsbShimExecLine())
     expect(script).toContain('exec msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"')
+  })
+})
+
+describe('shim behavior routed through the macOS sandbox', () => {
+  function setupMacosShim(dir: string, dataDir: string) {
+    const paths = macosStatePaths(dataDir)
+    const binDir = join(dir, 'bin')
+    mkdirSync(binDir)
+    const argsFile = join(dir, 'cua-args')
+    const envFile = join(dir, 'cua-env')
+    const cua = join(binDir, 'cua')
+    writeFileSync(
+      cua,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\nprintf '%s' "$CUA_SPACESD_TOKEN" > "${envFile}"\nshift 6\nexec "$@"\n`,
+      { mode: 0o755 },
+    )
+    const lume = {
+      getVm: vi.fn(),
+      listVms: vi.fn(),
+      cloneVm: vi.fn(),
+      runVm: vi.fn(),
+      stopVm: vi.fn(),
+    } as unknown as Parameters<typeof createMacosRuntime>[0]['lume']
+    const runtime = createMacosRuntime({ dataDir, config: { cuaPath: cua }, lume, logger })
+    const token = ensureSpacesdToken(paths)
+    const shim = join(dir, SHELL_SHIM_FILENAME)
+    writeFileSync(shim, buildShimScript('/bin/sh', runtime.shimExecLine()), { mode: 0o755 })
+    return { paths, cua, argsFile, envFile, token, shim }
+  }
+
+  function runShim(shim: string, cwd: string) {
+    const env = cleanEnv()
+    delete env.PWD
+    return spawnSync(shim, ['-c', 'umask; exit 7'], {
+      cwd,
+      env: { ...env, [SHIM_ENV_CONTAINER]: 'forge-macos' },
+      encoding: 'utf-8',
+    })
+  }
+
+  test('routes into cua spacesd exec with cwd, url, and the token in the environment', () => {
+    const dir = makeTempDir('forge-shim-macos-')
+    const dataDir = makeTempDir('forge-shim-macos-data-')
+    const { paths, cua, argsFile, envFile, token, shim } = setupMacosShim(dir, dataDir)
+    writeFileSync(paths.urlFile, 'http://127.0.0.1:61000')
+    const cwd = makeTempDir('forge-shim-macos-cwd-')
+
+    const result = runShim(shim, cwd)
+
+    expect(result.status).toBe(7)
+    expect(result.stdout).toContain('0022')
+    const argv = readFileSync(argsFile, 'utf-8').trim().split('\n')
+    expect(argv).toEqual([
+      'spacesd',
+      'exec',
+      '-i',
+      '--cwd',
+      realpathSync(cwd),
+      'http://127.0.0.1:61000',
+      '/bin/bash',
+      '-c',
+      'umask 022; exec /bin/bash "$@"',
+      'bash',
+      '-c',
+      'umask; exit 7',
+    ])
+    expect(cua).toBe(join(dir, 'bin', 'cua'))
+    expect(readFileSync(envFile, 'utf-8')).toBe(token)
+    for (const arg of argv) {
+      expect(arg).not.toBe(token)
+      expect(arg.includes(token)).toBe(false)
+    }
+  })
+
+  test('fail-closed: a missing spacesd endpoint exits 125 without running the command', () => {
+    const dir = makeTempDir('forge-shim-macos-')
+    const dataDir = makeTempDir('forge-shim-macos-data-')
+    const { paths, argsFile, shim } = setupMacosShim(dir, dataDir)
+    writeFileSync(paths.urlFile, 'http://127.0.0.1:61000')
+    const cwd = makeTempDir('forge-shim-macos-cwd-')
+
+    const first = runShim(shim, cwd)
+    expect(first.status).toBe(7)
+    const recorded = readFileSync(argsFile, 'utf-8')
+
+    rmSync(paths.urlFile)
+    const second = runShim(shim, cwd)
+
+    expect(second.status).toBe(125)
+    expect(second.stdout).not.toContain('0022')
+    expect(second.stderr).toContain('macOS sandbox is not ready')
+    expect(readFileSync(argsFile, 'utf-8')).toBe(recorded)
   })
 })
 
