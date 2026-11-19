@@ -12,7 +12,6 @@ import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME, type WorktreeOpencodeConfig } from './worktree-opencode-config'
 import { commitWorktreeChanges } from './worktree-commit'
-import { sandboxContainerName } from '../sandbox/msb'
 import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
 
 const jsonObjectSchema = z.record(z.string(), z.json())
@@ -48,7 +47,7 @@ export type TeardownContextProvider = (loopName: string) => TeardownContext | un
 export interface ForgeAdapterDeps {
   dataDir: string
   logger: Logger
-  sandboxManager?: Pick<SandboxManager, 'start' | 'stop'> | null
+  sandboxManager?: Pick<SandboxManager, 'start' | 'stop' | 'runtime'> | null
   getTeardownContext?: TeardownContextProvider
   gitService?: GitService
   worktreeOpencodeConfig?: WorktreeOpencodeConfig
@@ -301,7 +300,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
       const cfgResult = writeWorktreeOpencodeConfig({
         directory: info.directory,
         config: worktreeOpencodeConfig,
-        sandboxContainerName: sandboxProvisioned ? sandboxContainerName(info.name) : undefined,
+        sandboxContainerName: sandboxProvisioned && sandboxManager ? sandboxManager.runtime.sandboxContainerName(info.name) : undefined,
         logger,
       })
       if (cfgResult.written) {

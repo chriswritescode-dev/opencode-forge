@@ -10,6 +10,7 @@ import {
   SHELL_SHIM_FILENAME,
   SHIM_ENV_CONTAINER,
 } from '../../src/sandbox/shell-shim'
+import { buildMsbShimExecLine } from '../../src/sandbox/msb'
 import type { Logger } from '../../src/types'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
@@ -35,29 +36,29 @@ function cleanEnv(): NodeJS.ProcessEnv {
 describe('ensureShellShim', () => {
   test('writes an executable shim and is idempotent', () => {
     const dir = makeTempDir('forge-shim-')
-    const path = ensureShellShim(dir, logger)
+    const path = ensureShellShim(dir, logger, buildMsbShimExecLine())
 
     expect(path).toBe(join(dir, SHELL_SHIM_FILENAME))
     const mode = statSync(path!).mode & 0o777
     expect(mode).toBe(0o755)
 
     const content = readFileSync(path!, 'utf-8')
-    expect(ensureShellShim(dir, logger)).toBe(path)
+    expect(ensureShellShim(dir, logger, buildMsbShimExecLine())).toBe(path)
     expect(readFileSync(path!, 'utf-8')).toBe(content)
   })
 
   test('rewrites the shim when content drifts', () => {
     const dir = makeTempDir('forge-shim-')
-    const path = ensureShellShim(dir, logger)!
+    const path = ensureShellShim(dir, logger, buildMsbShimExecLine())!
     writeFileSync(path, '#!/bin/sh\nexit 3\n')
 
-    ensureShellShim(dir, logger)
+    ensureShellShim(dir, logger, buildMsbShimExecLine())
 
-    expect(readFileSync(path, 'utf-8')).toBe(buildShimScript(resolveHostShell()))
+    expect(readFileSync(path, 'utf-8')).toBe(buildShimScript(resolveHostShell(), buildMsbShimExecLine()))
   })
 
   test('returns null and logs when the data dir is not writable', () => {
-    const path = ensureShellShim('/dev/null/not-a-dir', logger)
+    const path = ensureShellShim('/dev/null/not-a-dir', logger, buildMsbShimExecLine())
     expect(path).toBeNull()
     expect(logger.error).toHaveBeenCalled()
   })
@@ -67,7 +68,7 @@ describe('shim behavior (executed via sh)', () => {
   test('passthrough: runs the command with the baked host shell when no container env is set', () => {
     const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
-    writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
+    writeFileSync(shim, buildShimScript('/bin/sh', buildMsbShimExecLine()), { mode: 0o755 })
 
     const result = spawnSync(shim, ['-c', 'echo hello from $0'], { env: cleanEnv(), encoding: 'utf-8' })
 
@@ -78,7 +79,7 @@ describe('shim behavior (executed via sh)', () => {
   test('fail-closed: when a container is set but msb is unavailable, the command never runs on the host', () => {
     const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
-    writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
+    writeFileSync(shim, buildShimScript('/bin/sh', buildMsbShimExecLine()), { mode: 0o755 })
     const marker = join(dir, 'escaped')
     // Empty PATH: `msb` cannot be found, so exec fails. The shim must exit
     // non-zero without falling through to the host shell.
@@ -94,7 +95,7 @@ describe('shim behavior (executed via sh)', () => {
   test('routes into msb exec with container, flags, and command when container env is set', () => {
     const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
-    writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
+    writeFileSync(shim, buildShimScript('/bin/sh', buildMsbShimExecLine()), { mode: 0o755 })
     const binDir = join(dir, 'bin')
     mkdirSync(binDir)
     const argsFile = join(dir, 'msb-args')
@@ -115,7 +116,7 @@ describe('shim behavior (executed via sh)', () => {
   test('propagates a non-zero msb exit verbatim', () => {
     const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
-    writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
+    writeFileSync(shim, buildShimScript('/bin/sh', buildMsbShimExecLine()), { mode: 0o755 })
     const binDir = join(dir, 'bin')
     mkdirSync(binDir)
     writeFileSync(join(binDir, 'msb'), `#!/bin/sh\nprintf '%s\\n' 'some unrelated failure' >&2\nexit 7\n`, { mode: 0o755 })
@@ -132,12 +133,17 @@ describe('shim behavior (executed via sh)', () => {
 
 describe('shim content', () => {
   test('routes through msb exec with no docker and no --user', () => {
-    const script = buildShimScript('/bin/sh')
+    const script = buildShimScript('/bin/sh', buildMsbShimExecLine())
     expect(script).toContain('msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"')
     expect(script).not.toContain('sbx')
     expect(script).not.toContain('docker')
     expect(script).not.toContain('--user')
     expect(script).toContain('exec "/bin/sh" "$@"')
+  })
+
+  test('embeds the msb routed exec line verbatim', () => {
+    const script = buildShimScript('/bin/zsh', buildMsbShimExecLine())
+    expect(script).toContain('exec msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"')
   })
 })
 

@@ -14,6 +14,7 @@ import {
   ensureShellShim,
   SHIM_ENV_CONTAINER,
 } from '../../src/sandbox/shell-shim'
+import { buildMsbShimExecLine } from '../../src/sandbox/msb'
 import type { SandboxContext } from '../../src/sandbox/context'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
 import type { Logger, PluginConfig } from '../../src/types'
@@ -1123,7 +1124,7 @@ describe('generated shim', () => {
   test('passes through to the host shell when no container env is set', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-hooks-shim-'))
     onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
-    const shim = ensureShellShim(dir, logger)
+    const shim = ensureShellShim(dir, logger, buildMsbShimExecLine())
     expect(shim).not.toBeNull()
 
     const env = { ...process.env }

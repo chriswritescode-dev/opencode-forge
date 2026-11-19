@@ -1,4 +1,5 @@
-import { SANDBOX_CACHE_DIR, SANDBOX_WORKSPACE_QUOTA, type SandboxRuntime } from './msb'
+import { SANDBOX_CACHE_DIR, SANDBOX_WORKSPACE_QUOTA } from './msb'
+import type { SandboxRuntime } from './runtime'
 import type { PluginConfig, SandboxMountConfig } from '../types'
 import type { SandboxMount } from './path'
 import type { ActiveSandbox, SandboxManager } from './manager'

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { SandboxRuntime, SandboxWorkspace, CreateSandboxOpts, SandboxState } from './msb'
-import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
+import type { SandboxRuntime, SandboxWorkspace, CreateSandboxOpts, SandboxState, SandboxAvailability } from './runtime'
+import { buildNetworkAllow, egressRestrictionRequested, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR } from './msb'
 import { fetchSandboxSecretValues, resolveSandboxSecret } from './secrets'
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
@@ -253,14 +253,14 @@ export function createSandboxManager(
   const handledSecretEnvs = new Map<string, Set<string>>()
   const settingsLookups = new Set<string>()
   const warnedUnsetSecretEnv = new Set<string>()
-  let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
+  let runtimeAvailableCache: { value: SandboxAvailability; at: number } | null = null
   let imageReady = false
 
   async function ensureRuntimeAvailable(): Promise<void> {
     const now = Date.now()
     if (runtimeAvailableCache && (now - runtimeAvailableCache.at) < DOCKER_AVAILABLE_TTL) {
       if (!runtimeAvailableCache.value.available) {
-        throw new Error(describeMsbUnavailable(runtimeAvailableCache.value))
+        throw new Error(runtime.describeUnavailable(runtimeAvailableCache.value))
       }
       return
     }
@@ -271,7 +271,7 @@ export function createSandboxManager(
     }
     runtimeAvailableCache = { value: result, at: now }
     if (!result.available) {
-      throw new Error(describeMsbUnavailable(result))
+      throw new Error(runtime.describeUnavailable(result))
     }
   }
 
@@ -282,7 +282,7 @@ export function createSandboxManager(
       const availability = await runtime.checkAvailable()
       if (!availability.available) {
         if (availability.reason === 'unknown') return
-        throw new Error(describeMsbUnavailable(availability))
+        throw new Error(runtime.describeUnavailable(availability))
       }
       const buildHint = `  ${formatTemplateBuildCommands(
         config.buildContextDir ?? '<build-context-dir>',

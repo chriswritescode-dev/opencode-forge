@@ -26,7 +26,8 @@ import {
   createMsbRuntime,
   MSB_DEFAULT_TIMEOUT,
 } from '../../src/sandbox/msb'
-import type { CommandRunner, SandboxRuntime } from '../../src/sandbox/msb'
+import type { CommandRunner, SandboxRuntime } from '../../src/sandbox/runtime'
+import { MSB_CAPABILITIES } from '../../src/sandbox/runtime'
 import { resolveSandboxSecret } from '../../src/sandbox/secrets'
 import { COMMAND_TIMEOUT_EXIT_CODE } from '../../src/sandbox/process'
 import type { Logger } from '../../src/types'
@@ -2001,6 +2002,12 @@ describe('runtime', () => {
   test('sandboxContainerName is exposed on the runtime', () => {
     const rt = createMsbRuntime(logger, { run: async () => ({ stdout: '', stderr: '', exitCode: 0 }) })
     expect(rt.sandboxContainerName('feature/test')).toBe('forge-feature-test')
+  })
+
+  test('kind and capabilities describe the msb backend', () => {
+    const rt = createMsbRuntime(logger, { run: async () => ({ stdout: '', stderr: '', exitCode: 0 }) })
+    expect(rt.kind).toBe('msb')
+    expect(rt.capabilities).toEqual(MSB_CAPABILITIES)
   })
 
   test('the exported runtime interface has no execPipe or allowNetworkHost member', () => {

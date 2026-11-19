@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach, vi } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import type { SecretRefreshResult } from '../../src/sandbox/msb'
+import type { SecretRefreshResult } from '../../src/sandbox/runtime'
 import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 import { createMockLogger } from '../helpers/logger'
 

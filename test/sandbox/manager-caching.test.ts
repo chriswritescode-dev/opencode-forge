@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import type { MsbAvailability } from '../../src/sandbox/msb'
+import type { SandboxAvailability } from '../../src/sandbox/runtime'
 import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 import { createMockLogger } from '../helpers/logger'
 
-const available: MsbAvailability = { available: true }
-const hostUnsupported: MsbAvailability = { available: false, reason: 'host-unsupported', detail: 'mock daemon down' }
-const indeterminate: MsbAvailability = { available: false, reason: 'unknown', detail: 'probe timed out' }
+const available: SandboxAvailability = { available: true }
+const hostUnsupported: SandboxAvailability = { available: false, reason: 'host-unsupported', detail: 'mock daemon down' }
+const indeterminate: SandboxAvailability = { available: false, reason: 'unknown', detail: 'probe timed out' }
 
 describe('SandboxManager caching', () => {
   let mockRuntime: ReturnType<typeof createMockSandboxRuntime>
@@ -15,7 +15,7 @@ describe('SandboxManager caching', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     mockRuntime = createMockSandboxRuntime()
-    mockRuntime.checkAvailable = vi.fn(async (): Promise<MsbAvailability> => available)
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SandboxAvailability> => available)
     mockRuntime.templateExists = vi.fn(async () => true)
     mockRuntime.getSandboxState = vi.fn(async () => 'missing' as const)
     mockLogger = createMockLogger()
@@ -51,19 +51,19 @@ describe('SandboxManager caching', () => {
   })
 
   it('should reject both calls when runtime is unavailable and cache negative result within TTL', async () => {
-    mockRuntime.checkAvailable = vi.fn(async (): Promise<MsbAvailability> => hostUnsupported)
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SandboxAvailability> => hostUnsupported)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
     const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
-    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('This host cannot run microVMs')
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('mock unavailable')
     expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
 
-    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('This host cannot run microVMs')
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('mock unavailable')
     expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
 
     vi.advanceTimersByTime(30_000)
-    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('This host cannot run microVMs')
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('mock unavailable')
     expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(2)
   })
 
@@ -86,7 +86,7 @@ describe('SandboxManager caching', () => {
 
   it('should start the sandbox when availability is indeterminate instead of failing the launch', async () => {
     // A busy daemon cannot answer the probe in time; that must not block a concurrent loop launch.
-    mockRuntime.checkAvailable = vi.fn(async (): Promise<MsbAvailability> => indeterminate)
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SandboxAvailability> => indeterminate)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
     const manager = createSandboxManager(mockRuntime, config, mockLogger)
@@ -96,7 +96,7 @@ describe('SandboxManager caching', () => {
   })
 
   it('should not cache an indeterminate probe, so the next launch re-probes immediately', async () => {
-    mockRuntime.checkAvailable = vi.fn(async (): Promise<MsbAvailability> => indeterminate)
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SandboxAvailability> => indeterminate)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
     const manager = createSandboxManager(mockRuntime, config, mockLogger)
@@ -117,7 +117,7 @@ describe('SandboxManager caching', () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
     const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
-    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('This host cannot run microVMs')
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('mock unavailable')
     expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
   })
 

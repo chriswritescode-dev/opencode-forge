@@ -12,7 +12,7 @@ import { resolveBundledContainerDir, resolvePromptsDir } from '../setup'
 import { resolveSkillsDir } from '../install/paths'
 import { resolveLogPath } from '../storage'
 import { createLogger, slugify } from '../utils/logger'
-import { createMsbRuntime, describeMsbUnavailable } from '../sandbox/msb'
+import { createMsbRuntime } from '../sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from '../sandbox/config-warnings'
 import { defaultGitService } from '../utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled, isSandboxEnabled, isHostSessionsDefaultEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
@@ -513,7 +513,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   let shellShimPath: string | null = null
   if (sandboxManager) {
-    shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger)
+    shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger, runtime.shimExecLine())
     if (!shellShimPath) {
       throw new Error('Sandbox shell shim unavailable on this host; refusing to run worktree-only mode while sandbox is enabled')
     }
@@ -531,25 +531,27 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
               directory,
               logger,
               title: 'Sandbox unavailable',
-              message: describeMsbUnavailable(available),
+              message: runtime.describeUnavailable(available),
               variant: 'warning',
               duration: 10_000,
             })
           }
           return
         }
-        const exists = await runtime.templateExists(sandboxImage)
-        if (!exists) {
-          logger.log(`Sandbox template "${sandboxImage}" not found — publishing toast`)
-          publishToast({
-            client: forgeClient,
-            directory,
-            logger,
-            title: 'Sandbox template not found',
-            message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, resolveTemplateBuildArgs(config))}`,
-            variant: 'warning',
-            duration: 10_000,
-          })
+        if (runtime.capabilities.templateBuild) {
+          const exists = await runtime.templateExists(sandboxImage)
+          if (!exists) {
+            logger.log(`Sandbox template "${sandboxImage}" not found — publishing toast`)
+            publishToast({
+              client: forgeClient,
+              directory,
+              logger,
+              title: 'Sandbox template not found',
+              message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, resolveTemplateBuildArgs(config))}`,
+              variant: 'warning',
+              duration: 10_000,
+            })
+          }
         }
       } catch (err: unknown) {
         logger.log(`Sandbox image check: ${errorMessage(err)}`)

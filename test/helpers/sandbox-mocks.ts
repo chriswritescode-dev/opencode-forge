@@ -1,4 +1,11 @@
-import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/msb'
+import type {
+  SandboxBackendKind,
+  SandboxCapabilities,
+  SandboxWorkspace,
+  SandboxRuntime,
+  SandboxState,
+} from '../../src/sandbox/runtime'
+import { MSB_CAPABILITIES } from '../../src/sandbox/runtime'
 import type { SandboxResources, SandboxSecretConfig } from '../../src/types'
 import type { SandboxRuntimeSettings } from '../../src/sandbox/loop-settings'
 
@@ -32,6 +39,8 @@ export interface MockSandboxRuntime extends SandboxRuntime {
   setAvailable(available: boolean): void
   setTemplateExists(exists: boolean): void
   setRemoveThrow(shouldThrow: boolean): void
+  setCapabilities(caps: SandboxCapabilities): void
+  setKind(kind: SandboxBackendKind): void
 }
 
 /**
@@ -50,8 +59,18 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
   let shouldBeAvailable = true
   let shouldTemplateExist = true
   let shouldRemoveThrow = false
+  let kind: SandboxBackendKind = 'msb'
+  let capabilities: SandboxCapabilities = MSB_CAPABILITIES
 
   const mock: MockSandboxRuntime = {
+    get kind(): SandboxBackendKind {
+      return kind
+    },
+    get capabilities(): SandboxCapabilities {
+      return capabilities
+    },
+    describeUnavailable: () => 'mock unavailable',
+    shimExecLine: () => 'exec mock-exec "$@"',
     checkAvailable: async () => shouldBeAvailable
       ? { available: true as const }
       : { available: false as const, reason: 'host-unsupported' as const, detail: 'mock daemon down' },
@@ -120,6 +139,12 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     },
     setRemoveThrow: (shouldThrow: boolean) => {
       shouldRemoveThrow = shouldThrow
+    },
+    setCapabilities: (caps: SandboxCapabilities) => {
+      capabilities = caps
+    },
+    setKind: (nextKind: SandboxBackendKind) => {
+      kind = nextKind
     },
   }
   return mock

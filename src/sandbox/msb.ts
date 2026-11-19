@@ -11,6 +11,18 @@ import type {
 import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
 import { MSB_SIZE_RE, SANDBOX_RESOURCE_DEFAULTS, type SandboxRuntimeSettings } from './loop-settings'
 import { resolveSandboxSecret } from './secrets'
+import { SHIM_ENV_CONTAINER } from './shell-shim'
+import { MSB_CAPABILITIES } from './runtime'
+import type {
+  SandboxAvailability,
+  CommandRunner,
+  CreateSandboxOpts,
+  SandboxExecOpts,
+  SandboxRuntime,
+  SandboxState,
+  SandboxWorkspace,
+  SecretRefreshResult,
+} from './runtime'
 
 export function sanitizeMsbName(raw: string): string {
   const name = raw
@@ -24,12 +36,6 @@ export function sanitizeMsbName(raw: string): string {
 
 export function sandboxContainerName(worktreeName: string): string {
   return `forge-${sanitizeMsbName(worktreeName)}`
-}
-
-export interface SandboxWorkspace {
-  hostDir: string
-  containerDir: string
-  readOnly?: boolean
 }
 
 export interface BuildMsbExecOpts {
@@ -288,8 +294,6 @@ export function buildMsbCreateArgs(
   return args
 }
 
-export type SandboxState = 'running' | 'stopped' | 'transient' | 'missing' | 'unknown'
-
 export interface ImageReferenceParts {
   repository: string
   tag: string
@@ -486,21 +490,16 @@ export function msbImageMatches(references: string[], ref: string): boolean {
   })
 }
 
-export type MsbAvailability =
-  | { available: true }
-  | { available: false; reason: 'not-installed' | 'host-unsupported' | 'unknown'; detail?: string }
-
-export type CommandRunner = (
-  args: string[],
-  opts?: { timeout?: number; stdin?: string; abort?: AbortSignal; env?: Record<string, string> },
-) => Promise<CommandResult>
-
 export const MSB_INSTALL_COMMAND = 'curl -fsSL https://install.microsandbox.dev | sh'
+
+export function buildMsbShimExecLine(): string {
+  return `exec msb exec --quiet "$${SHIM_ENV_CONTAINER}" --no-tty -w "$PWD" -- bash "$@"`
+}
 
 const MSB_QUERY_TIMEOUT = 30000
 const MSB_NOT_INSTALLED_RE = /ENOENT|command not found/i
 
-export async function checkMsbAvailability(run: CommandRunner): Promise<MsbAvailability> {
+export async function checkMsbAvailability(run: CommandRunner): Promise<SandboxAvailability> {
   let result: CommandResult
   try {
     result = await run(['doctor'], { timeout: MSB_QUERY_TIMEOUT })
@@ -525,7 +524,7 @@ export async function checkMsbAvailability(run: CommandRunner): Promise<MsbAvail
 }
 
 export function describeMsbUnavailable(
-  result: Extract<MsbAvailability, { available: false }>,
+  result: Extract<SandboxAvailability, { available: false }>,
 ): string {
   switch (result.reason) {
     case 'not-installed':
@@ -538,46 +537,6 @@ export function describeMsbUnavailable(
 }
 
 export const MSB_DEFAULT_TIMEOUT = 120000
-
-export interface CreateSandboxOpts {
-  image: string
-  resources?: SandboxResources
-  networkAllow?: string[]
-  restrictEgress?: boolean
-  env?: string[]
-  secrets?: SandboxSecretConfig[]
-  secretEnv?: Record<string, string>
-  allowLan?: boolean
-  idleTimeout?: string
-}
-
-export interface SandboxExecOpts {
-  timeout?: number
-  cwd?: string
-  abort?: AbortSignal
-}
-
-export type SecretRefreshResult = { ok: true } | { ok: false; reason: string }
-
-export interface SandboxRuntime {
-  checkAvailable(): Promise<MsbAvailability>
-  templateExists(ref: string): Promise<boolean>
-  loadTemplate(tarPath: string, ref: string): Promise<void>
-  createSandbox(name: string, workspaces: SandboxWorkspace[], opts: CreateSandboxOpts): Promise<void>
-  removeSandbox(name: string): Promise<void>
-  exec(name: string, command: string, opts?: SandboxExecOpts): Promise<CommandResult>
-  getSandboxState(name: string): Promise<SandboxState>
-  sandboxContainerName(worktreeName: string): string
-  listSandboxesByPrefix(prefix: string): Promise<string[]>
-  refreshSandboxSecrets(
-    name: string,
-    secrets: SandboxSecretConfig[],
-    secretEnv?: Record<string, string>,
-  ): Promise<SecretRefreshResult>
-  startSandbox(name: string, secretEnv?: Record<string, string>): Promise<void>
-  readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null>
-  resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
-}
 
 const MSB_TEMPLATE_LOAD_TIMEOUT = 600000
 const MSB_REMOVE_MISSING_RE = /not found|no such sandbox|unknown sandbox|does not exist/i
@@ -594,7 +553,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
       logLabel: 'msb',
     }))
 
-  async function checkAvailable(): Promise<MsbAvailability> {
+  async function checkAvailable(): Promise<SandboxAvailability> {
     return checkMsbAvailability(run)
   }
 
@@ -807,7 +766,11 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
   }
 
   return {
+    kind: 'msb',
+    capabilities: MSB_CAPABILITIES,
     checkAvailable,
+    describeUnavailable: describeMsbUnavailable,
+    shimExecLine: buildMsbShimExecLine,
     templateExists,
     loadTemplate,
     createSandbox,

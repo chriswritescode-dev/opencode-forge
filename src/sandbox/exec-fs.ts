@@ -1,4 +1,4 @@
-import type { SandboxRuntime } from './msb'
+import type { SandboxRuntime } from './runtime'
 
 interface SandboxExecutionDeps {
   runtime: SandboxRuntime

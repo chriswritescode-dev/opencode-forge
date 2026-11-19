@@ -144,7 +144,7 @@ describe('SandboxManager', () => {
         logger
       )
 
-      await expect(manager.start('test', '/path')).rejects.toThrow('This host cannot run microVMs')
+      await expect(manager.start('test', '/path')).rejects.toThrow('mock unavailable')
     })
 
     test('throws actionable error when image does not exist, without building', async () => {

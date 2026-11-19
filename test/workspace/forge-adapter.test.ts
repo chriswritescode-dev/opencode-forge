@@ -172,6 +172,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-codegraph-exclude-loop' }),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -198,6 +199,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'unused' }),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -224,6 +226,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-codegraph-disabled-loop' }),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -531,6 +534,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-sandbox-loop' }),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -555,6 +559,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockRejectedValue(new Error('Docker is not available. Please ensure Docker is running.')),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -581,6 +586,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockRejectedValue(new Error('sandbox must not be provisioned')),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -607,6 +613,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-loop-sandbox-resources' }),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -637,6 +644,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockRejectedValue(new Error('docker unavailable')),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -812,6 +820,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-sandbox-loop' }),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -867,6 +876,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-placeholder-loop' }),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -902,6 +912,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'unused' }),
         stop: vi.fn().mockResolvedValue(undefined),
+        runtime: createMockSandboxRuntime(),
       }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
