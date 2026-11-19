@@ -6,6 +6,7 @@ import type { ForgeTuiEventEmitter } from '../host/tui-events'
 import type { IdleGateStore } from '../loop/idle-gate'
 import type { InFlightEntry } from '../loop/in-flight-guard'
 import type { SandboxSecretProvider } from '../sandbox/secrets'
+import type { MacosVmShared } from '../sandbox/macos-manager'
 import type { LRUCache } from './lru-cache'
 
 export interface ForgeSharedRegistries {
@@ -22,6 +23,7 @@ export interface ForgeSharedRegistries {
   'v2-deleted-sessions.v1': LRUCache<true>
   'loop-registry.v2': Map<string, Set<string>>
   'sandbox-secret-providers.v1': Map<string, SandboxSecretProvider>
+  'macos-vm.v1': MacosVmShared
 }
 
 declare global {

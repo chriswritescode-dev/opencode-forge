@@ -8,6 +8,8 @@ import type {
 import { MSB_CAPABILITIES } from '../../src/sandbox/runtime'
 import type { SandboxResources, SandboxSecretConfig } from '../../src/types'
 import type { SandboxRuntimeSettings } from '../../src/sandbox/loop-settings'
+import { LumeRequestError, SPACESD_GUEST_PORT } from '../../src/sandbox/macos-lume'
+import type { createLumeClient, LumeRunBody, LumeVmDetails } from '../../src/sandbox/macos-lume'
 
 type MockCreateSandboxOpts = {
   image?: string
@@ -148,4 +150,109 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     },
   }
   return mock
+}
+
+type FakeLumeFailureOp = 'getVm' | 'listVms' | 'cloneVm' | 'runVm' | 'stopVm'
+
+export interface FakeLumeControls {
+  setVm(name: string, details: LumeVmDetails | null): void
+  failNext(op: FakeLumeFailureOp): void
+  setForwardAfterPolls(polls: number): void
+  getVmCalls(): string[]
+  getCloneCalls(): Array<{ source: string; target: string }>
+  getRunCalls(): Array<{ name: string; body: LumeRunBody }>
+  getStopCalls(): string[]
+  getListVmsCalls(): number
+}
+
+export type FakeLumeClient = ReturnType<typeof createLumeClient> & FakeLumeControls
+
+function deepCopy<T>(value: T): T {
+  return structuredClone(value)
+}
+
+export function createFakeLumeClient(): FakeLumeClient {
+  const vms = new Map<string, LumeVmDetails>()
+  const failures: FakeLumeFailureOp[] = []
+  const getVmCalls: string[] = []
+  const cloneCalls: Array<{ source: string; target: string }> = []
+  const runCalls: Array<{ name: string; body: LumeRunBody }> = []
+  const stopCalls: string[] = []
+  let listVmsCalls = 0
+  let forwardAfterPolls = 0
+  let pendingForwardPolls: number | null = null
+
+  function throwIfFailing(op: FakeLumeFailureOp): void {
+    const index = failures.indexOf(op)
+    if (index === -1) return
+    failures.splice(index, 1)
+    throw new LumeRequestError(`fake lume failure: ${op}`)
+  }
+
+  const client: FakeLumeClient = {
+    async getVm(name: string): Promise<LumeVmDetails | null> {
+      getVmCalls.push(name)
+      throwIfFailing('getVm')
+      const details = vms.get(name)
+      if (!details) return null
+      if (pendingForwardPolls === 0) {
+        details.forwards = { ...details.forwards, [String(SPACESD_GUEST_PORT)]: 45678 }
+        pendingForwardPolls = null
+      } else if (pendingForwardPolls !== null) {
+        pendingForwardPolls -= 1
+      }
+      return deepCopy(details)
+    },
+    async listVms(): Promise<LumeVmDetails[]> {
+      listVmsCalls += 1
+      throwIfFailing('listVms')
+      return Array.from(vms.values(), (details) => deepCopy(details))
+    },
+    async cloneVm(source: string, target: string): Promise<void> {
+      cloneCalls.push({ source, target })
+      throwIfFailing('cloneVm')
+      if (!vms.has(source)) {
+        throw new LumeRequestError(`fake lume failure: clone source ${source} not found`)
+      }
+      vms.set(target, { name: target, status: 'stopped' })
+    },
+    async runVm(name: string, body: LumeRunBody): Promise<void> {
+      runCalls.push({ name, body: deepCopy(body) })
+      throwIfFailing('runVm')
+      const details = vms.get(name)
+      if (!details) {
+        throw new LumeRequestError(`fake lume failure: run ${name} not found`)
+      }
+      details.status = 'running'
+      delete details.forwards
+      pendingForwardPolls = forwardAfterPolls
+    },
+    async stopVm(name: string): Promise<void> {
+      stopCalls.push(name)
+      throwIfFailing('stopVm')
+      const details = vms.get(name)
+      if (!details) return
+      details.status = 'stopped'
+      delete details.forwards
+    },
+    setVm: (name: string, details: LumeVmDetails | null) => {
+      if (details === null) {
+        vms.delete(name)
+      } else {
+        vms.set(name, deepCopy(details))
+      }
+    },
+    failNext: (op: FakeLumeFailureOp) => {
+      failures.push(op)
+    },
+    setForwardAfterPolls: (polls: number) => {
+      forwardAfterPolls = Math.max(0, Math.trunc(polls))
+    },
+    getVmCalls: () => getVmCalls,
+    getCloneCalls: () => cloneCalls,
+    getRunCalls: () => runCalls,
+    getStopCalls: () => stopCalls,
+    getListVmsCalls: () => listVmsCalls,
+  }
+  return client
 }
