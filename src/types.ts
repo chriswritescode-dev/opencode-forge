@@ -102,8 +102,16 @@ export interface SandboxMountConfig {
   readonly?: boolean
 }
 
+export interface SandboxMacosConfig {
+  roots?: string[]
+  baseVm?: string
+  lumeUrl?: string
+  cuaPath?: string
+  netgwPath?: string
+}
+
 export interface SandboxConfig {
-  mode?: 'msb'
+  mode?: 'msb' | 'macos'
   enabled?: boolean
   image?: string
   resources?: SandboxResources
@@ -112,6 +120,7 @@ export interface SandboxConfig {
   network?: SandboxNetworkConfig
   autoApprovePermissions?: boolean
   hostSessions?: boolean
+  macos?: SandboxMacosConfig
 }
 
 export interface AutoApproveDenyRule {
