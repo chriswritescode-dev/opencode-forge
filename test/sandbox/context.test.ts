@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import {
+  MACOS_SANDBOX_CONTEXT_NOTE,
   SANDBOX_CONTEXT_NOTE,
   SANDBOX_OFF_NOTE,
   SANDBOX_SWITCHED_ON_NOTE,
@@ -57,6 +58,27 @@ describe('SANDBOX_CONTEXT_NOTE', () => {
     expect(SANDBOX_CONTEXT_NOTE).toContain('df on it reports that budget rather than the host disk')
     expect(SANDBOX_CONTEXT_NOTE).toContain('No space left on device')
     expect(SANDBOX_CONTEXT_NOTE).toContain('ask the user to recreate the sandbox')
+  })
+})
+
+describe('MACOS_SANDBOX_CONTEXT_NOTE', () => {
+  it('describes the shared macOS VM and its limits', () => {
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).toContain('shared macOS virtual machine')
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).toContain('bash, glob, and grep execute there')
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).toContain('never stop processes you did not start')
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).toContain('Homebrew')
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).toContain('Network egress is limited to the configured allow-list')
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).toContain('owned by the host user')
+  })
+
+  it('omits the container-only tooling guidance', () => {
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).not.toContain('forge-dockerd-start')
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).not.toContain('forge-cache-prune')
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).not.toContain(SANDBOX_CACHE_DIR)
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).not.toContain(SANDBOX_WORKSPACE_QUOTA)
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).not.toMatch(/chromium/i)
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).not.toMatch(/docker/i)
+    expect(MACOS_SANDBOX_CONTEXT_NOTE).not.toMatch(/\bapt\b/i)
   })
 })
 
@@ -133,6 +155,41 @@ describe('buildSandboxContextNote', () => {
     expect(note.split('\n')[0]).toBe('[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.')
     expect(note).toContain(SANDBOX_CONTEXT_NOTE)
   })
+
+  it('announces a switch to the macOS VM with the macOS labels and guidance', () => {
+    const note = buildSandboxContextNote(
+      { switched: true, from: null, to: 'macOS 15.6 arm64' },
+      { settings, kind: 'macos' },
+    )
+
+    expect(note.split('\n').slice(0, 4)).toEqual([
+      '[Sandbox] Environment changed: host (unknown) -> macOS VM (macOS 15.6 arm64).',
+      formatSwitchArtifactsLine('host', 'macOS VM'),
+      SANDBOX_SWITCHED_ON_NOTE,
+      '[Sandbox] Resources: 4 CPUs, 8 GiB memory. LAN (private network) access: blocked.',
+    ])
+    expect(note).toContain(MACOS_SANDBOX_CONTEXT_NOTE)
+    expect(note).not.toContain(SANDBOX_CONTEXT_NOTE)
+  })
+
+  it('describes macOS steady state with the macOS VM label', () => {
+    const note = buildSandboxContextNote({ switched: false, to: 'macOS 15.6 arm64' }, { settings, kind: 'macos' })
+
+    expect(note.split('\n')[0]).toBe('[Sandbox] Environment: macOS VM (macOS 15.6 arm64).')
+    expect(note).toContain(MACOS_SANDBOX_CONTEXT_NOTE)
+  })
+
+  it('keeps msb output byte-identical whether or not the kind is passed', () => {
+    const environment = { switched: true, from: 'Darwin 24.6.0 arm64', to: 'Linux 6.1.0 aarch64' } as const
+    const options = { settings, change: 'restarted' as const }
+
+    expect(buildSandboxContextNote(environment, { ...options, kind: 'msb' })).toBe(
+      buildSandboxContextNote(environment, options),
+    )
+    expect(buildSandboxContextNote({ switched: false, to: null }, { ...options, kind: 'msb' })).toBe(
+      buildSandboxContextNote({ switched: false, to: null }, options),
+    )
+  })
 })
 
 describe('buildSandboxOffNote', () => {
@@ -151,6 +208,17 @@ describe('buildSandboxOffNote', () => {
     const note = buildSandboxOffNote()
 
     expect(note.split('\n')[0]).toBe(formatSwitchArtifactsLine('container', 'host'))
+    expect(note).toContain(SANDBOX_OFF_NOTE)
+  })
+
+  it('names the macOS VM as the sandbox side of the switch', () => {
+    const note = buildSandboxOffNote({ from: 'macOS 15.6 arm64', to: 'Darwin 24.6.0 arm64' }, { kind: 'macos' })
+
+    expect(note.split('\n').slice(0, 3)).toEqual([
+      '[Sandbox] Environment changed: macOS VM (macOS 15.6 arm64) -> host (Darwin 24.6.0 arm64).',
+      formatSwitchArtifactsLine('macOS VM', 'host'),
+      SANDBOX_OFF_NOTE.split('\n')[0],
+    ])
     expect(note).toContain(SANDBOX_OFF_NOTE)
   })
 })

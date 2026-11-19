@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
-import { SANDBOX_OFF_NOTE, buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
+import { MACOS_SANDBOX_CONTEXT_NOTE, SANDBOX_OFF_NOTE, buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
 import type { EnvironmentProbe } from '../sandbox/env-probe'
 import type { ResolveSandboxForSessionOpts } from '../services/unified-sandbox-resolver'
 import { LRUCache } from '../utils/lru-cache'
@@ -57,14 +57,20 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
     try {
       if (sandbox) {
         const env = probe ? await probe.describeSandbox(sandbox) : null
-        const stable = buildSandboxContextNote({ switched: false, to: env }, { settings: sandbox.settings })
+        const stable = buildSandboxContextNote(
+          { switched: false, to: env },
+          { settings: sandbox.settings, kind: sandbox.runtime.kind },
+        )
         if (tracked && 'sandbox' in tracked) {
           const change = detectSandboxChange(tracked.sandbox, sandbox)
           if (change || tracked.stable !== stable) {
             await entries.put({
               sessionID,
               key: SANDBOX_INSTRUCTION_KEY,
-              value: buildSandboxContextNote({ switched: false, to: env }, { settings: sandbox.settings, change }),
+              value: buildSandboxContextNote(
+                { switched: false, to: env },
+                { settings: sandbox.settings, change, kind: sandbox.runtime.kind },
+              ),
             })
           }
         } else if (tracked) {
@@ -72,7 +78,10 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
           await entries.put({
             sessionID,
             key: SANDBOX_INSTRUCTION_KEY,
-            value: buildSandboxContextNote({ switched: true, from, to: env }, { settings: sandbox.settings }),
+            value: buildSandboxContextNote(
+              { switched: true, from, to: env },
+              { settings: sandbox.settings, kind: sandbox.runtime.kind },
+            ),
           })
         } else {
           const stored = await readStoredNote(entries, sessionID)
@@ -81,7 +90,10 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
             await entries.put({
               sessionID,
               key: SANDBOX_INSTRUCTION_KEY,
-              value: buildSandboxContextNote({ switched: true, from: hostEnv, to: env }, { settings: sandbox.settings }),
+              value: buildSandboxContextNote(
+                { switched: true, from: hostEnv, to: env },
+                { settings: sandbox.settings, kind: sandbox.runtime.kind },
+              ),
             })
           } else if (stored?.text !== stable) {
             await entries.put({ sessionID, key: SANDBOX_INSTRUCTION_KEY, value: stable })
@@ -96,7 +108,7 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
         await entries.put({
           sessionID,
           key: SANDBOX_INSTRUCTION_KEY,
-          value: buildSandboxOffNote({ from: tracked.env, to: hostEnv }),
+          value: buildSandboxOffNote({ from: tracked.env, to: hostEnv }, { kind: tracked.sandbox.runtime.kind }),
         })
         trackedSessions.set(sessionID, { hostEnv })
         return
@@ -113,7 +125,10 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
       await entries.put({
         sessionID,
         key: SANDBOX_INSTRUCTION_KEY,
-        value: buildSandboxOffNote({ to: hostEnv }),
+        value: buildSandboxOffNote(
+          { to: hostEnv },
+          { kind: stored.text?.includes(MACOS_SANDBOX_CONTEXT_NOTE) ? 'macos' : undefined },
+        ),
       })
       trackedSessions.set(sessionID, { hostEnv })
     } catch (err) {

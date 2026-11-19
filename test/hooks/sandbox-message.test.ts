@@ -8,6 +8,7 @@ import {
 import {
   buildSandboxContextNote,
   buildSandboxOffNote,
+  MACOS_SANDBOX_CONTEXT_NOTE,
   SANDBOX_CONTEXT_NOTE,
   SANDBOX_OFF_NOTE,
   SANDBOX_SWITCHED_ON_NOTE,
@@ -18,7 +19,14 @@ import type { Logger } from '../../src/types'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
-const context = { containerName: 'forge-x', hostDir: '/w', mounts: [] } as unknown as SandboxContext
+const context = {
+  runtime: { kind: 'msb' },
+  containerName: 'forge-x',
+  hostDir: '/w',
+  mounts: [],
+} as unknown as SandboxContext
+
+const macosContext = { ...context, runtime: { kind: 'macos' } } as unknown as SandboxContext
 
 interface RecordedPut {
   sessionID: string
@@ -67,6 +75,17 @@ describe('createSandboxMessageHook (session instruction entries)', () => {
 
     await hook('ses_1', entries)
     expect(puts).toHaveLength(1)
+  })
+
+  test('puts the macOS VM note for a macOS context', async () => {
+    const hook = makeHook(macosContext)
+    const { entries, puts } = createEntries()
+
+    await hook('ses_1', entries)
+
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(MACOS_SANDBOX_CONTEXT_NOTE)
+    expect(puts[0]!.value).not.toContain(SANDBOX_CONTEXT_NOTE)
   })
 
   test('puts the switched note when the stored entry is a host note after a restart', async () => {
@@ -179,6 +198,43 @@ describe('createSandboxMessageHook (session instruction entries)', () => {
     await hook('ses_1', entries)
     expect(puts).toHaveLength(2)
     expect(describeHost).not.toHaveBeenCalled()
+  })
+
+  test('names the macOS VM in the off note after a macOS sandbox goes away', async () => {
+    let state: SandboxContext | null = macosContext
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => state,
+      probe: { describeHost: async () => 'Darwin 24.6.0 arm64 | macOS 15.6', describeSandbox: async () => 'macOS 15.6 arm64' },
+      logger,
+    })
+    const { entries, puts } = createEntries()
+
+    await hook('ses_1', entries)
+
+    state = null
+    await hook('ses_1', entries)
+
+    expect(puts).toHaveLength(2)
+    expect(puts[1]!.value).toContain(formatSwitchArtifactsLine('macOS VM', 'host'))
+    expect(puts[1]!.value.split('\n')[0]).toMatch(/^\[Sandbox\] Environment changed: macOS VM \(/)
+    expect(puts[1]!.value).toContain(SANDBOX_OFF_NOTE)
+  })
+
+  test('recovers the macOS kind from a stored note for an untracked host session', async () => {
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => null,
+      probe: { describeHost: async () => 'Darwin 24.6.0 arm64 | macOS 15.6', describeSandbox: async () => null },
+      logger,
+    })
+    const { entries, puts } = createEntries({
+      existing: buildSandboxContextNote({ switched: false, to: 'macOS 15.6 arm64' }, { kind: 'macos' }),
+    })
+
+    await hook('ses_1', entries)
+
+    expect(puts).toHaveLength(1)
+    expect(puts[0]!.value).toContain(formatSwitchArtifactsLine('macOS VM', 'host'))
+    expect(puts[0]!.value).toContain(SANDBOX_OFF_NOTE)
   })
 
   test('puts the restarted note exactly once after a settings change', async () => {

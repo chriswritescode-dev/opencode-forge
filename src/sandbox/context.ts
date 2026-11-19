@@ -1,5 +1,5 @@
 import { SANDBOX_CACHE_DIR, SANDBOX_WORKSPACE_QUOTA } from './msb'
-import type { SandboxRuntime } from './runtime'
+import type { SandboxBackendKind, SandboxRuntime } from './runtime'
 import type { PluginConfig, SandboxMountConfig } from '../types'
 import type { SandboxMount } from './path'
 import type { ActiveSandbox, SandboxManager } from './manager'
@@ -38,6 +38,14 @@ export const SANDBOX_CONTEXT_NOTE = [
   'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
   `Package and tool caches live on a dedicated disk mounted at ${SANDBOX_CACHE_DIR}; run forge-cache-prune to reclaim space when the disk fills (it clears caches while preserving installed toolchains).`,
   'Chromium (Playwright\'s browser build) is installed as chromium for headless browser automation; launch it with chromium --headless --no-sandbox --disable-dev-shm-usage.',
+].join('\n')
+
+export const MACOS_SANDBOX_CONTEXT_NOTE = [
+  '[Sandbox] This session runs inside a shared macOS virtual machine: bash, glob, and grep execute there, at the same paths as on the host. Other projects and loops share this VM, so never stop processes you did not start.',
+  'Container runtimes, system package managers, and nested virtualization are not available. Install missing tools with Homebrew (brew); use the Xcode toolchain when the base image includes it.',
+  'The VM runs macOS on the host\'s CPU architecture, so dependency directories built on the host usually work here; rebuild them only when a tool reports an incompatible build.',
+  'Network egress is limited to the configured allow-list; a blocked connection fails and is logged by Forge, so report it instead of retrying.',
+  'Files you write in shared folders are owned by the host user.',
 ].join('\n')
 
 export const SANDBOX_OFF_NOTE = [
@@ -107,29 +115,36 @@ function formatEnvironmentLine(label: string, value: string | null | undefined):
 
 export function buildSandboxContextNote(
   environment: SandboxEnvironmentState,
-  sandbox?: { settings?: SandboxRuntimeSettings; change?: SandboxChange },
+  sandbox?: { settings?: SandboxRuntimeSettings; change?: SandboxChange; kind?: SandboxBackendKind },
 ): string {
+  const macos = sandbox?.kind === 'macos'
+  const sandboxLabel = macos ? 'macOS VM' : 'container'
+  const contextNote = macos ? MACOS_SANDBOX_CONTEXT_NOTE : SANDBOX_CONTEXT_NOTE
   const settings = sandbox?.settings ? formatSandboxSettingsLine(sandbox.settings) : null
   const lines = environment.switched
     ? [
-        formatTransitionLine({ from: environment.from, to: environment.to }, 'host', 'container'),
-        formatSwitchArtifactsLine('host', 'container'),
+        formatTransitionLine({ from: environment.from, to: environment.to }, 'host', sandboxLabel),
+        formatSwitchArtifactsLine('host', sandboxLabel),
         SANDBOX_SWITCHED_ON_NOTE,
         settings,
-        SANDBOX_CONTEXT_NOTE,
+        contextNote,
       ]
     : [
-        formatEnvironmentLine('container', environment.to),
+        formatEnvironmentLine(sandboxLabel, environment.to),
         sandbox?.change ? SANDBOX_CHANGE_NOTES[sandbox.change] : null,
         settings,
-        SANDBOX_CONTEXT_NOTE,
+        contextNote,
       ]
   return lines.filter((line): line is string => line !== null).join('\n')
 }
 
-export function buildSandboxOffNote(transition?: SandboxEnvironmentTransition): string {
-  const line = formatTransitionLine(transition, 'container', 'host')
-  const switched = formatSwitchArtifactsLine('container', 'host')
+export function buildSandboxOffNote(
+  transition?: SandboxEnvironmentTransition,
+  sandbox?: { kind?: SandboxBackendKind },
+): string {
+  const fromLabel = sandbox?.kind === 'macos' ? 'macOS VM' : 'container'
+  const line = formatTransitionLine(transition, fromLabel, 'host')
+  const switched = formatSwitchArtifactsLine(fromLabel, 'host')
   return line ? `${line}\n${switched}\n${SANDBOX_OFF_NOTE}` : `${switched}\n${SANDBOX_OFF_NOTE}`
 }
 
