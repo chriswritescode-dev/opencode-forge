@@ -3,7 +3,7 @@ import type { SandboxOverrides } from '../types'
 import { readSandboxOverrides, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
 import type { ForgeTuiHost, ForgeTuiSelectOption } from './host'
 import type { HostSandboxToggle } from './host-sandbox'
-import { DEFAULT_SUFFIX, RESOURCE_FIELDS, formatLanAccess, promptResourceOverride } from './loop-settings-dialog'
+import { DEFAULT_SUFFIX, RESOURCE_FIELDS, formatLanAccess, promptResourceOverride, sandboxSupportsLan, sandboxSupportsResources } from './loop-settings-dialog'
 import { isHostSandboxRunning, type SessionSandboxPreference } from './session-sandbox-store'
 
 const HOST_RESOURCE_FIELDS = RESOURCE_FIELDS.filter((field) => field.key === 'cpus' || field.key === 'memory')
@@ -33,22 +33,26 @@ export function buildHostSandboxSettingsOptions(
   const changed = !overridesEqual(draft, saved)
   const options: ForgeTuiSelectOption<string>[] = []
   const resources = resolveSandboxResources(defaults?.sandbox.resources, draft?.resources)
-  for (const field of HOST_RESOURCE_FIELDS) {
+  if (sandboxSupportsResources(defaults)) {
+    for (const field of HOST_RESOURCE_FIELDS) {
+      options.push({
+        title: `${field.label}: ${resources[field.key]}${draft?.resources?.[field.key] === undefined ? DEFAULT_SUFFIX : ''}`,
+        value: `resource:${field.key}`,
+        description: running
+          ? 'Press enter to change; applying restarts the host-session sandboxes in use in this project (files kept, running processes stop)'
+          : 'Press enter to change; applied when a host-session sandbox next starts',
+      })
+    }
+  }
+  if (sandboxSupportsLan(defaults)) {
     options.push({
-      title: `${field.label}: ${resources[field.key]}${draft?.resources?.[field.key] === undefined ? DEFAULT_SUFFIX : ''}`,
-      value: `resource:${field.key}`,
+      title: `LAN access: ${formatLanAccess(effectiveAllowLan(draft, defaults))}${draft?.allowLan === undefined ? DEFAULT_SUFFIX : ''}`,
+      value: 'allowLan',
       description: running
-        ? 'Press enter to change; applying restarts the host-session sandboxes in use in this project (files kept, running processes stop)'
-        : 'Press enter to change; applied when a host-session sandbox next starts',
+        ? 'Press enter to change; applying recreates the host-session sandboxes in use in this project (in-sandbox state is lost)'
+        : 'Press enter to change whether the sandbox can reach private (LAN) addresses',
     })
   }
-  options.push({
-    title: `LAN access: ${formatLanAccess(effectiveAllowLan(draft, defaults))}${draft?.allowLan === undefined ? DEFAULT_SUFFIX : ''}`,
-    value: 'allowLan',
-    description: running
-      ? 'Press enter to change; applying recreates the host-session sandboxes in use in this project (in-sandbox state is lost)'
-      : 'Press enter to change whether the sandbox can reach private (LAN) addresses',
-  })
   if (readSandboxOverrides(draft)) {
     options.push({ title: 'Reset to defaults', value: 'reset', description: 'Clear every host sandbox setting override' })
   }

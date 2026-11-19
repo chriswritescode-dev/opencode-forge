@@ -28,6 +28,14 @@ export function formatLanAccess(allowLan: boolean): string {
   return allowLan ? 'allowed' : 'blocked'
 }
 
+export function sandboxSupportsResources(defaults: ForgeLoopDefaults | null): boolean {
+  return defaults?.sandbox.capabilities?.resize !== false
+}
+
+export function sandboxSupportsLan(defaults: ForgeLoopDefaults | null): boolean {
+  return defaults?.sandbox.capabilities?.lanToggle !== false
+}
+
 export async function promptResourceOverride(
   host: ForgeTuiHost,
   resources: SandboxResources,
@@ -73,8 +81,13 @@ export function formatLoopSettingsSummary(settings: LoopLaunchSettings, defaults
   const parts = [iterations === undefined ? 'default iterations' : `${formatIterations(iterations)} iterations`]
   if (defaults?.sandbox.available) {
     if (isSandboxOn(settings, defaults)) {
-      const resources = effectiveResources(settings, defaults)
-      parts.push(`sandbox ${resources.cpus} CPU, ${resources.memory}${effectiveAllowLan(settings, defaults) ? ', LAN' : ''}`)
+      if (sandboxSupportsResources(defaults)) {
+        const resources = effectiveResources(settings, defaults)
+        const lan = sandboxSupportsLan(defaults) && effectiveAllowLan(settings, defaults)
+        parts.push(`sandbox ${resources.cpus} CPU, ${resources.memory}${lan ? ', LAN' : ''}`)
+      } else {
+        parts.push('sandbox on')
+      }
     } else {
       parts.push('sandbox off')
     }
@@ -117,21 +130,25 @@ export function buildLoopSettingsOptions(settings: LoopLaunchSettings, defaults:
     })
     if (on) {
       const resources = effectiveResources(settings, defaults)
-      for (const field of RESOURCE_FIELDS) {
+      if (sandboxSupportsResources(defaults)) {
+        for (const field of RESOURCE_FIELDS) {
+          options.push({
+            title: `${field.label}: ${resources[field.key]}${settings.sandbox?.resources?.[field.key] === undefined ? DEFAULT_SUFFIX : ''}`,
+            value: `resource:${field.key}`,
+            description: 'Press enter to change; applied when the loop sandbox is created',
+          })
+        }
+      }
+      if (sandboxSupportsLan(defaults)) {
+        const allowLan = effectiveAllowLan(settings, defaults)
         options.push({
-          title: `${field.label}: ${resources[field.key]}${settings.sandbox?.resources?.[field.key] === undefined ? DEFAULT_SUFFIX : ''}`,
-          value: `resource:${field.key}`,
-          description: 'Press enter to change; applied when the loop sandbox is created',
+          title: `LAN access: ${formatLanAccess(allowLan)}${settings.sandbox?.allowLan === undefined ? DEFAULT_SUFFIX : ''}`,
+          value: 'allowLan',
+          description: allowLan
+            ? 'Press enter to block this loop sandbox from private (LAN) addresses'
+            : 'Press enter to let this loop sandbox reach private (LAN) addresses',
         })
       }
-      const allowLan = effectiveAllowLan(settings, defaults)
-      options.push({
-        title: `LAN access: ${formatLanAccess(allowLan)}${settings.sandbox?.allowLan === undefined ? DEFAULT_SUFFIX : ''}`,
-        value: 'allowLan',
-        description: allowLan
-          ? 'Press enter to block this loop sandbox from private (LAN) addresses'
-          : 'Press enter to let this loop sandbox reach private (LAN) addresses',
-      })
     }
   }
   if (settings.maxIterations !== undefined || settings.sandbox) {

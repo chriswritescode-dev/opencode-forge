@@ -45,6 +45,7 @@ import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEf
 import { createForgeRpcCaller, createV2ForgeProjectClient, followRpcEvent } from './v2-client'
 import { createHostSandboxToggle } from './host-sandbox'
 import { editHostSandboxSettings } from './host-sandbox-dialog'
+import { sandboxSupportsLan, sandboxSupportsResources } from './loop-settings-dialog'
 import { createLoopSidebarStore, type LoopSidebarStore } from './loop-sidebar'
 import { createSessionAutoApproveToggle } from './session-auto-approve'
 import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
@@ -407,6 +408,37 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     return 'error' in defaults ? null : defaults
   }
 
+  const openHostSandboxSettings = async (): Promise<void> => {
+    const defaults = await loadSandboxDefaults()
+    if (!sandboxSupportsResources(defaults) && !sandboxSupportsLan(defaults)) {
+      host.toast({
+        message: 'Sandbox settings are not available in the macOS sandbox mode: the shared VM\'s CPUs and memory come from its base image, and egress follows sandbox.network.allow.',
+        variant: 'info',
+        duration: 5000,
+      })
+      return
+    }
+    await editHostSandboxSettings({
+      host,
+      sandbox: hostSandbox,
+      currentSessionId,
+      loadDefaults: async () => defaults,
+    })
+  }
+
+  const openSandboxTemplateBuild = async (): Promise<void> => {
+    const defaults = await loadSandboxDefaults()
+    if (defaults?.sandbox.capabilities?.templateBuild === false) {
+      host.toast({
+        message: 'The macOS sandbox mode does not build templates; build the base VM as described in docs/sandbox.md.',
+        variant: 'info',
+        duration: 5000,
+      })
+      return
+    }
+    openSandboxBuildDialog(host, pluginConfig)
+  }
+
   const autoApprove = createSessionAutoApproveToggle({
     currentSessionId,
     readState: (sessionId) => call(async (rpc, location) => await rpc.autoApproveState({ sessionId }, location), readForgeAutoApproveState),
@@ -487,14 +519,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
             description: 'Set CPUs, memory, and LAN access for the project\'s host-session sandboxes',
             group: 'Forge',
             palette: true,
-            run: () => {
-              void editHostSandboxSettings({
-                host,
-                sandbox: hostSandbox,
-                currentSessionId,
-                loadDefaults: loadSandboxDefaults,
-              })
-            },
+            run: () => { void openHostSandboxSettings() },
           }, opts.keybinds.sandboxSettings),
           withKeybind({
             id: 'forge.permissions.toggleAutoApprove',
@@ -510,7 +535,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
             description: 'Build the sandbox template image and load it into msb',
             group: 'Forge',
             palette: true,
-            run: () => openSandboxBuildDialog(host, pluginConfig),
+            run: () => { void openSandboxTemplateBuild() },
           },
         ],
       }))

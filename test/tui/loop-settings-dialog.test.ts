@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { ForgeLoopDefaults } from '../../src/host/forge-rpc'
+import { MACOS_CAPABILITIES } from '../../src/sandbox/runtime'
 import type { ForgeTuiHost } from '../../src/tui/host'
 import {
   buildLoopSettingsOptions,
@@ -14,6 +15,11 @@ const defaults: ForgeLoopDefaults = {
 }
 
 const noSandbox: ForgeLoopDefaults = { ...defaults, sandbox: { ...defaults.sandbox, available: false } }
+
+const macosDefaults: ForgeLoopDefaults = {
+  ...defaults,
+  sandbox: { ...defaults.sandbox, backend: 'macos', capabilities: MACOS_CAPABILITIES },
+}
 
 function scriptedHost(selects: Array<string | undefined>, prompts: Array<string | undefined> = []) {
   const toasts: Array<{ message: string }> = []
@@ -38,6 +44,11 @@ describe('formatLoopSettingsSummary', () => {
   test('omits the sandbox when the server has none and tolerates missing defaults', () => {
     expect(formatLoopSettingsSummary({ maxIterations: 5 }, noSandbox)).toBe('5 iterations')
     expect(formatLoopSettingsSummary({}, null)).toBe('default iterations')
+  })
+
+  test('summarizes a macOS sandbox without resources it cannot resize', () => {
+    expect(formatLoopSettingsSummary({}, macosDefaults)).toBe('50 iterations · sandbox on')
+    expect(formatLoopSettingsSummary({ sandbox: { enabled: false } }, macosDefaults)).toBe('50 iterations · sandbox off')
   })
 })
 
@@ -75,6 +86,24 @@ describe('buildLoopSettingsOptions', () => {
     expect(titles).toContain('CPUs: 8')
     expect(titles).toContain('Memory: 8g (default)')
     expect(titles).toContain('Max iterations: 50 (default)')
+  })
+
+  test('hides resource and LAN rows a macOS sandbox cannot honor', () => {
+    const options = buildLoopSettingsOptions({}, macosDefaults)
+
+    expect(options.map((o) => o.value)).toEqual(['maxIterations', 'sandbox', 'done'])
+    expect(options.map((o) => o.title).filter((title) => ['CPUs', 'Memory', 'LAN access'].some((label) => title.includes(label)))).toEqual([])
+  })
+
+  test('keeps the LAN row when only resizing is unsupported', () => {
+    const partial: ForgeLoopDefaults = {
+      ...macosDefaults,
+      sandbox: { ...macosDefaults.sandbox, capabilities: { ...MACOS_CAPABILITIES, lanToggle: true } },
+    }
+    const options = buildLoopSettingsOptions({}, partial)
+
+    expect(options.map((o) => o.value)).toEqual(['maxIterations', 'sandbox', 'allowLan', 'done'])
+    expect(options.map((o) => o.title).filter((title) => ['CPUs', 'Memory'].some((label) => title.includes(label)))).toEqual([])
   })
 })
 

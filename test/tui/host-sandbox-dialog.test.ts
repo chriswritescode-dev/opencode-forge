@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { ForgeLoopDefaults } from '../../src/host/forge-rpc'
+import { MACOS_CAPABILITIES } from '../../src/sandbox/runtime'
 import type { ForgeTuiHost } from '../../src/tui/host'
 import type { HostSandboxToggle } from '../../src/tui/host-sandbox'
 import { buildHostSandboxSettingsOptions, editHostSandboxSettings } from '../../src/tui/host-sandbox-dialog'
@@ -11,6 +12,11 @@ const SESSION = 'ses_1'
 const defaults: ForgeLoopDefaults = {
   maxIterations: 0,
   sandbox: { available: true, resources: { cpus: '4', memory: '8g', dockerDisk: '16g', cacheDisk: '16g' }, allowLan: false },
+}
+
+const macosDefaults: ForgeLoopDefaults = {
+  ...defaults,
+  sandbox: { ...defaults.sandbox, backend: 'macos', capabilities: MACOS_CAPABILITIES },
 }
 
 function preference(options: { running?: boolean; overrides?: SandboxOverrides } = {}): SessionSandboxPreference {
@@ -79,6 +85,14 @@ describe('buildHostSandboxSettingsOptions', () => {
 
     expect(options[0]?.description).toBe('Press enter to change; applied when a host-session sandbox next starts')
     expect(options.at(-2)?.title).toBe('Apply settings')
+  })
+
+  test('omits resource and LAN rows a macOS sandbox cannot honor', () => {
+    const options = buildHostSandboxSettingsOptions(preference(), undefined, macosDefaults)
+
+    expect(options.map((o) => o.value)).toEqual(['done'])
+    expect(options.at(-1)?.title).toBe('Done')
+    expect(options.map((o) => o.title).filter((title) => ['CPUs', 'Memory', 'LAN access'].some((label) => title.includes(label)))).toEqual([])
   })
 })
 

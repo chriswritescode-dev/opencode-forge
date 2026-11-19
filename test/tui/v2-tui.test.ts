@@ -20,7 +20,8 @@ vi.mock('../../src/tui/dashboard/store', () => ({
 
 import { createSignal } from 'solid-js'
 import type { Plugin } from '@opencode/plugin/tui'
-import type { ForgeHostSandboxSetInput, ForgeHostSandboxState } from '../../src/host/forge-rpc'
+import type { ForgeHostSandboxSetInput, ForgeHostSandboxState, ForgeLoopDefaults } from '../../src/host/forge-rpc'
+import { MACOS_CAPABILITIES, MSB_CAPABILITIES } from '../../src/sandbox/runtime'
 import { resolveV2TuiProjectId, setupForgeTuiV2, VERSION_CHECK_MAX_ATTEMPTS, VERSION_CHECK_RETRY_DELAY_MS } from '../../src/tui/v2'
 import tuiModule from '../../src/tui'
 import { formatForgeTitle, resolveTuiOptions } from '../../src/tui/options'
@@ -29,6 +30,22 @@ import { useTempConfigHome } from '../helpers/temp-config'
 import { join } from 'path'
 import { resolveForgeDataDir } from '../../src/utils/opencode-paths'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
+
+const MSB_DEFAULTS: ForgeLoopDefaults = {
+  maxIterations: 0,
+  sandbox: {
+    available: true,
+    resources: { cpus: '4', memory: '8g', dockerDisk: '16g', cacheDisk: '16g' },
+    allowLan: false,
+    backend: 'msb',
+    capabilities: MSB_CAPABILITIES,
+  },
+}
+
+const MACOS_DEFAULTS: ForgeLoopDefaults = {
+  ...MSB_DEFAULTS,
+  sandbox: { ...MSB_DEFAULTS.sandbox, backend: 'macos', capabilities: MACOS_CAPABILITIES },
+}
 
 interface RecordedCommand {
   id?: string
@@ -130,7 +147,10 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     controller: null,
   }))
   const hostSandboxSet = vi.fn(async (_input: ForgeHostSandboxSetInput) => ({ revision: 'rev-1' }))
-  const loopDefaults = vi.fn(async () => ({
+  const loopDefaults = vi.fn(async (
+    _input?: unknown,
+    _options?: { location?: { directory?: string } },
+  ): Promise<ForgeLoopDefaults> => ({
     maxIterations: 0,
     sandbox: { available: true, resources: { cpus: '4', memory: '8g', dockerDisk: '16g', cacheDisk: '16g' }, allowLan: false },
   }))
@@ -679,6 +699,66 @@ describe('V2 TUI setup', () => {
       expect(dialogSelect.mock.calls[0]?.[0]).toMatchObject({ title: 'Sandbox settings' })
       expect(fake.loopDefaults).toHaveBeenCalled()
       expect(fake.hostSandboxSet).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('the sandbox settings and template build commands refuse macOS mode with one toast and no dialog', async () => {
+    const fake = createFakeV2TuiContext({ route: { type: 'session', sessionID: 'ses_1' } })
+    fake.loopDefaults.mockImplementation(async () => MACOS_DEFAULTS)
+
+    const dialog = (fake.ctx.ui as unknown as {
+      dialog: { select: ReturnType<typeof vi.fn>; show: ReturnType<typeof vi.fn> }
+    }).dialog
+    const dialogSelect = dialog.select
+    const dialogShow = dialog.show
+    const settingsMessage = 'Sandbox settings are not available in the macOS sandbox mode: the shared VM\'s CPUs and memory come from its base image, and egress follows sandbox.network.allow.'
+    const buildMessage = 'The macOS sandbox mode does not build templates; build the base VM as described in docs/sandbox.md.'
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    try {
+      await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(1))
+
+      findCommand(fake, 'forge.sandbox.settings').run?.()
+      await vi.waitFor(() => expect(fake.toasts).toContainEqual(expect.objectContaining({ message: settingsMessage })))
+      const settingsToasts = fake.toasts.filter((toast) => toast.message === settingsMessage)
+      expect(settingsToasts).toEqual([expect.objectContaining({ variant: 'info' })])
+      expect(dialogSelect).not.toHaveBeenCalled()
+
+      findCommand(fake, 'forge.sandbox.buildImage').run?.()
+      await vi.waitFor(() => expect(fake.toasts).toContainEqual(expect.objectContaining({ message: buildMessage })))
+      const buildToasts = fake.toasts.filter((toast) => toast.message === buildMessage)
+      expect(buildToasts).toEqual([expect.objectContaining({ variant: 'info' })])
+      expect(dialogShow).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('sandbox settings follow the live TUI location when gating', async () => {
+    const fake = createFakeV2TuiContext({ location: { directory: '/work/a' }, route: { type: 'session', sessionID: 'ses_1' } })
+    fake.loopDefaults.mockImplementation(async (_input, options) => (
+      options?.location?.directory === '/work/b' ? MSB_DEFAULTS : MACOS_DEFAULTS
+    ))
+    const dialogSelect = (fake.ctx.ui as unknown as { dialog: { select: ReturnType<typeof vi.fn> } }).dialog.select
+    const settingsMessage = 'Sandbox settings are not available in the macOS sandbox mode: the shared VM\'s CPUs and memory come from its base image, and egress follows sandbox.network.allow.'
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    try {
+      await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(1))
+
+      findCommand(fake, 'forge.sandbox.settings').run?.()
+      await vi.waitFor(() => expect(fake.toasts).toContainEqual(expect.objectContaining({ message: settingsMessage })))
+      expect(dialogSelect).not.toHaveBeenCalled()
+
+      fake.setLocation({ directory: '/work/b' })
+      await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(2))
+
+      findCommand(fake, 'forge.sandbox.settings').run?.()
+      await vi.waitFor(() => expect(dialogSelect).toHaveBeenCalled())
+      expect(dialogSelect.mock.calls.at(-1)?.[0]).toMatchObject({ title: 'Sandbox settings' })
+      expect(fake.loopDefaults.mock.calls.at(-1)?.[1]).toEqual({ location: { directory: '/work/b' } })
     } finally {
       cleanup()
     }
