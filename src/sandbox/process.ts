@@ -22,6 +22,37 @@ const DEFAULT_TIMEOUT = 120000
 
 export const COMMAND_TIMEOUT_EXIT_CODE = 124
 
+export function spawnDetached(
+  command: string,
+  args: string[],
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; logger: Logger; logLabel?: string },
+): number | null {
+  const logLabel = opts.logLabel ?? 'sandbox'
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: 'ignore',
+    cwd: opts.cwd,
+    env: opts.env,
+  })
+
+  child.on('error', (err: Error) => {
+    opts.logger.log(`[${logLabel}] spawn error: ${err.message} for: ${command}`)
+  })
+  child.unref()
+
+  return child.pid ?? null
+}
+
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err instanceof Error && 'code' in err && err.code === 'EPERM'
+  }
+}
+
 export function runCommand(command: string, args: string[], opts: RunCommandOpts): Promise<CommandResult> {
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT
   const logLabel = opts.logLabel ?? 'sandbox'

@@ -1,7 +1,7 @@
 import { describe, test, expect, vi } from 'vitest'
 import { realpathSync } from 'fs'
 import { tmpdir } from 'os'
-import { runCommand } from '../../src/sandbox/process'
+import { isProcessAlive, runCommand, spawnDetached } from '../../src/sandbox/process'
 import type { Logger } from '../../src/types'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
@@ -41,5 +41,62 @@ describe('runCommand', () => {
   test('a provided env replaces the parent environment entirely', async () => {
     const result = await runCommand('printenv', ['HOME'], { logger, env: {} })
     expect(result.exitCode).toBe(1)
+  })
+})
+
+describe('spawnDetached', () => {
+  test('returns a live pid for a running command', async () => {
+    const pid = spawnDetached('sleep', ['5'], { logger })
+    expect(typeof pid).toBe('number')
+    try {
+      expect(isProcessAlive(pid as number)).toBe(true)
+      process.kill(pid as number, 'SIGKILL')
+      for (let i = 0; i < 80 && isProcessAlive(pid as number); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      expect(isProcessAlive(pid as number)).toBe(false)
+    } finally {
+      if (pid !== null && isProcessAlive(pid)) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {}
+      }
+    }
+  })
+
+  test('returns null and logs when the executable does not exist', async () => {
+    logger.log.mockClear()
+    const pid = spawnDetached('forge-definitely-not-a-command-xyz', [], { logger })
+    expect(pid).toBeNull()
+    await vi.waitFor(() =>
+      expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('spawn error')),
+    )
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('forge-definitely-not-a-command-xyz'))
+  })
+})
+
+describe('isProcessAlive', () => {
+  test('returns false for a process that has exited', async () => {
+    const pid = spawnDetached('sleep', ['5'], { logger })
+    expect(pid).not.toBeNull()
+    try {
+      process.kill(pid as number, 'SIGKILL')
+      for (let i = 0; i < 80 && isProcessAlive(pid as number); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      expect(isProcessAlive(pid as number)).toBe(false)
+    } finally {
+      if (isProcessAlive(pid as number)) {
+        try {
+          process.kill(pid as number, 'SIGKILL')
+        } catch {}
+      }
+    }
+  })
+
+  test('returns false for a non-positive or non-finite pid', () => {
+    expect(isProcessAlive(0)).toBe(false)
+    expect(isProcessAlive(-1)).toBe(false)
+    expect(isProcessAlive(Number.NaN)).toBe(false)
   })
 })
