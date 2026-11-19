@@ -5,6 +5,8 @@ import { join } from 'path'
 import { FORGE_EVENT_TYPES, V2_EVENT_TYPES } from '../../src/host/v2-events'
 import { FORGE_RPC } from '../../src/host/forge-rpc'
 import { sandboxSecretProviders } from '../../src/sandbox/secrets'
+import { CONCURRENT_BUILD_MESSAGE } from '../../src/sandbox/template'
+import { processShared } from '../../src/utils/process-shared'
 import { VERSION } from '../../src/version'
 import { isPromptQueued, hasSuppressedIdle, recordSuppressedIdle, recordIdleBackgroundWork, hasPendingBackgroundWork, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { ForgeClient } from '../../src/client/port'
@@ -384,6 +386,36 @@ describe('V2 server setup', () => {
       resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
       allowLan: false,
     })
+  })
+
+  test('the sandbox template build RPCs report server status and start on the server', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      sandboxTemplateBuildStart: () => Promise<Record<string, unknown>>
+      sandboxTemplateBuildStatus: () => Promise<Record<string, unknown>>
+    }
+
+    const status = await handlers.sandboxTemplateBuildStatus()
+    expect(status.phase).toBe('idle')
+    expect(typeof status.image).toBe('string')
+    expect(typeof status.contextDir).toBe('string')
+
+    const tracker = processShared('sandbox-template-build.v1', () => ({ current: null }))
+    const previous = tracker.current
+    tracker.current = {
+      phase: 'running',
+      image: 'oc-forge-sandbox:latest',
+      contextDir: '/tmp/ctx',
+      stage: 'build',
+      tail: [],
+      startedAt: Date.now(),
+    }
+    try {
+      await expect(handlers.sandboxTemplateBuildStart()).resolves.toEqual({ error: CONCURRENT_BUILD_MESSAGE })
+    } finally {
+      tracker.current = previous
+    }
   })
 
   test('bridges host sandbox changes to the hostSandboxChanged RPC event', async () => {

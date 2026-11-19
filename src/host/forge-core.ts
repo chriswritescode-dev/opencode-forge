@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'os'
 import type { ForgeClient, ForgeEvent, SessionGetParams } from '../client/port'
 import { ForgeClientError } from '../client/port'
 import { buildAgents, type AgentDefinitionsByRole } from '../agents'
@@ -26,7 +28,8 @@ import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permissi
 import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } from '../utils/loop-permission-warnings'
 import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
-import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
+import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, readSandboxTemplateBuildStatus, resolveTemplateBuildArgs, startSandboxTemplateBuild } from '../sandbox/template'
+import { runCommand } from '../sandbox/process'
 import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, FOLDER_SANDBOX_IDLE_TIMEOUT, isFolderManagerKey, isHostSessionManagerKey, type SessionSandboxController } from '../sandbox/session-controller'
 import type { PluginConfig, CompactionConfig, AutoApproveDenyRule, Logger } from '../types'
 import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
@@ -49,7 +52,7 @@ import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } fro
 import { createLoopPermissionPatcher } from '../hooks/loop-permission'
 import { createSandboxMessageHook, type SessionInstructionEntries } from '../hooks/sandbox-message'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
-import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeExecutePlanSuccess, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
+import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeExecutePlanSuccess, ForgeAutoApproveState, ForgeLoopDefaults, ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
 import { createDashboardService, type DashboardService } from '../services/dashboard-service'
 import { processShared } from '../utils/process-shared'
@@ -81,6 +84,10 @@ export interface ForgeCore {
   systemAddendumFor(agent: string | undefined): string | null
   executeTuiPlan(input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput>
   loopDefaults(): ForgeLoopDefaults
+  sandboxTemplate: {
+    start(): ForgeSandboxTemplateBuildOutput
+    status(): ForgeSandboxTemplateBuildStatus
+  }
   resolveSandboxForDirectory(directory: string, opts?: { throwOnRestoreError?: boolean }): Promise<SandboxContext | null>
   resolveShellSandbox(sessionID: string): Promise<SandboxContext | null>
   autoApprovesPermissions(sessionID: string): Promise<boolean>
@@ -521,6 +528,17 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   if (sandboxManager && forgeClient) {
     const sandboxImage = config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
     const buildContextDir = resolveBundledContainerDir()
+    if (!existsSync(buildContextDir)) {
+      publishToast({
+        client: forgeClient,
+        directory,
+        logger,
+        title: 'Sandbox build context missing',
+        message: `Sandboxing is enabled but the bundled build context is missing at ${buildContextDir}. Reinstall opencode-forge, then build the template: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, resolveTemplateBuildArgs(config))}`,
+        variant: 'warning',
+        duration: 10_000,
+      })
+    }
     void (async () => {
       try {
         const available = await runtime.checkAvailable()
@@ -1010,6 +1028,52 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     },
   })
 
+  const sandboxTemplate = {
+    start: (): ForgeSandboxTemplateBuildOutput => {
+      const tag = config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
+      const contextDir = resolveBundledContainerDir()
+      return startSandboxTemplateBuild({
+        contextDir,
+        tag,
+        deps: {
+          runCommand,
+          loadTemplate: (tar, ref) => runtime.loadTemplate(tar, ref),
+          logger,
+          tmpDir: tmpdir(),
+          buildArgs: resolveTemplateBuildArgs(config),
+        },
+        onSettled: (result) => {
+          if (!forgeClient) return
+          if (result.ok) {
+            publishToast({
+              client: forgeClient,
+              directory,
+              logger,
+              title: 'Sandbox template ready',
+              message: `Sandbox template ${tag} built and loaded successfully`,
+              variant: 'success',
+              duration: 5000,
+            })
+            return
+          }
+          publishToast({
+            client: forgeClient,
+            directory,
+            logger,
+            title: 'Sandbox template build failed',
+            message: result.message,
+            variant: 'error',
+            duration: 10_000,
+          })
+        },
+      })
+    },
+    status: (): ForgeSandboxTemplateBuildStatus => readSandboxTemplateBuildStatus({
+      contextDir: resolveBundledContainerDir(),
+      tag: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
+    }),
+  }
+
   const resolveSandboxForDirectory = async (
     targetDirectory: string,
     opts?: { throwOnRestoreError?: boolean },
@@ -1132,6 +1196,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     systemAddendumFor,
     executeTuiPlan,
     loopDefaults,
+    sandboxTemplate,
     resolveSandboxForDirectory,
     resolveShellSandbox,
     autoApprovesPermissions: async (sessionID) => {

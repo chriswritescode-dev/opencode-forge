@@ -216,6 +216,8 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
         executePlan: rpcHandler(executePlanRpcInputSchema, async (input) => withCore((active) =>
           active.executeTuiPlan(input))),
         loopDefaults: jsonOutput(() => withCore((active) => active.loopDefaults())),
+        sandboxTemplateBuildStart: jsonOutput(() => withCore((active) => active.sandboxTemplate.start())),
+        sandboxTemplateBuildStatus: jsonOutput(() => withCore((active) => active.sandboxTemplate.status())),
         autoApproveState: rpcHandler(sessionIdRpcInputSchema, async (input) => withCore((active) =>
           active.getSessionAutoApproveState(input.sessionId))),
         autoApproveSet: rpcHandler(autoApproveSetRpcInputSchema, async (input) => withCore((active) =>
