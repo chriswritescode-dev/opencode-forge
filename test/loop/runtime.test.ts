@@ -4792,6 +4792,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       return {
         getActive: () => ({ containerName: 'codegraph-container' }),
         runtime: {
+          capabilities: { codeGraph: true },
           exec: (_container: string, command: string, opts?: { cwd?: string }) =>
             command.includes('| base64 -d ') && opts?.cwd
               ? Promise.resolve({ exitCode: 0, stdout: execSync(command, { cwd: opts.cwd, encoding: 'utf-8', shell: '/bin/sh' }), stderr: '' })
@@ -4943,6 +4944,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const sandboxManager = {
         getActive: () => ({ containerName: 'codegraph-container' }),
         runtime: {
+          capabilities: { codeGraph: true },
           exec: async (_container: string, command: string) =>
             command.includes('| base64 -d ')
               ? { exitCode: 1, stdout: '', stderr: 'read-only file system' }

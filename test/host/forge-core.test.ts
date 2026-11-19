@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, readFileSync, rmSync, existsSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { createForgeCore, type ForgeCore } from '../../src/host/forge-core'
 import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
@@ -17,6 +17,7 @@ import {
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
 import type { AutoApproveDenyRule, PluginConfig } from '../../src/types'
 import { resolveSessionAutoApproveFlag } from '../../src/utils/session-auto-approve-flag'
+import { MSB_CAPABILITIES } from '../../src/sandbox/runtime'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 
 const TEST_ROOT = join('/tmp', `forge-core-test-${Date.now()}`)
@@ -133,10 +134,22 @@ describe('createForgeCore', () => {
   })
 
   test('resolveShellSandbox skips session lookups while no loop or host sandbox is active', async () => {
-    const built = await buildCore({ sandbox: { hostSessions: false } })
+    const binDir = join(testDir, 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const fakeMsb = join(binDir, 'msb')
+    writeFileSync(fakeMsb, '#!/bin/sh\nif [ "$1" = "ls" ]; then echo "[]"; exit 0; fi\nexit 0\n')
+    chmodSync(fakeMsb, 0o755)
+    const originalPath = process.env.PATH
+    process.env.PATH = [binDir, originalPath ?? ''].join(':')
+    try {
+      const built = await buildCore({ sandbox: { hostSessions: false } })
 
-    await expect(built.core.resolveShellSandbox('ses_host_1')).resolves.toBeNull()
-    expect(built.calls.some((call) => call.method === 'session.get')).toBe(false)
+      await expect(built.core.resolveShellSandbox('ses_host_1')).resolves.toBeNull()
+      expect(built.calls.some((call) => call.method === 'session.get')).toBe(false)
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH
+      else process.env.PATH = originalPath
+    }
   })
 
   test('a deleted session drops its host sandbox preference entry and notifies the TUI', async () => {
@@ -569,6 +582,8 @@ describe('createForgeCore', () => {
         available: true,
         resources: { memory: '2g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
         allowLan: true,
+        backend: 'msb',
+        capabilities: MSB_CAPABILITIES,
       },
     })
   })
@@ -582,6 +597,8 @@ describe('createForgeCore', () => {
         available: false,
         resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
         allowLan: false,
+        backend: 'msb',
+        capabilities: MSB_CAPABILITIES,
       },
     })
   })

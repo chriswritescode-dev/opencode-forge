@@ -6,28 +6,26 @@ import { buildAgents, type AgentDefinitionsByRole } from '../agents'
 import { createConfigHandler } from '../config'
 import type { ChatMessageOutput } from '../hooks/session'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
-import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createSessionAutoApproveRepo } from '../storage'
+import { initializeDatabase, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createSessionAutoApproveRepo } from '../storage'
 import type { LoopChangeNotifier } from '../loop'
 import { resolveBundledContainerDir, resolvePromptsDir } from '../setup'
-import { resolveSkillsDir } from '../install/paths'
 import { resolveLogPath } from '../storage'
 import { createLogger, slugify } from '../utils/logger'
-import { createMsbRuntime } from '../sandbox/msb'
-import { collectLegacySandboxConfigWarnings } from '../sandbox/config-warnings'
+import { createSandboxBackend, resolveSandboxMode, type SandboxBackend } from '../sandbox/backend'
+import { collectLegacySandboxConfigWarnings, collectMacosSandboxConfigWarnings } from '../sandbox/config-warnings'
 import { defaultGitService } from '../utils/git-service'
-import { resolveSandboxContextForLoop, isSandboxConfigEnabled, isSandboxEnabled, isHostSessionsDefaultEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
-import { readLoopSandboxSettings, readSandboxOverrides, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
+import { resolveSandboxContextForLoop, isSandboxConfigEnabled, isSandboxEnabled, isHostSessionsDefaultEnabled, type SandboxContext } from '../sandbox/context'
+import { readLoopSandboxSettings, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
 import { describeInvalidLoopSecrets } from '../sandbox/secrets'
 import { createEnvironmentProbe } from '../sandbox/env-probe'
-import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-paths'
+import { resolveForgeDataDir } from '../utils/opencode-paths'
 import { isForgeWorktreeDir, forgeWorktreesRoot } from '../workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS, isCodeGraphEnabled } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } from '../utils/loop-permission-warnings'
 import { publishToast } from '../utils/toast'
-import { createSandboxManager } from '../sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
-import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, FOLDER_SANDBOX_IDLE_TIMEOUT, isFolderManagerKey, isHostSessionManagerKey, type SessionSandboxController } from '../sandbox/session-controller'
+import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, type SessionSandboxController } from '../sandbox/session-controller'
 import type { PluginConfig, CompactionConfig, AutoApproveDenyRule, Logger } from '../types'
 import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
 import { createTools } from '../tools'
@@ -412,17 +410,20 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     if (planProjectId.success) publishPlansChanged(planProjectId.data)
   }
 
-  const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox)
-  for (const warning of legacySandboxWarnings) {
+  const sandboxConfigWarnings = [
+    ...collectLegacySandboxConfigWarnings(config.sandbox),
+    ...collectMacosSandboxConfigWarnings(config.sandbox),
+  ]
+  for (const warning of sandboxConfigWarnings) {
     logger.log(warning)
   }
-  if (legacySandboxWarnings.length > 0 && !isForgeWorktreeDir(dataDir, directory)) {
+  if (sandboxConfigWarnings.length > 0 && !isForgeWorktreeDir(dataDir, directory)) {
     publishToast({
       client: forgeClient,
       directory,
       logger,
       title: 'Forge sandbox config',
-      message: legacySandboxWarnings.join(' '),
+      message: sandboxConfigWarnings.join(' '),
       variant: 'warning',
       duration: 10_000,
     })
@@ -475,41 +476,31 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   }
   const autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule> = parsedAutoApproveDeny.rules
 
-  let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-  const runtime = createMsbRuntime(logger)
+  const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
+  const loopsRepo = createLoopsRepo(db, logger)
+  const sandboxPreferences = createSessionSandboxPreferencesRepo(db)
+
   if (!isSandboxConfigEnabled(config)) {
     logger.log('Sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
-  } else {
-    const sandboxMountConfigs = resolveSandboxMountConfigs(config)
-    try {
-      const sandboxConfig: Parameters<typeof createSandboxManager>[1] = {
-        image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
-        projectId,
-        toolOutputDir: resolveOpencodeToolOutputDir(),
-        tmpDir: resolveOpencodeTmpDir(),
-        listSkillPaths: async (dir) => (await forgeClient.skill.list({ directory: dir })).map((entry) => entry.path),
-        fallbackSkillsDir: resolveSkillsDir(),
-        sourceProjectDir: projectRoot,
-        mountProjectReadonly: config.sandbox?.mountProjectReadonly,
-        buildContextDir: resolveBundledContainerDir(),
-        templateBuildArgs: resolveTemplateBuildArgs(config),
-        resolveOverrides: (worktreeName) => isHostSessionManagerKey(projectId, worktreeName)
-          ? sandboxPreferences.getDesired(projectId)?.overrides
-          : readSandboxOverrides(loopsRepo.get(projectId, worktreeName)?.sandboxSettings),
-        resolveIdleTimeout: (worktreeName) => isFolderManagerKey(projectId, worktreeName)
-          ? FOLDER_SANDBOX_IDLE_TIMEOUT
-          : undefined,
-      }
-      if (sandboxMountConfigs.length > 0) sandboxConfig.customMounts = sandboxMountConfigs
-      if (config.sandbox?.network) sandboxConfig.network = config.sandbox.network
-      if (config.sandbox?.resources) sandboxConfig.resources = config.sandbox.resources
-      sandboxManager = createSandboxManager(runtime, sandboxConfig, logger, defaultGitService)
-      logger.log('Sandbox manager initialized')
-    } catch (err) {
-      logger.error('Failed to initialize msb sandbox manager; refusing to run worktree-only while sandbox is enabled', err)
-      throw err
-    }
   }
+  let backend: SandboxBackend
+  try {
+    backend = createSandboxBackend({
+      config,
+      dataDir,
+      projectId,
+      projectRoot,
+      logger,
+      forgeClient,
+      loopsRepo,
+      sandboxPreferences,
+    })
+  } catch (err) {
+    logger.error(`Failed to initialize ${resolveSandboxMode(config)} sandbox manager; refusing to run worktree-only while sandbox is enabled`, err)
+    throw err
+  }
+  const runtime = backend.runtime
+  const sandboxManager = backend.manager
 
   let shellShimPath: string | null = null
   if (sandboxManager) {
@@ -574,8 +565,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   }))
   logger.log(`Registered forge workspace adapter (worktrees under ${forgeWorktreesRoot(dataDir)})`)
 
-  const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
-
   const autoApproveRepo = createSessionAutoApproveRepo(db)
   try {
     const purgedAutoApproves = autoApproveRepo.purgeExpired(Date.now())
@@ -606,8 +595,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     'promote',
   ] as const satisfies ReadonlyArray<keyof ReturnType<typeof createPlansRepo>>
 
-  const loopsRepo = createLoopsRepo(db, logger)
-  const sandboxPreferences = createSessionSandboxPreferencesRepo(db)
   const plansRepo = withWriteNotifications(createPlansRepo(db), PLANS_WRITE_METHODS, notifyPlansChanged)
   const reviewFindingsRepo = withWriteNotifications(
     createReviewFindingsRepo(db),
@@ -1009,6 +996,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       available: isSandboxEnabled(config, sandboxManager),
       resources: resolveSandboxResources(config.sandbox?.resources),
       allowLan: resolveSandboxAllowLan(config.sandbox?.network?.allowLan),
+      backend: runtime.kind,
+      capabilities: runtime.capabilities,
     },
   })
 

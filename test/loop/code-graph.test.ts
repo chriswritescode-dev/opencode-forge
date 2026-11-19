@@ -793,9 +793,15 @@ describe('resolveLoopCodeGraphTarget', () => {
     },
   }
 
-  function createManager(active: { containerName: string } | null): Pick<SandboxContextManager, 'runtime' | 'getActive'> {
+  function createManager(
+    active: { containerName: string } | null,
+    options: { codeGraph?: boolean } = {},
+  ): Pick<SandboxContextManager, 'runtime' | 'getActive'> {
     return {
-      runtime: execution.runtime as unknown as SandboxContextManager['runtime'],
+      runtime: {
+        ...execution.runtime,
+        capabilities: { codeGraph: options.codeGraph ?? true },
+      } as unknown as SandboxContextManager['runtime'],
       getActive: () => active as unknown as ReturnType<SandboxContextManager['getActive']>,
     }
   }
@@ -841,10 +847,20 @@ describe('resolveLoopCodeGraphTarget', () => {
     expect(target).toBeNull()
   })
 
+  it('returns null when the runtime cannot run the code graph', () => {
+    const target = resolveLoopCodeGraphTarget(
+      createManager({ containerName: 'forge-one' }, { codeGraph: false }),
+      { loopName: 'one', sandbox: true, worktreeDir: '/tmp/worktree' },
+      undefined,
+    )
+    expect(target).toBeNull()
+  })
+
   it('routes exec into the active container from the worktree', async () => {
     const calls: Array<{ name: string; command: string; opts: unknown }> = []
     const manager = createManager({ containerName: 'forge-one' })
     manager.runtime = {
+      capabilities: { codeGraph: true },
       exec: async (name: string, command: string, opts: unknown) => {
         calls.push({ name, command, opts })
         return ok()

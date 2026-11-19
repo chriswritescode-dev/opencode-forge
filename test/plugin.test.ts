@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { createForgeCore, type ForgeCore, type ForgeHostInput } from '../src/host/forge-core'
 import type { PluginConfig } from '../src/types'
@@ -11,6 +11,7 @@ import {
   createLoopsRepo,
   createSessionSandboxPreferencesRepo,
 } from '../src/storage'
+import { SHELL_SHIM_FILENAME } from '../src/sandbox/shell-shim'
 import { createFakeForgeClient, type RecordedCall } from './helpers/fake-client'
 
 const TEST_DIR = '/tmp/opencode-forge-core-plugin-test-' + Date.now()
@@ -347,12 +348,12 @@ describe('createForgeCore', () => {
   })
 
   test('init fails closed when the sandbox is enabled but the shell shim cannot be installed', async () => {
-    const blocker = join(testDir, 'blocker')
-    writeFileSync(blocker, 'x')
+    const dataDir = join(testDir, 'memory')
+    mkdirSync(join(dataDir, SHELL_SHIM_FILENAME), { recursive: true })
 
     await expect(
       createForgeCore(
-        { dataDir: join(blocker, '.opencode', 'memory'), sandbox: { mode: 'msb' } },
+        { dataDir, sandbox: { mode: 'msb' } },
         {
           directory: testDir,
           projectId: uniqueProjectId(),
@@ -388,6 +389,27 @@ describe('createForgeCore', () => {
     expect(logContents).toContain('sandbox.resources.memorySwap is ignored')
     expect(logContents).toContain('sandbox.network.hostGateway is ignored')
     expect(logContents).toContain('sandbox.mounts[].container is ignored')
+  })
+
+  test('logs the macOS ignored-key warnings and no legacy mode warning', async () => {
+    const logFile = join(testDir, 'forge.log')
+    const config: PluginConfig = {
+      dataDir: join(testDir, 'memory'),
+      logging: { enabled: true, file: logFile },
+      sandbox: {
+        mode: 'macos',
+        enabled: false,
+        resources: { cpus: '4' },
+        network: { allowLan: true },
+      } as PluginConfig['sandbox'],
+    }
+
+    await buildCore({ config })
+
+    const logContents = readFileSync(logFile, 'utf-8')
+    expect(logContents).toContain('sandbox.resources.cpus is ignored in the macOS sandbox mode')
+    expect(logContents).toContain('sandbox.network.allowLan is ignored in the macOS sandbox mode')
+    expect(logContents.split('\n').some((line) => line.includes('sandbox.mode'))).toBe(false)
   })
 
   test('logs exactly one msb-replacement warning for a legacy sbx-mode config and still initializes', async () => {

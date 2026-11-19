@@ -82,6 +82,7 @@ export function resolveLoopCodeGraphTarget(
   if (!state?.sandbox || !state.worktreeDir || !sandboxManager) return null
   const active = sandboxManager.getActive(state.loopName)
   if (!active) return null
+  if (!sandboxManager.runtime.capabilities.codeGraph) return null
   const worktreeDir = state.worktreeDir
   return {
     key: active.containerName,

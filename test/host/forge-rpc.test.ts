@@ -23,6 +23,7 @@ import {
   toForgeRpcJson,
 } from '../../src/host/forge-rpc'
 import { FORGE_PLUGIN_ID } from '../../src/constants/plugin'
+import { MSB_CAPABILITIES } from '../../src/sandbox/runtime'
 
 const SANDBOX_SECRET_SCHEMA = {
   type: 'object',
@@ -140,6 +141,22 @@ describe('FORGE_RPC', () => {
           additionalProperties: false,
         },
         allowLan: { type: 'boolean' },
+        backend: { type: 'string', enum: ['msb', 'macos'] },
+        capabilities: {
+          type: 'object',
+          properties: {
+            namedDisks: { type: 'boolean' },
+            secretsProxy: { type: 'boolean' },
+            lanToggle: { type: 'boolean' },
+            idleTimeout: { type: 'boolean' },
+            resize: { type: 'boolean' },
+            perSandboxInstances: { type: 'boolean' },
+            templateBuild: { type: 'boolean' },
+            docker: { type: 'boolean' },
+            codeGraph: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
       },
       additionalProperties: false,
     })
@@ -196,12 +213,32 @@ describe('FORGE_RPC', () => {
         available: true,
         resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
         allowLan: true,
+        backend: 'msb',
+        capabilities: {
+          namedDisks: true,
+          secretsProxy: true,
+          lanToggle: true,
+          idleTimeout: true,
+          resize: true,
+          perSandboxInstances: true,
+          templateBuild: true,
+          docker: true,
+          codeGraph: true,
+        },
       },
-    }
+    } as const
     expect(readForgeLoopDefaults(defaults)).toEqual(defaults)
-    const { allowLan: _allowLan, ...olderServerSandbox } = defaults.sandbox
-    expect(readForgeLoopDefaults({ ...defaults, sandbox: olderServerSandbox }))
-      .toEqual({ ...defaults, sandbox: { ...olderServerSandbox, allowLan: false } })
+    const { allowLan: _allowLan, backend: _backend, capabilities: _capabilities, ...olderServerSandbox } = defaults.sandbox
+    expect(readForgeLoopDefaults({ ...defaults, sandbox: olderServerSandbox })).toEqual({
+      ...defaults,
+      sandbox: { ...olderServerSandbox, allowLan: false, backend: 'msb', capabilities: MSB_CAPABILITIES },
+    })
+    const macosSandbox = {
+      ...defaults.sandbox,
+      backend: 'macos' as const,
+      capabilities: { ...defaults.sandbox.capabilities, namedDisks: false, docker: false },
+    }
+    expect(readForgeLoopDefaults({ ...defaults, sandbox: macosSandbox })).toEqual({ ...defaults, sandbox: macosSandbox })
     expect(readForgeLoopDefaults({ error: 'no db' })).toEqual({ error: 'no db' })
     expect(readForgeLoopDefaults(null)).toEqual({ error: 'Forge returned an invalid loop defaults' })
     expect(readForgeLoopDefaults({ maxIterations: 10 }))

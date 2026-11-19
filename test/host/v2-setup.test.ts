@@ -5,6 +5,7 @@ import { join } from 'path'
 import { FORGE_EVENT_TYPES, V2_EVENT_TYPES } from '../../src/host/v2-events'
 import { FORGE_RPC } from '../../src/host/forge-rpc'
 import { sandboxSecretProviders } from '../../src/sandbox/secrets'
+import { MSB_CAPABILITIES } from '../../src/sandbox/runtime'
 import { VERSION } from '../../src/version'
 import { isPromptQueued, hasSuppressedIdle, recordSuppressedIdle, recordIdleBackgroundWork, hasPendingBackgroundWork, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { ForgeClient } from '../../src/client/port'
@@ -383,6 +384,8 @@ describe('V2 server setup', () => {
       available: true,
       resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
       allowLan: false,
+      backend: 'msb',
+      capabilities: MSB_CAPABILITIES,
     })
   })
 

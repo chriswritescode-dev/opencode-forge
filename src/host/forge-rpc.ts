@@ -1,6 +1,7 @@
 import type { Rpc } from '@opencode/plugin/rpc'
 import { z } from 'zod'
 import { FORGE_PLUGIN_ID } from '../constants/plugin'
+import { MSB_CAPABILITIES, type SandboxBackendKind, type SandboxCapabilities } from '../sandbox/runtime'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import {
   appliedStateSchema,
@@ -103,6 +104,8 @@ export interface ForgeLoopDefaults {
     available: boolean
     resources: Required<SandboxResources>
     allowLan: boolean
+    backend?: SandboxBackendKind
+    capabilities?: SandboxCapabilities
   }
 }
 
@@ -285,6 +288,22 @@ const WORKTREES_OUTPUT = {
   additionalProperties: false,
 } as const
 
+const SANDBOX_CAPABILITIES_SCHEMA = {
+  type: 'object',
+  properties: {
+    namedDisks: { type: 'boolean' },
+    secretsProxy: { type: 'boolean' },
+    lanToggle: { type: 'boolean' },
+    idleTimeout: { type: 'boolean' },
+    resize: { type: 'boolean' },
+    perSandboxInstances: { type: 'boolean' },
+    templateBuild: { type: 'boolean' },
+    docker: { type: 'boolean' },
+    codeGraph: { type: 'boolean' },
+  },
+  additionalProperties: false,
+} as const
+
 const LOOP_DEFAULTS_OUTPUT = {
   type: 'object',
   properties: {
@@ -295,6 +314,8 @@ const LOOP_DEFAULTS_OUTPUT = {
         available: { type: 'boolean' },
         resources: SANDBOX_RESOURCES_SCHEMA,
         allowLan: { type: 'boolean' },
+        backend: { type: 'string', enum: ['msb', 'macos'] },
+        capabilities: SANDBOX_CAPABILITIES_SCHEMA,
       },
       additionalProperties: false,
     },
@@ -630,6 +651,21 @@ const loopDefaultsSchema = z.object({
     available: z.boolean(),
     resources: sandboxResourcesSchema,
     allowLan: z.boolean().optional().catch(undefined),
+    backend: z.enum(['msb', 'macos']).optional().catch(undefined),
+    capabilities: z
+      .object({
+        namedDisks: z.boolean(),
+        secretsProxy: z.boolean(),
+        lanToggle: z.boolean(),
+        idleTimeout: z.boolean(),
+        resize: z.boolean(),
+        perSandboxInstances: z.boolean(),
+        templateBuild: z.boolean(),
+        docker: z.boolean(),
+        codeGraph: z.boolean(),
+      })
+      .optional()
+      .catch(undefined),
   }),
 })
 
@@ -649,6 +685,8 @@ export function readForgeLoopDefaults<P>(payload: P): ForgeLoopDefaultsOutput {
           cacheDisk: data.sandbox.resources.cacheDisk,
         },
         allowLan: data.sandbox.allowLan === true,
+        backend: data.sandbox.backend ?? 'msb',
+        capabilities: data.sandbox.capabilities ?? MSB_CAPABILITIES,
       },
     }
     return defaults
