@@ -5,7 +5,8 @@ import { fetchSandboxSecretValues, resolveSandboxSecret, resolveSandboxSecretFil
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, basename, dirname, posix as posixPath } from 'path'
-import { mkdirSync, existsSync, readFileSync } from 'fs'
+import { mkdirSync, existsSync } from 'fs'
+import { readFile } from 'fs/promises'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
@@ -556,7 +557,7 @@ export function createSandboxManager(
         const path = resolveSandboxSecretFilePath(outcome.secret.file)
         let value: string
         try {
-          value = readFileSync(path, 'utf8').trim()
+          value = (await readFile(path, 'utf8')).trim()
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           warnSecretFileSkipped(env, `could not read ${path}: ${message}`)
@@ -566,6 +567,7 @@ export function createSandboxManager(
           warnSecretFileSkipped(env, `${path} is empty`)
           continue
         }
+        warnedSecretFileEnv.delete(env)
         fileValues[env] = value
         fromConfig.push(outcome.secret)
         egressFromConfig.push(outcome.secret)

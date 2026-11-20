@@ -513,8 +513,9 @@ describe('SandboxManager create-time env and secrets', () => {
 
   test('skips a configured file secret that cannot be read and names the path', async () => {
     setEnv('FORGE_TEST_MISSING_FILE', undefined)
-    const file = join(mkdtempSync(join(tmpdir(), 'forge-secret-file-')), 'missing-token')
-    tempDirs.push(file)
+    const dir = mkdtempSync(join(tmpdir(), 'forge-secret-file-'))
+    tempDirs.push(dir)
+    const file = join(dir, 'missing-token')
 
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
