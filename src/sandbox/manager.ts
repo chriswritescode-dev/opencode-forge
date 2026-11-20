@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import type { SandboxRuntime, SandboxWorkspace, CreateSandboxOpts, SandboxState } from './msb'
 import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
-import { fetchSandboxSecretValues, resolveSandboxSecret } from './secrets'
+import { fetchSandboxSecretValues, resolveSandboxSecret, resolveSandboxSecretFilePath } from './secrets'
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, basename, dirname, posix as posixPath } from 'path'
-import { mkdirSync, existsSync } from 'fs'
+import { mkdirSync, existsSync, readFileSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
@@ -253,6 +253,7 @@ export function createSandboxManager(
   const handledSecretEnvs = new Map<string, Set<string>>()
   const settingsLookups = new Set<string>()
   const warnedUnsetSecretEnv = new Set<string>()
+  const warnedSecretFileEnv = new Set<string>()
   let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
   let imageReady = false
 
@@ -510,6 +511,12 @@ export function createSandboxManager(
     logger.log(`Sandbox: skipping secret ${env}: host variable is not set; sandboxed shell commands will fail until the variable is exported in the environment that launches opencode (${origin})`)
   }
 
+  function warnSecretFileSkipped(env: string, detail: string): void {
+    if (warnedSecretFileEnv.has(env)) return
+    warnedSecretFileEnv.add(env)
+    logger.log(`Sandbox: skipping secret ${env}: ${detail}`)
+  }
+
   async function resolveSandboxSecrets(
     worktreeName: string,
     projectDir: string,
@@ -523,12 +530,17 @@ export function createSandboxManager(
         logger.log(`Sandbox: skipping secret${outcome.env ? ` ${outcome.env}` : ''}: ${outcome.reason}`)
         continue
       }
+      if (outcome.secret.file !== undefined) {
+        logger.log(`Sandbox: skipping secret ${outcome.secret.env}: file is only supported in sandbox.network.secrets`)
+        continue
+      }
       perSandbox.push(outcome.secret)
     }
     const perSandboxEnvs = new Set(perSandbox.map((secret) => secret.env))
 
     const fromConfig: SandboxSecretConfig[] = []
     const egressFromConfig: SandboxSecretConfig[] = []
+    const fileValues: Record<string, string> = {}
     for (const raw of config.network?.secrets ?? []) {
       const outcome = resolveSandboxSecret(raw)
       if ('reason' in outcome) {
@@ -537,6 +549,25 @@ export function createSandboxManager(
       }
       const env = outcome.secret.env
       if (perSandboxEnvs.has(env)) {
+        egressFromConfig.push(outcome.secret)
+        continue
+      }
+      if (outcome.secret.file !== undefined) {
+        const path = resolveSandboxSecretFilePath(outcome.secret.file)
+        let value: string
+        try {
+          value = readFileSync(path, 'utf8').trim()
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          warnSecretFileSkipped(env, `could not read ${path}: ${message}`)
+          continue
+        }
+        if (!value) {
+          warnSecretFileSkipped(env, `${path} is empty`)
+          continue
+        }
+        fileValues[env] = value
+        fromConfig.push(outcome.secret)
         egressFromConfig.push(outcome.secret)
         continue
       }
@@ -564,6 +595,9 @@ export function createSandboxManager(
         warnUnsetSecretEnv(secret.env, 'loop')
         return false
       })
+    }
+    if (Object.keys(fileValues).length > 0) {
+      secretEnv = { ...fileValues, ...secretEnv }
     }
 
     return { secrets: [...fromConfig, ...keptPerSandbox], egressSecrets: egressFromConfig, secretEnv }

@@ -121,9 +121,15 @@
     //   // "requireTlsIdentity" (false substitutes over plain HTTP for the secret's hosts).
     //   // The named variable must be exported in the environment that launches opencode: a bound
     //   // secret with a missing variable makes every sandboxed shell command fail, and forge
-    //   // logs a warning naming the variable.
+    //   // logs a warning naming the variable. Instead of a host variable, "file" reads the value
+    //   // from a file: "~/..." resolves under the home directory, an absolute path is used as is,
+    //   // and a relative path resolves against this config's directory. The value is read right
+    //   // before each msb create/start/modify, passed only in that child's environment, and a
+    //   // missing or empty file skips the secret with a log. Not allowed for per-loop secrets.
     //   "secrets": [
     //     { "env": "NPM_TOKEN", "hosts": ["registry.npmjs.org"] },
+    //     // Value read from a file instead of the environment.
+    //     { "env": "GH_TOKEN", "file": "./.secrets/gh-token", "hosts": ["api.github.com"] },
     //     // Authorization header only, substituted over plain HTTP to a LAN host (needs allowLan).
     //     {
     //       "env": "REVIEW_TOKEN",
