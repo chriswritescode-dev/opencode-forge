@@ -254,7 +254,7 @@ export function createSandboxManager(
   const handledSecretEnvs = new Map<string, Set<string>>()
   const settingsLookups = new Set<string>()
   const warnedUnsetSecretEnv = new Set<string>()
-  const warnedSecretFileEnv = new Set<string>()
+  const warnedSecretFileEnv = new Map<string, string>()
   let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
   let imageReady = false
 
@@ -513,8 +513,8 @@ export function createSandboxManager(
   }
 
   function warnSecretFileSkipped(env: string, detail: string): void {
-    if (warnedSecretFileEnv.has(env)) return
-    warnedSecretFileEnv.add(env)
+    if (warnedSecretFileEnv.get(env) === detail) return
+    warnedSecretFileEnv.set(env, detail)
     logger.log(`Sandbox: skipping secret ${env}: ${detail}`)
   }
 

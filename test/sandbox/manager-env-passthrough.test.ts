@@ -557,6 +557,35 @@ describe('SandboxManager create-time env and secrets', () => {
     )
   })
 
+  test('logs a file secret failure once per reason and again after the file recovers', async () => {
+    setEnv('FORGE_TEST_FLAKY_FILE', undefined)
+    const file = writeSecretFile('flaky-token', '')
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_FLAKY_FILE', file, hosts: ['api.example.com'] }] },
+    }
+    const manager = createSandboxManager(runtime, config, logger)
+    const fileLogs = () => vi.mocked(logger.log).mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.startsWith('Sandbox: skipping secret FORGE_TEST_FLAKY_FILE'))
+
+    await manager.start('a', '/home/user/worktrees/a')
+    await manager.start('b', '/home/user/worktrees/b')
+    expect(fileLogs()).toEqual([`Sandbox: skipping secret FORGE_TEST_FLAKY_FILE: ${file} is empty`])
+
+    rmSync(file)
+    await manager.start('c', '/home/user/worktrees/c')
+    expect(fileLogs()).toHaveLength(2)
+
+    writeFileSync(file, 'value\n')
+    await manager.start('d', '/home/user/worktrees/d')
+    writeFileSync(file, '')
+    await manager.start('e', '/home/user/worktrees/e')
+    expect(fileLogs()).toHaveLength(3)
+  })
+
   test('adopting a stopped sandbox starts it with the file secret value', async () => {
     setEnv('FORGE_TEST_FILE_SECRET', undefined)
     const file = writeSecretFile('token', 'file-secret-value\n')
