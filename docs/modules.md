@@ -21,7 +21,7 @@ src/
 ├── hooks/                   # Plugin event/lifecycle hooks
 ├── loop/                    # Core loop state machine & runtime
 ├── services/                # Business logic services
-├── sandbox/                 # msb sandbox management
+├── sandbox/                 # msb and macOS sandbox backends
 ├── storage/                 # SQLite persistence layer
 ├── tools/                   # Plugin tools callable by AI agents
 ├── tui/                     # TUI-specific components
@@ -341,15 +341,22 @@ Source: [src/services/execution.ts](../src/services/execution.ts)
 
 ---
 
-## `sandbox/` — msb Sandboxing
+## `sandbox/` — Sandbox backends
 
-Drives the `msb` CLI to provision isolated sandboxes for loop execution.
+Owns the sandbox backends selected by `sandbox.mode`: `msb` (one microVM per loop or host session) and `macos` (one shared Cua Lume VM).
 
 ### Files
 
 | File | Purpose |
 |------|---------|
-| `msb.ts` | `SandboxRuntime` facade over the `msb` CLI (create/exec/remove/list, availability probe) |
+| `msb.ts` | msb `SandboxRuntime` implementation and `msb` CLI argument owner |
+| `runtime.ts` | Backend seam: `SandboxRuntime`, `SandboxAvailability`, `SandboxCapabilities`, and the msb/macOS capability descriptors |
+| `backend.ts` | The only backend selector: builds the msb or macOS runtime and manager from `sandbox.mode` |
+| `macos.ts` | macOS `SandboxRuntime`: `cua spacesd exec`, the token and endpoint files, and the macOS shim line |
+| `macos-lume.ts` | Lume HTTP client, VM state mapping, and run body |
+| `macos-netgw.ts` | `cua-netgw` config and rules, supervision, and blocked-event parsing |
+| `macos-shares.ts` | Share planner and the outside-roots refusal |
+| `macos-manager.ts` | Shared-VM `SandboxManager`: single-flight boot, mounts, and per-key registration |
 | `process.ts` | Child-process runner (`runCommand`) shared by the sandbox helpers |
 | `template.ts` | Image build/save/load helper (`docker build`/`docker save`/`msb load`) |
 | `config-warnings.ts` | Warnings for legacy Docker-era sandbox config keys |
@@ -368,7 +375,11 @@ Drives the `msb` CLI to provision isolated sandboxes for loop execution.
 
 ```typescript
 interface SandboxRuntime {
-  checkAvailable(): Promise<MsbAvailability>
+  readonly kind: SandboxBackendKind
+  readonly capabilities: SandboxCapabilities
+  checkAvailable(): Promise<SandboxAvailability>
+  describeUnavailable(result: Extract<SandboxAvailability, { available: false }>): string
+  shimExecLine(): string
   templateExists(ref: string): Promise<boolean>
   loadTemplate(tarPath: string, ref: string): Promise<void>
   createSandbox(name: string, workspaces: SandboxWorkspace[], opts: CreateSandboxOpts): Promise<void>
@@ -377,11 +388,14 @@ interface SandboxRuntime {
   getSandboxState(name: string): Promise<SandboxState>
   sandboxContainerName(worktreeName: string): string
   listSandboxesByPrefix(prefix: string): Promise<string[]>
-  refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<boolean>
+  refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[], secretEnv?: Record<string, string>): Promise<SecretRefreshResult>
+  startSandbox(name: string, secretEnv?: Record<string, string>): Promise<void>
   readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null>
   resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
 ```
+
+`kind` and `capabilities` tell the TUI and the core what a backend supports; `shimExecLine()` is the single source of the routed line in the generated shell shim. `loopDefaults` reports the backend and its capabilities through `FORGE_RPC`.
 
 ### SandboxManager Interface
 
@@ -404,7 +418,7 @@ interface SandboxManager {
 
 `SandboxManagerConfig` no longer carries a `dataDir` field — its only reader was the deleted per-sandbox env-file writer. The overlapping-workspace drop rule is a single shared implementation used by both the mount plan and the workspace builder, so a mount conflict resolves identically on either path. `removeSandbox` also removes both of the sandbox's named volumes in one bulk `msb volume rm` — `<container>-docker-data`, which backs `/var/lib/docker` for the in-VM Docker Engine, and `<container>-cache-data`, which backs `/opt/forge/cache`. Because named volumes survive `msb rm`, `stop` routes through the same removal path even when the sandbox is already gone, so a container destroyed out of band still has its disks reclaimed.
 
-Source: [src/sandbox/msb.ts](../src/sandbox/msb.ts), [src/sandbox/manager.ts](../src/sandbox/manager.ts)
+Source: [src/sandbox/runtime.ts](../src/sandbox/runtime.ts), [src/sandbox/backend.ts](../src/sandbox/backend.ts), [src/sandbox/msb.ts](../src/sandbox/msb.ts), [src/sandbox/macos.ts](../src/sandbox/macos.ts), [src/sandbox/macos-manager.ts](../src/sandbox/macos-manager.ts), [src/sandbox/manager.ts](../src/sandbox/manager.ts)
 
 ---
 

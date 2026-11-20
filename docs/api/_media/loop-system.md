@@ -262,7 +262,7 @@ Benefits of worktree isolation:
 
 ## Sandbox Integration
 
-Sandbox is optional and controlled by `sandbox.enabled` (default `true`): when enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop is rolled back rather than falling back to the host; set `sandbox.enabled: false` to run worktree-only.
+Sandbox is optional and controlled by `sandbox.enabled` (default `true`). The backend comes from `sandbox.mode`: `msb` (default) creates a microVM per loop, while `macos` runs every loop in one shared `forge-macos` VM managed through Cua's Lume and refuses a loop whose directory or git repository lies outside a writable share (a configured root, the worktrees directory, or OpenCode's tmp directory). When the sandbox cannot start, the loop is rolled back rather than falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
 1. Sandbox created with the worktree mounted at its identical host path
 2. `shell`, `glob`, `grep` tools redirect into the sandbox

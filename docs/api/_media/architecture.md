@@ -83,7 +83,7 @@ The codebase is organized into these module groups under `src/`:
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `tool-hook-types.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `tui-rpc-service.ts`, `dashboard-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
-| `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts`, `session-controller.ts`, `shell-shim.ts`, `exec-fs.ts`, `env-probe.ts`, `process.ts`, `template.ts`, `loop-settings.ts` |
+| `sandbox/` | msb and macOS sandbox backends | `runtime.ts`, `backend.ts`, `msb.ts`, `macos.ts`, `macos-lume.ts`, `macos-netgw.ts`, `macos-shares.ts`, `macos-manager.ts`, `manager.ts`, `context.ts`, `reconcile.ts`, `session-controller.ts`, `shell-shim.ts`, `exec-fs.ts`, `env-probe.ts`, `process.ts`, `template.ts`, `loop-settings.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
 | `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `plan-authoring.ts`, `plan-adjust.ts`, `section-read.ts`, `tool.ts` |
 | `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `forge-naming.ts`, `forge-workspace-metadata.ts`, `loop-branch.ts`, `pending-teardown.ts`, `worktree-commit.ts`, `worktree-opencode-config.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
@@ -112,29 +112,36 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 ## Sandbox System
 
-Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with driver `sandbox.mode = 'msb'`. When enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop is rolled back rather than falling back to the host; set `sandbox.enabled: false` to run worktree-only.
+Sandbox is optional and controlled by `sandbox.enabled` (default `true`). When enabled, a sandbox is provisioned automatically. The backend is selected in `src/sandbox/backend.ts` from `sandbox.mode`: `msb` (default) or `macos`; `src/sandbox/runtime.ts` is the seam both backends implement. If the selected backend is unavailable or the host cannot run it, sandbox startup fails and the loop is rolled back rather than falling back to the host; set `sandbox.enabled: false` to run worktree-only.
+
+macOS mode runs every project, loop, and host session in one shared `forge-macos` VM cloned from `sandbox.macos.baseVm`. It shares the roots and worktrees at their host paths, refuses a directory outside a writable share instead of running it on the host, requires a macOS host and at least one root, and sends egress through a default-deny `cua-netgw`.
 
 ### Components
 
-- **SandboxRuntime** (`sandbox/msb.ts`) - `msb` CLI facade (create/exec/remove/list, availability probe)
+- **SandboxRuntime** (`sandbox/runtime.ts`) - the backend seam: `kind`, capabilities, availability text, and the routed shim line
+- **Backend selection** (`sandbox/backend.ts`) - the only place `sandbox.mode` is resolved into a runtime and manager
+- **msb runtime** (`sandbox/msb.ts`) - `msb` CLI façade (create/exec/remove/list, availability probe)
+- **macOS runtime** (`sandbox/macos.ts`, `macos-lume.ts`, `macos-netgw.ts`, `macos-shares.ts`, `macos-manager.ts`) - Lume lifecycle, `cua spacesd exec`, share planning, and the default-deny egress gateway
 - **SandboxManager** (`sandbox/manager.ts`) - Sandbox lifecycle management
 - **SandboxContext** (`sandbox/context.ts`) - Tool call redirection
 - **SandboxTools** (`hooks/sandbox-tools.ts`) - Hooks for sandbox integration
-- **SandboxMessage** (`hooks/sandbox-message.ts`) - Adds the sandbox context note to every sandboxed request, and after a session's sandbox preference is turned off repeats the host note on every request until it is turned back on
+- **SandboxMessage** (`hooks/sandbox-message.ts`) - Keeps the sandbox context note in the session's `forge-sandbox` OpenCode instruction entry and rewrites it only when the session's sandbox is turned on or off, restarted, or recreated; OpenCode places the first value in the system prompt and appends each later change to the history, so the cached prompt prefix survives a toggle
 - **SessionSandboxController** (`sandbox/session-controller.ts`) - Shared host-session sandbox plus per-session preference reconciliation
 - **Shell shim** (`sandbox/shell-shim.ts`) - Generated shim routing the native `shell` tool through `msb exec`
 
 ### How It Works
 
-1. When a sandbox loop starts, an `msb` sandbox is created
+1. In msb mode, when a sandbox loop starts, an `msb` sandbox is created
 2. The worktree directory is mounted at its identical host path inside the sandbox
 3. Shell commands and search tools run inside the sandbox: `shell` through the generated shell shim, `glob` and `grep` through the sandbox tool hooks — both backed by `msb exec`
 4. File operations (`read`, `write`, `edit`, `patch`) operate on the host directly, fenced by the sandbox tool hook to the sandbox mounts (read-only mounts refuse mutation)
 5. On loop completion, the sandbox is stopped and removed
 
+In macOS mode the same tool routing applies, but every key registers against the one `forge-macos` VM: shares are fixed at boot, a stopped VM is booted with all shares, readiness comes only from Lume's live `forwards` (the 3211 forward), per-key `stop` only forgets the registration, and Forge never stops or removes the VM.
+
 ### State Model
 
-The sandbox state model has five states. `running` and `stopped` are both usable: msb suspends idle microVMs to `stopped` and `msb exec` resumes them in place, so forge never recreates a merely-stopped sandbox. `transient` covers msb's `Created`/`Starting`/`Draining`/`Paused` statuses — real but not directly executable, and never collapsed into `unknown`. `unknown` means the state query failed and says nothing about the sandbox, so forge fails closed and refuses to create or remove on that basis. `missing` is the one confirmed-absent state, and the only one in which forge creates a sandbox.
+The sandbox state model has five states. `running` and `stopped` are both usable: msb suspends idle microVMs to `stopped` and `msb exec` resumes them in place, so forge never recreates a merely-stopped sandbox. `transient` covers msb's `Created`/`Starting`/`Draining`/`Paused` statuses — real but not directly executable, and never collapsed into `unknown`. `unknown` means the state query failed and says nothing about the sandbox, so forge fails closed and refuses to create or remove on that basis. `missing` is the one confirmed-absent state, and the only one in which forge creates a sandbox. The macOS backend maps Lume's statuses onto the same five states; a `running` VM whose 3211 forward is not yet published is `transient`.
 
 ### Tool Redirection
 
@@ -143,8 +150,11 @@ The sandbox state model has five states. `running` and `stopped` are both usable
 - **`shell`** is redirected out of band, not through a tool hook. For a sandboxed session
   the tool wrapper prefixes the command with a one-off `forge-sandbox-required-<uuid> && ` marker;
   the `shell.hook('create.before')` strips the marker, points `event.shell` at the
-  `forge-shell` shim (`sandbox/shell-shim.ts`), and sets `FORGE_SANDBOX_CONTAINER`. The shim
-  `exec`s `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
+  `forge-shell` shim (`sandbox/shell-shim.ts`), and sets `FORGE_SANDBOX_CONTAINER`. The shim execs
+  the backend's routed line from `runtime.shimExecLine()`; for msb that is
+  `exec msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`, and for macOS
+  it reads the token and endpoint files under `<dataDir>/macos/` and runs `cua spacesd exec`,
+  exiting 125 instead of running on the host when either file is missing.
   The marker prefix is stripped before execution, and an unstripped marker fails with "command not found".
 - **`glob` and `grep`** use output replacement. `tool.hook('execute.before')` runs the equivalent
   `rg` command inside the container and stores the result by `callID`; `tool.hook('execute.after')`
@@ -294,6 +304,7 @@ graph TD
 
     LoopRuntime --> SandboxManager["Sandbox Manager"]
     SandboxManager --> Msb["msb Sandbox"]
+    SandboxManager --> Macos["macOS VM (Lume)"]
 
     SQLite --> LoopsRepo["Loops Repo"]
     SQLite --> PlansRepo["Plans Repo"]

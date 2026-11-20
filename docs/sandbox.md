@@ -1,6 +1,6 @@
 # Sandbox
 
-Forge can run loop iterations or your regular host sessions inside an isolated `msb` sandbox — a microVM booted by the [microsandbox](https://microsandbox.dev) CLI — while keeping the active project directory mounted at its identical host path for fast host/sandbox file sharing.
+Forge can run loop iterations or your regular host sessions inside an isolated `msb` sandbox — a microVM booted by the [microsandbox](https://microsandbox.dev) CLI — while keeping the active project directory mounted at its identical host path for fast host/sandbox file sharing. Two backends are available: `msb` is the default, and `sandbox.mode: "macos"` runs every sandboxed command in one shared macOS VM, documented in [macOS mode](#macos-mode).
 
 See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](loop-system.md).
 
@@ -53,6 +53,121 @@ The image ships `ffmpeg` (with `ffprobe`) and `ttyd` from Ubuntu's repository an
 `vhs` needs `ttyd` and `ffmpeg` on `PATH` and launches the first browser it finds there, which is the image's `chromium`. The image sets `VHS_NO_SANDBOX=true`, because that browser does not start with Chromium's own sandbox inside the sandbox image, the same reason the `chromium` command above takes `--no-sandbox`. In a tape, quote an absolute `Output` path (`Output "/tmp/demo.mp4"`); an unquoted leading `/` is read as the start of a regular expression.
 
 Playwright records browser video as WebM with its own bundled ffmpeg build; the system `ffmpeg` is what converts those clips to mp4.
+
+## macOS mode
+
+`"sandbox": { "mode": "macos" }` replaces the per-sandbox `msb` microVMs with one shared macOS VM named `forge-macos`, managed through Cua's Lume. Every project, loop, and host session on the Mac runs its shell, `glob`, and `grep` calls inside that one VM. The default `msb` mode is unchanged.
+
+### Prerequisites
+
+- A macOS host on Apple silicon. Forge refuses `mode: "macos"` on any other platform, and refuses to start when `sandbox.macos.roots` is empty.
+- Lume from the Cua fork's `feat/forge-macos-sandbox` branch (the build is often installed as `lume-local`; the examples below use `lume`). Serve its HTTP API on port 7787:
+  ```bash
+  lume serve --port 7787
+  ```
+  The API must answer at `http://127.0.0.1:7787` unless `sandbox.macos.lumeUrl` points elsewhere.
+- `cua` (which provides `cua spacesd exec`) and `cua-netgw` on `PATH`, or set `sandbox.macos.cuaPath` and `sandbox.macos.netgwPath`.
+- A base VM named `forge-macos-base` (or the name in `sandbox.macos.baseVm`), built once as described below.
+
+Forge probes availability by listing VMs through Lume and by running `cua --version` and `cua-netgw -h` (the CLI probes are bounded at 30 seconds). A definitive failure refuses the sandbox with remediation text; an indeterminate failure is logged and the start is attempted.
+
+### Building the base VM
+
+The guest must run `cua-spacesd` 0.16 or newer, which ships the vsock agent. The published `trycua` images ship 0.7.0, so do not use one unchanged.
+
+1. Pull the macOS 26 image under the name Forge expects (use the Xcode tier instead of the full tier when the VM must build iOS apps):
+   ```bash
+   lume pull macos:26 forge-macos-base --registry ghcr.io --organization trycua
+   lume run forge-macos-base
+   ```
+2. Inside the guest, install `cua-spacesd` 0.16 or newer, copy `container/macos/provision-guest.sh` from the Forge package into the guest, and run it with sudo:
+   ```bash
+   sudo sh provision-guest.sh
+   ```
+   The script refuses an older `cua-spacesd`; installs `ripgrep` and `node` through Homebrew when missing and symlinks both into `/usr/local/bin` so they are on the non-login `PATH` agent commands inherit; writes `/etc/sudoers.d/forge-mounts` allowing the `lume` user only `/sbin/mount_virtiofs`, `/bin/mkdir`, and `/usr/sbin/chown` without a password (validated with `visudo -cf`); writes the LaunchDaemon `/Library/LaunchDaemons/dev.forge.spacesd.plist`, which mounts the read-only `forge-setup` share at `/Volumes/forge-setup` and starts `cua-spacesd --token-file /Volumes/forge-setup/env-token` as `lume` at boot; disables the image's stock `com.trycua.spacesd` agent so the two cannot compete for port 3211; disables SSH with `systemsetup -f -setremotelogin off`; and prompts for a new `lume` password.
+3. Shut the guest down and keep it as the base:
+   ```bash
+   lume stop forge-macos-base
+   ```
+   Forge clones `forge-macos` from it on first use and never modifies the base.
+
+### Configuration
+
+```jsonc
+{
+  "sandbox": {
+    "mode": "macos",
+    "macos": {
+      "roots": ["~/development"],
+      "baseVm": "forge-macos-base",
+      "lumeUrl": "http://127.0.0.1:7787",
+      "cuaPath": "cua",
+      "netgwPath": "cua-netgw"
+    },
+    "network": { "allow": ["registry.npmjs.org", "*.github.com"] }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `sandbox.macos.roots` | `[]` | Host folders shared into the VM at their identical paths, read-write. At least one is required. `~` expands to the home directory; non-absolute or missing entries are skipped with a log line. |
+| `sandbox.macos.baseVm` | `"forge-macos-base"` | VM that `forge-macos` is cloned from when it does not exist. |
+| `sandbox.macos.lumeUrl` | `"http://127.0.0.1:7787"` | Lume HTTP API base URL. |
+| `sandbox.macos.cuaPath` | `"cua"` | `cua` executable used for `cua spacesd exec`. |
+| `sandbox.macos.netgwPath` | `"cua-netgw"` | `cua-netgw` executable that Forge supervises. |
+
+Forge also shares `<dataDir>/worktrees` (writable, so loop worktrees work), OpenCode's tmp directory (writable), its tool-output and skill directories (read-only), `sandbox.mounts`, and `loop.allowExternalDirectories` entries. Every share appears inside the VM at its host path, so `pwd`, git, and absolute file tools resolve identically on both sides.
+
+### Roots and the outside-roots refusal
+
+Shell, `glob`, and `grep` calls only run for directories inside a writable share: a configured root, the worktrees directory, OpenCode's tmp directory, or a writable `sandbox.mounts` entry. Any other directory — including a session opened elsewhere and a git worktree whose repository lives outside the roots — is refused before anything runs, with a message naming the writable roots and the fix. It never falls back to the host.
+
+A share is fixed at VM boot because Lume cannot hot-add tagged shares. Adding a root therefore needs a manual restart:
+
+```bash
+lume stop forge-macos
+```
+
+Forge never stops or removes the shared VM. Per-loop and per-folder sandbox keys all register against it, and `stop` only forgets the registration.
+
+### Egress
+
+Network access from the VM goes through one supervised `cua-netgw`. The default is deny everything except `sandbox.network.allow`; with no allow entries the VM has no internet at all, including package registries.
+
+```jsonc
+{ "sandbox": { "network": { "allow": ["registry.npmjs.org", "*.github.com", "10.0.0.0/8"] } } }
+```
+
+- `*` or `**` opens public egress.
+- A hostname, `*.example.com`, `suffix=example.com`, or `domain=name` becomes an allowed domain; an IP address or CIDR becomes an allowed network.
+- Invalid entries are skipped and logged. `sandbox.network.allowLan`, `sandbox.network.env`, and `sandbox.network.secrets` are unsupported and produce startup warnings.
+- Forge rewrites the gateway files and rules when it starts and when it adopts the VM; `cua-netgw` reloads the rules file live, so restart OpenCode after changing the allow-list.
+- Blocked attempts are appended by netgw to `<dataDir>/macos/net/network-events.jsonl`. Forge polls that file every 5 seconds and logs each as `Sandbox egress blocked: <dst> (<proto> <reason>) at <t>`.
+
+### Unsupported features
+
+macOS mode does not support:
+
+- Docker inside the guest (no nested virtualization);
+- named Docker and cache disks, and `sandbox.resources.*` (the VM is sized by its Lume configuration);
+- the msb secret-substitution proxy: `sandbox.network.secrets` and per-loop secrets are refused, secret values never enter the guest, and there is no placeholder substitution;
+- `sandbox.network.env` environment passthrough;
+- `sandbox.network.allowLan` and the LAN toggle;
+- idle timeout;
+- live CPU or memory resize;
+- per-loop or per-folder VMs — everything shares `forge-macos`;
+- code-graph snapshots.
+
+The TUI hides the CPUs, memory, disk, and LAN fields the backend cannot honor in the loop settings and host sandbox dialogs. `Sandbox settings` and `Build sandbox template` show an informational toast instead of opening.
+
+### Lifecycle
+
+- First use clones `forge-macos` from `baseVm`. A missing base refuses the start and names the base VM.
+- A stopped `forge-macos` boots with every share plus the setup share. A boot takes roughly 70–85 seconds. Readiness comes from Lume's live `GET /lume/vms/forge-macos`: the VM must be `running` and the 3211 forward published, and that forward's port becomes the `cua spacesd exec` endpoint. A `running` VM without the forward is treated as transient.
+- Boots are single-flight across the process: projects and loops attaching at once share one boot and one mount pass.
+- Adopting a VM this process did not boot uses the share list recorded at boot in `<dataDir>/macos/vm-state.json`. If that record is missing, no directory is considered shared until the VM is restarted.
+- The token and endpoint live under `<dataDir>/macos/`: `setup/env-token` (mode 0600, also shared read-only into the guest as `/Volumes/forge-setup`) and `spacesd-url` (mode 0600). The shell shim reads both; if either is missing it exits 125 instead of running the command on the host.
 
 ## How It Works
 

@@ -88,6 +88,15 @@
   "sandbox": {
     "enabled": true,
     "mode": "msb",
+    // Sandbox backend: "msb" (default, one microVM per loop or host session) or "macos"
+    // (one shared macOS VM through Cua's Lume). See docs/sandbox.md for the macOS prerequisites,
+    // the base-VM build, the outside-roots refusal, and the default-deny egress gateway.
+    // macOS mode only: host folders shared into the shared VM at their identical paths. Every
+    // session or loop directory must sit inside a writable root; adding a root needs `lume stop forge-macos`.
+    // The other macOS keys are baseVm, lumeUrl, cuaPath, and netgwPath.
+    // "macos": {
+    //   "roots": ["~/development"]
+    // },
     "image": "oc-forge-sandbox:latest",
     // Run every regular (non-loop) session of a project in one shared host-session sandbox,
     // started in the background at plugin load and reused by new sessions. `Toggle sandbox` turns
