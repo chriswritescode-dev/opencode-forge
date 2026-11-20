@@ -34,7 +34,7 @@ import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from '../hook
 import type { ToolAfterInput, ToolAfterOutput, ToolBeforeInput, ToolBeforeOutput } from '../hooks/tool-hook-types'
 import type { ToolDefinition } from '../tools/tool'
 import type { ForgeWorkspaceAdapter } from '../workspace/forge-adapter'
-import { ensureShellShim } from '../sandbox/shell-shim'
+import { ensureShellShim, MACOS_SHELL_SHIM_FILENAME, SHELL_SHIM_FILENAME } from '../sandbox/shell-shim'
 import type { ToolContext } from '../tools'
 
 import { LRUCache } from '../utils/lru-cache'
@@ -496,6 +496,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       sandboxPreferences,
     })
   } catch (err) {
+    closeDatabase(db)
     logger.error(`Failed to initialize ${resolveSandboxMode(config)} sandbox manager; refusing to run worktree-only while sandbox is enabled`, err)
     throw err
   }
@@ -504,8 +505,10 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   let shellShimPath: string | null = null
   if (sandboxManager) {
-    shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger, runtime.shimExecLine())
+    const shimFileName = runtime.kind === 'macos' ? MACOS_SHELL_SHIM_FILENAME : SHELL_SHIM_FILENAME
+    shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger, runtime.shimExecLine(), shimFileName)
     if (!shellShimPath) {
+      closeDatabase(db)
       throw new Error('Sandbox shell shim unavailable on this host; refusing to run worktree-only mode while sandbox is enabled')
     }
   }

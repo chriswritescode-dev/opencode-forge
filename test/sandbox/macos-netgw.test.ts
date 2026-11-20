@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, afterEach } from 'vitest'
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { createServer, type Server } from 'net'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -11,6 +12,7 @@ import {
   ensureNetgwRunning,
   formatBlockedEvent,
   gatewaySocketPath,
+  netgwEventsEndOffset,
   readNetgwBlockedEvents,
   writeNetgwFiles,
 } from '../../src/sandbox/macos-netgw'
@@ -20,6 +22,7 @@ import type { Logger } from '../../src/types'
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
 const tempDirs: string[] = []
+const socketServers: Server[] = []
 
 function makeTempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'forge-netgw-'))
@@ -27,7 +30,24 @@ function makeTempDir(): string {
   return dir
 }
 
-afterEach(() => {
+async function listenOnGatewaySocket(netDir: string): Promise<void> {
+  const server = createServer()
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(gatewaySocketPath(netDir), () => resolve())
+  })
+  socketServers.push(server)
+}
+
+afterEach(async () => {
+  await Promise.all(
+    socketServers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve())
+        }),
+    ),
+  )
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   vi.clearAllMocks()
   vi.restoreAllMocks()
@@ -153,6 +173,8 @@ describe('writeNetgwFiles', () => {
     const rules = JSON.parse(readFileSync(join(netDir, NETGW_RULES_FILE), 'utf-8'))
     expect(rules.domains).toEqual({ allow: ['example.com'] })
     expect(rules.default_accept).toBe(false)
+    expect(existsSync(`${join(netDir, NETGW_RULES_FILE)}.tmp`)).toBe(false)
+    expect(existsSync(`${join(netDir, 'netgw.json')}.tmp`)).toBe(false)
   })
 
   test('does not rewrite an unchanged rules file', async () => {
@@ -175,8 +197,9 @@ describe('writeNetgwFiles', () => {
 })
 
 describe('ensureNetgwRunning', () => {
-  test('reuses a live pid from the pid file without spawning', () => {
+  test('reuses a live pid when the gateway socket exists', async () => {
     const netDir = makeTempDir()
+    await listenOnGatewaySocket(netDir)
     const pid = spawnDetached('sleep', ['5'], { logger, logLabel: 'netgw-test-sleep' })
     if (pid === null) throw new Error('failed to start the sleep fixture')
     const pidPath = join(netDir, NETGW_PID_FILE)
@@ -191,11 +214,27 @@ describe('ensureNetgwRunning', () => {
     }
   })
 
-  test('spawns netgw when the pid file is absent and records the pid', () => {
+  test('respawns when the live pid has no gateway socket', () => {
     const netDir = makeTempDir()
-    const calls: Array<{ command: string; args: string[] }> = []
-    const spawn = (command: string, args: string[]) => {
-      calls.push({ command, args })
+    const pid = spawnDetached('sleep', ['5'], { logger, logLabel: 'netgw-test-socketless-sleep' })
+    if (pid === null) throw new Error('failed to start the sleep fixture')
+    const pidPath = join(netDir, NETGW_PID_FILE)
+    writeFileSync(pidPath, String(pid))
+    try {
+      const spawn = vi.fn(() => 7171)
+      ensureNetgwRunning({ netDir, netgwPath: '/bin/netgw', logger, spawn })
+      expect(spawn).toHaveBeenCalledTimes(1)
+      expect(readFileSync(pidPath, 'utf-8')).toBe('7171')
+    } finally {
+      process.kill(pid, 'SIGKILL')
+    }
+  })
+
+  test('spawns netgw in the net dir when the pid file is absent and records the pid', () => {
+    const netDir = makeTempDir()
+    const calls: Array<{ command: string; args: string[]; cwd: string | undefined }> = []
+    const spawn = (command: string, args: string[], opts: { cwd?: string }) => {
+      calls.push({ command, args, cwd: opts.cwd })
       return 4242
     }
 
@@ -204,11 +243,13 @@ describe('ensureNetgwRunning', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]!.command).toBe('/bin/netgw')
     expect(calls[0]!.args).toEqual(['-config', join(netDir, 'netgw.json')])
+    expect(calls[0]!.cwd).toBe(netDir)
     expect(readFileSync(join(netDir, NETGW_PID_FILE), 'utf-8')).toBe('4242')
   })
 
   test('respawns when the recorded pid is no longer alive', async () => {
     const netDir = makeTempDir()
+    await listenOnGatewaySocket(netDir)
     const pid = spawnDetached('sleep', ['5'], { logger, logLabel: 'netgw-test-dead-sleep' })
     if (pid === null) throw new Error('failed to start the sleep fixture')
     writeFileSync(join(netDir, NETGW_PID_FILE), String(pid))
@@ -248,15 +289,15 @@ describe('ensureNetgwRunning', () => {
     expect(readFileSync(join(netDir, NETGW_PID_FILE), 'utf-8')).toBe('5252')
   })
 
-  test('logs a failed spawn and leaves no pid behind', () => {
+  test('throws when the gateway fails to spawn and leaves no pid behind', () => {
     const netDir = makeTempDir()
     const spawn = vi.fn(() => null)
 
-    ensureNetgwRunning({ netDir, netgwPath: '/bin/netgw', logger, spawn })
-
+    expect(() => ensureNetgwRunning({ netDir, netgwPath: '/bin/netgw', logger, spawn })).toThrow(
+      'Failed to start cua-netgw from /bin/netgw',
+    )
     expect(spawn).toHaveBeenCalledTimes(1)
     expect(existsSync(join(netDir, NETGW_PID_FILE))).toBe(false)
-    expect(logger.log).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -320,6 +361,42 @@ describe('readNetgwBlockedEvents', () => {
     const rotated = readNetgwBlockedEvents(netDir, stale.nextOffset)
     expect(rotated.events.map((event) => event.dst)).toEqual(['10.0.0.9:443'])
     expect(rotated.nextOffset).toBe(statSync(eventsPath).size)
+  })
+
+  test('returns no events and the same offset when the file has not grown', () => {
+    const netDir = makeTempDir()
+    const eventsPath = join(netDir, NETGW_EVENTS_FILE)
+    writeFileSync(eventsPath, `${JSON.stringify(blockedEvent('10.0.0.1:443'))}\n`)
+
+    const first = readNetgwBlockedEvents(netDir, 0)
+    const second = readNetgwBlockedEvents(netDir, first.nextOffset)
+
+    expect(second).toEqual({ events: [], nextOffset: first.nextOffset })
+  })
+
+  test('netgwEventsEndOffset reports the events file size and zero when missing', () => {
+    const netDir = makeTempDir()
+    expect(netgwEventsEndOffset(netDir)).toBe(0)
+
+    const eventsPath = join(netDir, NETGW_EVENTS_FILE)
+    writeFileSync(eventsPath, `${JSON.stringify(blockedEvent('10.0.0.1:443'))}\n`)
+    expect(netgwEventsEndOffset(netDir)).toBe(statSync(eventsPath).size)
+
+    appendFileSync(eventsPath, `${JSON.stringify(blockedEvent('10.0.0.2:443'))}\n`)
+    expect(netgwEventsEndOffset(netDir)).toBe(statSync(eventsPath).size)
+  })
+
+  test('starting at the end offset skips history and returns only later events', () => {
+    const netDir = makeTempDir()
+    const eventsPath = join(netDir, NETGW_EVENTS_FILE)
+    writeFileSync(eventsPath, `${JSON.stringify(blockedEvent('10.0.0.1:443'))}\n`)
+
+    const start = netgwEventsEndOffset(netDir)
+    appendFileSync(eventsPath, `${JSON.stringify(blockedEvent('10.0.0.2:443'))}\n`)
+
+    const read = readNetgwBlockedEvents(netDir, start)
+    expect(read.events.map((event) => event.dst)).toEqual(['10.0.0.2:443'])
+    expect(read.nextOffset).toBe(netgwEventsEndOffset(netDir))
   })
 })
 

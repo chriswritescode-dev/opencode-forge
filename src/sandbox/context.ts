@@ -55,6 +55,12 @@ export const SANDBOX_OFF_NOTE = [
   SHARED_WORKSPACE_ARTIFACTS_NOTE,
 ].join('\n')
 
+export const MACOS_SANDBOX_OFF_NOTE = [
+  '[Sandbox] Execution has returned to the host environment. Tools, packages, processes, and in-memory state from the macOS VM must not be assumed to be available here.',
+  'Earlier command output in this session may come from the macOS VM and does not describe the host.',
+  'Install or reinstall the required host tooling and dependencies before rerunning any checks.',
+].join('\n')
+
 export interface SandboxEnvironmentTransition {
   from?: string | null
   to?: string | null
@@ -73,6 +79,8 @@ function formatTransitionLine(
 
 export const SANDBOX_SWITCHED_ON_NOTE = '[Sandbox] Earlier command output in this session may come from the host and does not describe the container.'
 
+export const MACOS_SANDBOX_SWITCHED_ON_NOTE = '[Sandbox] Earlier command output in this session may come from the host and does not describe the macOS VM.'
+
 export function formatSwitchArtifactsLine(fromLabel: string, toLabel: string): string {
   return `[Sandbox] The environment just switched from the ${fromLabel} to the ${toLabel}. Dependency directories and native build output already in the shared project directory (for example node_modules) were most likely installed for the ${fromLabel} and will not work in the ${toLabel}: delete them and reinstall or rebuild before running builds, tests, or the app.`
 }
@@ -82,6 +90,11 @@ export type SandboxChange = 'restarted' | 'recreated'
 const SANDBOX_CHANGE_NOTES = {
   restarted: '[Sandbox] The sandbox was restarted to apply new resource settings. Its files and disks are unchanged, but processes started earlier (including the Docker daemon and any containers) are no longer running; restart the ones you still need.',
   recreated: '[Sandbox] The sandbox was recreated. Anything outside the mounted directories from before is gone, including installed packages, Docker data, and caches, and processes started earlier are no longer running; reinstall and restart what you still need.',
+} satisfies Record<SandboxChange, string>
+
+const MACOS_SANDBOX_CHANGE_NOTES = {
+  restarted: '[Sandbox] The shared macOS VM restarted to apply new resource settings. Its files and installed tools persist, but processes and background services started earlier ended; restart the ones you still need.',
+  recreated: '[Sandbox] The shared macOS VM restarted. Running processes and background services ended, but files and installed tools persist.',
 } satisfies Record<SandboxChange, string>
 
 function formatMemory(mib: number): string {
@@ -113,39 +126,60 @@ function formatEnvironmentLine(label: string, value: string | null | undefined):
   return `[Sandbox] Environment: ${label} (${trimmed}).`
 }
 
+function buildSwitchedOnNote(
+  transition: SandboxEnvironmentTransition,
+  fromLabel: string,
+  sandbox?: { settings?: SandboxRuntimeSettings; kind?: SandboxBackendKind },
+): string {
+  const macos = sandbox?.kind === 'macos'
+  const toLabel = macos ? 'macOS VM' : 'container'
+  const lines = [
+    formatTransitionLine(transition, fromLabel, toLabel),
+    macos ? null : formatSwitchArtifactsLine(fromLabel, toLabel),
+    macos ? MACOS_SANDBOX_SWITCHED_ON_NOTE : SANDBOX_SWITCHED_ON_NOTE,
+    sandbox?.settings ? formatSandboxSettingsLine(sandbox.settings) : null,
+    macos ? MACOS_SANDBOX_CONTEXT_NOTE : SANDBOX_CONTEXT_NOTE,
+  ]
+  return lines.filter((line): line is string => line !== null).join('\n')
+}
+
 export function buildSandboxContextNote(
   environment: SandboxEnvironmentState,
   sandbox?: { settings?: SandboxRuntimeSettings; change?: SandboxChange; kind?: SandboxBackendKind },
 ): string {
+  if (environment.switched) {
+    return buildSwitchedOnNote({ from: environment.from, to: environment.to }, 'host', sandbox)
+  }
   const macos = sandbox?.kind === 'macos'
-  const sandboxLabel = macos ? 'macOS VM' : 'container'
-  const contextNote = macos ? MACOS_SANDBOX_CONTEXT_NOTE : SANDBOX_CONTEXT_NOTE
-  const settings = sandbox?.settings ? formatSandboxSettingsLine(sandbox.settings) : null
-  const lines = environment.switched
-    ? [
-        formatTransitionLine({ from: environment.from, to: environment.to }, 'host', sandboxLabel),
-        formatSwitchArtifactsLine('host', sandboxLabel),
-        SANDBOX_SWITCHED_ON_NOTE,
-        settings,
-        contextNote,
-      ]
-    : [
-        formatEnvironmentLine(sandboxLabel, environment.to),
-        sandbox?.change ? SANDBOX_CHANGE_NOTES[sandbox.change] : null,
-        settings,
-        contextNote,
-      ]
+  const lines = [
+    formatEnvironmentLine(macos ? 'macOS VM' : 'container', environment.to),
+    sandbox?.change ? (macos ? MACOS_SANDBOX_CHANGE_NOTES : SANDBOX_CHANGE_NOTES)[sandbox.change] : null,
+    sandbox?.settings ? formatSandboxSettingsLine(sandbox.settings) : null,
+    macos ? MACOS_SANDBOX_CONTEXT_NOTE : SANDBOX_CONTEXT_NOTE,
+  ]
   return lines.filter((line): line is string => line !== null).join('\n')
+}
+
+export function buildSandboxKindSwitchNote(opts: {
+  from: SandboxBackendKind
+  to: SandboxBackendKind
+  transition: SandboxEnvironmentTransition
+  settings?: SandboxRuntimeSettings
+}): string {
+  const fromLabel = opts.from === 'macos' ? 'macOS VM' : 'container'
+  return buildSwitchedOnNote(opts.transition, fromLabel, { kind: opts.to, settings: opts.settings })
 }
 
 export function buildSandboxOffNote(
   transition?: SandboxEnvironmentTransition,
   sandbox?: { kind?: SandboxBackendKind },
 ): string {
-  const fromLabel = sandbox?.kind === 'macos' ? 'macOS VM' : 'container'
+  const macos = sandbox?.kind === 'macos'
+  const fromLabel = macos ? 'macOS VM' : 'container'
+  const offNote = macos ? MACOS_SANDBOX_OFF_NOTE : SANDBOX_OFF_NOTE
   const line = formatTransitionLine(transition, fromLabel, 'host')
   const switched = formatSwitchArtifactsLine(fromLabel, 'host')
-  return line ? `${line}\n${switched}\n${SANDBOX_OFF_NOTE}` : `${switched}\n${SANDBOX_OFF_NOTE}`
+  return line ? `${line}\n${switched}\n${offNote}` : `${switched}\n${offNote}`
 }
 
 export interface SandboxLoopContextState {

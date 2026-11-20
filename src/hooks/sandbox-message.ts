@@ -1,7 +1,17 @@
 import { z } from 'zod'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
-import { MACOS_SANDBOX_CONTEXT_NOTE, SANDBOX_OFF_NOTE, buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
+import {
+  MACOS_SANDBOX_CONTEXT_NOTE,
+  MACOS_SANDBOX_OFF_NOTE,
+  SANDBOX_CONTEXT_NOTE,
+  SANDBOX_OFF_NOTE,
+  buildSandboxContextNote,
+  buildSandboxKindSwitchNote,
+  buildSandboxOffNote,
+  detectSandboxChange,
+} from '../sandbox/context'
+import type { SandboxBackendKind } from '../sandbox/runtime'
 import type { EnvironmentProbe } from '../sandbox/env-probe'
 import type { ResolveSandboxForSessionOpts } from '../services/unified-sandbox-resolver'
 import { LRUCache } from '../utils/lru-cache'
@@ -17,6 +27,10 @@ export interface SessionInstructionEntries {
 
 const storedNoteSchema = z.string()
 
+const MACOS_CONTEXT_MARKER = MACOS_SANDBOX_CONTEXT_NOTE.split('\n')[0]!
+const SANDBOX_CONTEXT_MARKER = SANDBOX_CONTEXT_NOTE.split('\n')[0]!
+const SANDBOX_OFF_MARKERS = [SANDBOX_OFF_NOTE.split('\n')[0]!, MACOS_SANDBOX_OFF_NOTE.split('\n')[0]!]
+
 async function readStoredNote(entries: SessionInstructionEntries, sessionID: string): Promise<{ text: string | null } | null> {
   const stored = (await entries.list(sessionID)).find((entry) => entry.key === SANDBOX_INSTRUCTION_KEY)
   if (!stored) return null
@@ -25,7 +39,14 @@ async function readStoredNote(entries: SessionInstructionEntries, sessionID: str
 }
 
 function isHostNote(text: string | null): boolean {
-  return text !== null && text.includes(SANDBOX_OFF_NOTE.split('\n')[0]!)
+  return text !== null && SANDBOX_OFF_MARKERS.some((marker) => text.includes(marker))
+}
+
+function storedSandboxKind(text: string | null): SandboxBackendKind | null {
+  if (text === null) return null
+  if (text.includes(MACOS_CONTEXT_MARKER)) return 'macos'
+  if (text.includes(SANDBOX_CONTEXT_MARKER)) return 'msb'
+  return null
 }
 
 export interface CreateSandboxMessageHookDeps {
@@ -95,8 +116,22 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
                 { settings: sandbox.settings, kind: sandbox.runtime.kind },
               ),
             })
-          } else if (stored?.text !== stable) {
-            await entries.put({ sessionID, key: SANDBOX_INSTRUCTION_KEY, value: stable })
+          } else {
+            const previousKind = storedSandboxKind(stored?.text ?? null)
+            if (previousKind && previousKind !== sandbox.runtime.kind) {
+              await entries.put({
+                sessionID,
+                key: SANDBOX_INSTRUCTION_KEY,
+                value: buildSandboxKindSwitchNote({
+                  from: previousKind,
+                  to: sandbox.runtime.kind,
+                  transition: { to: env },
+                  settings: sandbox.settings,
+                }),
+              })
+            } else if (stored?.text !== stable) {
+              await entries.put({ sessionID, key: SANDBOX_INSTRUCTION_KEY, value: stable })
+            }
           }
         }
         trackedSessions.set(sessionID, { sandbox, env, stable })
@@ -127,7 +162,7 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
         key: SANDBOX_INSTRUCTION_KEY,
         value: buildSandboxOffNote(
           { to: hostEnv },
-          { kind: stored.text?.includes(MACOS_SANDBOX_CONTEXT_NOTE) ? 'macos' : undefined },
+          { kind: storedSandboxKind(stored.text) ?? undefined },
         ),
       })
       trackedSessions.set(sessionID, { hostEnv })

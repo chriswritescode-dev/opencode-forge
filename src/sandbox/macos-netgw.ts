@@ -1,5 +1,14 @@
 import { z } from 'zod'
-import { mkdirSync, readFileSync, writeFileSync } from 'fs'
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'fs'
 import { isIP } from 'net'
 import { join } from 'path'
 import type { Logger } from '../types'
@@ -159,9 +168,15 @@ function serializeJson(value: NetgwConfig | NetgwRules): string {
   return `${JSON.stringify(value, null, 2)}\n`
 }
 
+function writeFileAtomic(path: string, contents: string): void {
+  const tempPath = `${path}.tmp`
+  writeFileSync(tempPath, contents, { mode: 0o600 })
+  renameSync(tempPath, path)
+}
+
 export function writeNetgwFiles(netDir: string, allow: string[] | undefined, logger: Logger): void {
   mkdirSync(netDir, { recursive: true, mode: 0o700 })
-  writeFileSync(join(netDir, NETGW_CONFIG_FILE), serializeJson(buildNetgwConfig(netDir)), { mode: 0o600 })
+  writeFileAtomic(join(netDir, NETGW_CONFIG_FILE), serializeJson(buildNetgwConfig(netDir)))
   const rulesPath = join(netDir, NETGW_RULES_FILE)
   const serialized = serializeJson(buildNetgwRules(allow, logger))
   let current: string | undefined
@@ -170,7 +185,7 @@ export function writeNetgwFiles(netDir: string, allow: string[] | undefined, log
   } catch {
     current = undefined
   }
-  if (current !== serialized) writeFileSync(rulesPath, serialized, { mode: 0o600 })
+  if (current !== serialized) writeFileAtomic(rulesPath, serialized)
 }
 
 export interface EnsureNetgwRunningInput {
@@ -192,19 +207,25 @@ function readNetgwPid(pidPath: string): number | undefined {
   return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined
 }
 
+function gatewaySocketIsLive(netDir: string): boolean {
+  try {
+    return statSync(gatewaySocketPath(netDir)).isSocket()
+  } catch {
+    return false
+  }
+}
+
 export function ensureNetgwRunning(input: EnsureNetgwRunningInput): void {
   const spawnImpl = input.spawn ?? spawnDetached
   const pidPath = join(input.netDir, NETGW_PID_FILE)
   const pid = readNetgwPid(pidPath)
-  if (pid !== undefined && isProcessAlive(pid)) return
+  if (pid !== undefined && isProcessAlive(pid) && gatewaySocketIsLive(input.netDir)) return
   const spawned = spawnImpl(input.netgwPath, ['-config', join(input.netDir, NETGW_CONFIG_FILE)], {
+    cwd: input.netDir,
     logger: input.logger,
     logLabel: 'netgw',
   })
-  if (spawned === null) {
-    input.logger.log(`Sandbox: netgw failed to spawn from ${input.netgwPath}`)
-    return
-  }
+  if (spawned === null) throw new Error(`Failed to start cua-netgw from ${input.netgwPath}`)
   writeFileSync(pidPath, String(spawned), { mode: 0o600 })
 }
 
@@ -216,8 +237,6 @@ const netgwEventSchema = z.looseObject({
   dst: z.string(),
 })
 
-const jsonValueSchema = z.json()
-
 export type NetgwEvent = z.infer<typeof netgwEventSchema>
 
 export interface NetgwBlockedEvents {
@@ -225,26 +244,58 @@ export interface NetgwBlockedEvents {
   nextOffset: number
 }
 
-export function readNetgwBlockedEvents(netDir: string, fromOffset: number): NetgwBlockedEvents {
-  let buffer: Buffer
+export function netgwEventsEndOffset(netDir: string): number {
   try {
-    buffer = readFileSync(join(netDir, NETGW_EVENTS_FILE))
+    const stats = statSync(join(netDir, NETGW_EVENTS_FILE))
+    return stats.isFile() ? stats.size : 0
+  } catch {
+    return 0
+  }
+}
+
+function readFileRange(path: string, start: number, length: number): Buffer | null {
+  let fd: number | undefined
+  try {
+    fd = openSync(path, 'r')
+    const buffer = Buffer.alloc(length)
+    let read = 0
+    while (read < length) {
+      const chunk = readSync(fd, buffer, read, length - read, start + read)
+      if (chunk === 0) break
+      read += chunk
+    }
+    return buffer.subarray(0, read)
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+export function readNetgwBlockedEvents(netDir: string, fromOffset: number): NetgwBlockedEvents {
+  const eventsPath = join(netDir, NETGW_EVENTS_FILE)
+  let size: number
+  try {
+    size = statSync(eventsPath).size
   } catch {
     return { events: [], nextOffset: 0 }
   }
   let start = Number.isFinite(fromOffset) && fromOffset > 0 ? Math.floor(fromOffset) : 0
-  if (start > buffer.length) start = 0
+  if (start > size) start = 0
+  if (start === size) return { events: [], nextOffset: start }
 
-  const region = buffer.subarray(start)
+  const region = readFileRange(eventsPath, start, size - start)
+  if (region === null) return { events: [], nextOffset: start }
+
   const lastNewline = region.lastIndexOf(0x0a)
   if (lastNewline < 0) return { events: [], nextOffset: start }
 
   const events: NetgwEvent[] = []
   for (const line of region.subarray(0, lastNewline).toString('utf-8').split('\n')) {
     if (line.trim() === '') continue
-    let value: z.infer<typeof jsonValueSchema>
+    let value: unknown
     try {
-      value = jsonValueSchema.parse(JSON.parse(line))
+      value = JSON.parse(line)
     } catch {
       continue
     }

@@ -4,10 +4,13 @@ import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import {
   MACOS_SANDBOX_CONTEXT_NOTE,
+  MACOS_SANDBOX_OFF_NOTE,
+  MACOS_SANDBOX_SWITCHED_ON_NOTE,
   SANDBOX_CONTEXT_NOTE,
   SANDBOX_OFF_NOTE,
   SANDBOX_SWITCHED_ON_NOTE,
   buildSandboxContextNote,
+  buildSandboxKindSwitchNote,
   buildSandboxOffNote,
   formatSwitchArtifactsLine,
   isSandboxEnabled,
@@ -156,20 +159,23 @@ describe('buildSandboxContextNote', () => {
     expect(note).toContain(SANDBOX_CONTEXT_NOTE)
   })
 
-  it('announces a switch to the macOS VM with the macOS labels and guidance', () => {
+  it('announces a switch to the macOS VM with the macOS labels and no container artifacts warning', () => {
     const note = buildSandboxContextNote(
       { switched: true, from: null, to: 'macOS 15.6 arm64' },
       { settings, kind: 'macos' },
     )
 
-    expect(note.split('\n').slice(0, 4)).toEqual([
+    expect(note.split('\n').slice(0, 3)).toEqual([
       '[Sandbox] Environment changed: host (unknown) -> macOS VM (macOS 15.6 arm64).',
-      formatSwitchArtifactsLine('host', 'macOS VM'),
-      SANDBOX_SWITCHED_ON_NOTE,
+      MACOS_SANDBOX_SWITCHED_ON_NOTE,
       '[Sandbox] Resources: 4 CPUs, 8 GiB memory. LAN (private network) access: blocked.',
     ])
     expect(note).toContain(MACOS_SANDBOX_CONTEXT_NOTE)
     expect(note).not.toContain(SANDBOX_CONTEXT_NOTE)
+    expect(note).not.toContain(formatSwitchArtifactsLine('host', 'macOS VM'))
+    expect(note).not.toContain(SANDBOX_SWITCHED_ON_NOTE)
+    expect(note).not.toMatch(/delete them and reinstall/i)
+    expect(note).not.toContain('does not describe the container')
   })
 
   it('describes macOS steady state with the macOS VM label', () => {
@@ -177,6 +183,25 @@ describe('buildSandboxContextNote', () => {
 
     expect(note.split('\n')[0]).toBe('[Sandbox] Environment: macOS VM (macOS 15.6 arm64).')
     expect(note).toContain(MACOS_SANDBOX_CONTEXT_NOTE)
+  })
+
+  it('reports a shared VM restart instead of a recreation when the macOS instance id changes', () => {
+    const note = buildSandboxContextNote({ switched: false, to: 'macOS 15.6 arm64' }, { kind: 'macos', change: 'recreated' })
+
+    expect(note).toContain('The shared macOS VM restarted')
+    expect(note).toContain('Running processes and background services ended')
+    expect(note).toContain('files and installed tools persist')
+    expect(note).not.toMatch(/was recreated/i)
+    expect(note).not.toMatch(/docker/i)
+    expect(note).not.toMatch(/installed packages/i)
+  })
+
+  it('keeps macOS restart wording free of container and Docker guidance', () => {
+    const note = buildSandboxContextNote({ switched: false, to: 'macOS 15.6 arm64' }, { kind: 'macos', change: 'restarted' })
+
+    expect(note).toContain('The shared macOS VM restarted')
+    expect(note).toContain('files and installed tools persist')
+    expect(note).not.toMatch(/docker/i)
   })
 
   it('keeps msb output byte-identical whether or not the kind is passed', () => {
@@ -211,15 +236,77 @@ describe('buildSandboxOffNote', () => {
     expect(note).toContain(SANDBOX_OFF_NOTE)
   })
 
-  it('names the macOS VM as the sandbox side of the switch', () => {
+  it('names the macOS VM as the sandbox side of the switch with macOS wording', () => {
     const note = buildSandboxOffNote({ from: 'macOS 15.6 arm64', to: 'Darwin 24.6.0 arm64' }, { kind: 'macos' })
 
     expect(note.split('\n').slice(0, 3)).toEqual([
       '[Sandbox] Environment changed: macOS VM (macOS 15.6 arm64) -> host (Darwin 24.6.0 arm64).',
       formatSwitchArtifactsLine('macOS VM', 'host'),
-      SANDBOX_OFF_NOTE.split('\n')[0],
+      MACOS_SANDBOX_OFF_NOTE.split('\n')[0],
     ])
-    expect(note).toContain(SANDBOX_OFF_NOTE)
+    expect(note).toContain(MACOS_SANDBOX_OFF_NOTE)
+    expect(note).not.toContain(SANDBOX_OFF_NOTE)
+    expect(note).not.toMatch(/container/i)
+    expect(note).not.toMatch(/docker/i)
+  })
+
+  it('uses macOS wording for the off note even when no transition is known', () => {
+    const note = buildSandboxOffNote(undefined, { kind: 'macos' })
+
+    expect(note).toBe(`${formatSwitchArtifactsLine('macOS VM', 'host')}\n${MACOS_SANDBOX_OFF_NOTE}`)
+    expect(note).not.toMatch(/container/i)
+  })
+})
+
+describe('MACOS_SANDBOX_OFF_NOTE', () => {
+  it('warns that macOS VM state must not be assumed available on the host', () => {
+    expect(MACOS_SANDBOX_OFF_NOTE).toMatch(/returned to the host/i)
+    expect(MACOS_SANDBOX_OFF_NOTE).toMatch(/from the macOS VM/i)
+    expect(MACOS_SANDBOX_OFF_NOTE).toMatch(/tools, packages, processes/i)
+    expect(MACOS_SANDBOX_OFF_NOTE).toMatch(/in-memory state/i)
+  })
+
+  it('omits container and Docker wording', () => {
+    expect(MACOS_SANDBOX_OFF_NOTE).not.toMatch(/container/i)
+    expect(MACOS_SANDBOX_OFF_NOTE).not.toMatch(/docker/i)
+  })
+})
+
+describe('buildSandboxKindSwitchNote', () => {
+  const settings = { cpus: 4, memoryMib: 8192, allowLan: false }
+
+  it('announces container -> macOS VM with the macOS labels and guidance', () => {
+    const note = buildSandboxKindSwitchNote({
+      from: 'msb',
+      to: 'macos',
+      transition: { to: 'macOS 15.6 arm64' },
+      settings,
+    })
+
+    expect(note.split('\n').slice(0, 3)).toEqual([
+      '[Sandbox] Environment changed: container (unknown) -> macOS VM (macOS 15.6 arm64).',
+      MACOS_SANDBOX_SWITCHED_ON_NOTE,
+      '[Sandbox] Resources: 4 CPUs, 8 GiB memory. LAN (private network) access: blocked.',
+    ])
+    expect(note).toContain(MACOS_SANDBOX_CONTEXT_NOTE)
+    expect(note).not.toContain(SANDBOX_CONTEXT_NOTE)
+    expect(note).not.toContain(formatSwitchArtifactsLine('container', 'macOS VM'))
+  })
+
+  it('announces macOS VM -> container with the container labels and artifacts warning', () => {
+    const note = buildSandboxKindSwitchNote({
+      from: 'macos',
+      to: 'msb',
+      transition: { to: 'Linux 6.1.0 aarch64' },
+    })
+
+    expect(note.split('\n').slice(0, 3)).toEqual([
+      '[Sandbox] Environment changed: macOS VM (unknown) -> container (Linux 6.1.0 aarch64).',
+      formatSwitchArtifactsLine('macOS VM', 'container'),
+      SANDBOX_SWITCHED_ON_NOTE,
+    ])
+    expect(note).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(note).not.toContain(MACOS_SANDBOX_CONTEXT_NOTE)
   })
 })
 

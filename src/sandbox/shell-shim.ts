@@ -4,6 +4,10 @@ import type { Logger } from '../types'
 
 export const SHELL_SHIM_FILENAME = 'forge-shell'
 
+export const MACOS_SHELL_SHIM_FILENAME = `${SHELL_SHIM_FILENAME}-macos`
+
+const SHIM_FILENAMES: ReadonlySet<string> = new Set([SHELL_SHIM_FILENAME, MACOS_SHELL_SHIM_FILENAME])
+
 export const SHIM_ENV_CONTAINER = 'FORGE_SANDBOX_CONTAINER'
 
 export function resolveHostShell(env: NodeJS.ProcessEnv = process.env): string {
@@ -11,7 +15,7 @@ export function resolveHostShell(env: NodeJS.ProcessEnv = process.env): string {
   if (
     candidate &&
     isAbsolute(candidate) &&
-    basename(candidate) !== SHELL_SHIM_FILENAME &&
+    !SHIM_FILENAMES.has(basename(candidate)) &&
     existsSync(candidate)
   ) {
     return candidate
@@ -41,8 +45,13 @@ exec "${hostShell}" "$@"
 `
 }
 
-export function ensureShellShim(dataDir: string, logger: Logger, routedExecLine: string): string | null {
-  const path = join(dataDir, SHELL_SHIM_FILENAME)
+export function ensureShellShim(
+  dataDir: string,
+  logger: Logger,
+  routedExecLine: string,
+  fileName: string = SHELL_SHIM_FILENAME,
+): string | null {
+  const path = join(dataDir, fileName)
   const content = buildShimScript(resolveHostShell(), routedExecLine)
   try {
     mkdirSync(dataDir, { recursive: true })
