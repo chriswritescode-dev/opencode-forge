@@ -2,7 +2,7 @@
 
 **Verdict: compatible as-is with OpenCode 2.2.2.** No Forge source change was required for this release.
 
-Forge declares a floor of OpenCode `>=2.0.14` (`engines.opencode`) and is verified against the newest release at the time of writing, `2.2.2`. The floor is a range, not a pin: a host on `2.0.x` keeps working, but only `2.2.2` carries the evidence recorded here.
+Forge requires OpenCode `>=2.2.2` (`engines.opencode`) and is verified against `2.2.2`. The floor is the version whose `session.hook('experimental.idle')` Forge registers to track background work, so older hosts are not supported.
 
 `VERIFIED_OPENCODE_VERSION` in `src/constants/plugin.ts` is the single source of truth for the verified version. `test/constants/plugin.test.ts` fails when it drifts from the `@opencode/plugin` and `@opencode/client` pins, from the `README.md` claim, or from this document.
 
@@ -14,7 +14,7 @@ Forge declares a floor of OpenCode `>=2.0.14` (`engines.opencode`) and is verifi
 | `@opencode/client` | `2.2.2` (devDependency) | `V2Event` union consumed by `src/host/v2-events.ts`. |
 | `@opentui/core` | `0.7.0` (devDependency) | Renderer the host provides to TUI plugins. |
 | `@opentui/solid` | `0.7.0` (devDependency) | JSX runtime for `src/tui.tsx`. |
-| `engines.opencode` | `>=2.0.14` | Supported floor, deliberately a range. |
+| `engines.opencode` | `>=2.2.2` | Supported floor, required for `session.hook('experimental.idle')`. |
 | `peerDependencies` on `@opentui/*` | `>=0.1.105` | Published range, deliberately looser than the dev pin. |
 
 `@opencode/plugin@2.2.2` declares optional peers on `@opentui/core` and `@opentui/solid` pinned exactly to `0.7.0`. Because they are optional peers, the looser published `>=0.1.105` range still installs; the TUI surface is only verified at `0.7.0`, which is what the host ships.

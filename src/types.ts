@@ -65,6 +65,7 @@ export interface SandboxSecretSubstitution {
 
 export interface SandboxSecretConfig {
   env: string
+  file?: string
   hosts: string[]
   substitution?: SandboxSecretSubstitution
   passthrough?: string[]

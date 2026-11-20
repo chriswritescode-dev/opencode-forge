@@ -1,4 +1,7 @@
 import { describe, test, expect, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import type { SecretRefreshResult } from '../../src/sandbox/msb'
 import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
@@ -6,12 +9,14 @@ import { createMockLogger } from '../helpers/logger'
 
 describe('SandboxManager create-time env and secrets', () => {
   const savedEnv: Record<string, string | undefined> = {}
+  const tempDirs: string[] = []
 
   afterEach(() => {
     for (const [k, v] of Object.entries(savedEnv)) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v
     }
     Object.keys(savedEnv).forEach((k) => delete savedEnv[k])
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
 
   function setEnv(name: string, value: string | undefined) {
@@ -19,6 +24,14 @@ describe('SandboxManager create-time env and secrets', () => {
       savedEnv[name] = process.env[name]
     }
     if (value === undefined) delete process.env[name]; else process.env[name] = value
+  }
+
+  function writeSecretFile(name: string, content: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-secret-file-'))
+    tempDirs.push(dir)
+    const path = join(dir, name)
+    writeFileSync(path, content)
+    return path
   }
 
   test('start forwards only env names that are set on the host and logs the omissions', async () => {
@@ -472,5 +485,149 @@ describe('SandboxManager create-time env and secrets', () => {
     runtime.setSandboxState('forge-test', 'stopped')
     await manager.start('test', '/home/user/worktrees/feature')
     expect(runtime.getRefreshSecretCalls()).toHaveLength(2)
+  })
+
+  test('reads a configured secret from a file and passes the value only in the msb environment', async () => {
+    setEnv('FORGE_TEST_FILE_SECRET', undefined)
+    const file = writeSecretFile('token', '  file-secret-value\n')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_FILE_SECRET', file, hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.secrets).toEqual([
+      { env: 'FORGE_TEST_FILE_SECRET', file, hosts: ['api.example.com'] },
+    ])
+    expect(createCall[2]?.secretEnv).toEqual({ FORGE_TEST_FILE_SECRET: 'file-secret-value' })
+    expect(JSON.stringify(createCall[2]?.secrets)).not.toContain('file-secret-value')
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('file-secret-value')
+    expect(logger.log).not.toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_FILE_SECRET'))
+  })
+
+  test('skips a configured file secret that cannot be read and names the path', async () => {
+    setEnv('FORGE_TEST_MISSING_FILE', undefined)
+    const dir = mkdtempSync(join(tmpdir(), 'forge-secret-file-'))
+    tempDirs.push(dir)
+    const file = join(dir, 'missing-token')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_MISSING_FILE', file, hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.secrets).toEqual([])
+    expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(logger.log).toHaveBeenCalledWith(
+      `Sandbox: skipping secret FORGE_TEST_MISSING_FILE: could not read ${file}: ENOENT: no such file or directory, open '${file}'`,
+    )
+  })
+
+  test('skips a configured file secret whose file is empty', async () => {
+    setEnv('FORGE_TEST_EMPTY_FILE', undefined)
+    const file = writeSecretFile('empty-token', '  \n')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_EMPTY_FILE', file, hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.secrets).toEqual([])
+    expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(logger.log).toHaveBeenCalledWith(
+      `Sandbox: skipping secret FORGE_TEST_EMPTY_FILE: ${file} is empty`,
+    )
+  })
+
+  test('logs a file secret failure once per reason and again after the file recovers', async () => {
+    setEnv('FORGE_TEST_FLAKY_FILE', undefined)
+    const file = writeSecretFile('flaky-token', '')
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_FLAKY_FILE', file, hosts: ['api.example.com'] }] },
+    }
+    const manager = createSandboxManager(runtime, config, logger)
+    const fileLogs = () => vi.mocked(logger.log).mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.startsWith('Sandbox: skipping secret FORGE_TEST_FLAKY_FILE'))
+
+    await manager.start('a', '/home/user/worktrees/a')
+    await manager.start('b', '/home/user/worktrees/b')
+    expect(fileLogs()).toEqual([`Sandbox: skipping secret FORGE_TEST_FLAKY_FILE: ${file} is empty`])
+
+    rmSync(file)
+    await manager.start('c', '/home/user/worktrees/c')
+    expect(fileLogs()).toHaveLength(2)
+
+    writeFileSync(file, 'value\n')
+    await manager.start('d', '/home/user/worktrees/d')
+    writeFileSync(file, '')
+    await manager.start('e', '/home/user/worktrees/e')
+    expect(fileLogs()).toHaveLength(3)
+  })
+
+  test('adopting a stopped sandbox starts it with the file secret value', async () => {
+    setEnv('FORGE_TEST_FILE_SECRET', undefined)
+    const file = writeSecretFile('token', 'file-secret-value\n')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'stopped')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_FILE_SECRET', file, hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+    expect(runtime.getRefreshSecretCalls()).toEqual([
+      ['forge-test', [{ env: 'FORGE_TEST_FILE_SECRET', file, hosts: ['api.example.com'] }], { FORGE_TEST_FILE_SECRET: 'file-secret-value' }],
+    ])
+    expect(runtime.getStartSandboxCalls()).toEqual([
+      ['forge-test', { FORGE_TEST_FILE_SECRET: 'file-secret-value' }],
+    ])
+  })
+
+  test('skips a per-loop secret that reads its value from a file', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      resolveOverrides: () => ({
+        secrets: [{ env: 'FORGE_TEST_LOOP_FILE', file: '/run/secrets/token', hosts: ['api.example.com'] }],
+      }),
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.secrets).toEqual([])
+    expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(logger.log).toHaveBeenCalledWith(
+      'Sandbox: skipping secret FORGE_TEST_LOOP_FILE: file is only supported in sandbox.network.secrets',
+    )
   })
 })

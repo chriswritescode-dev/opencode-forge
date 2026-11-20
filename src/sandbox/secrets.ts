@@ -1,4 +1,7 @@
+import { homedir } from 'os'
+import { isAbsolute, join, resolve } from 'path'
 import { z } from 'zod'
+import { resolveConfigDir } from '../install/paths'
 import type { SandboxSecretConfig, SandboxSecretSubstitution } from '../types'
 import { processShared } from '../utils/process-shared'
 
@@ -13,6 +16,7 @@ const sandboxSecretSubstitutionSchema = z.object({
 
 const sandboxSecretSchema = z.object({
   env: z.string(),
+  file: z.string().optional(),
   hosts: z.array(z.string()).optional(),
   substitution: sandboxSecretSubstitutionSchema.optional(),
   passthrough: z.array(z.string()).optional(),
@@ -23,6 +27,8 @@ const sandboxSecretSchema = z.object({
 const SECRET_ENTRY_RE = /^[^\s,@[\]]+$/
 
 const secretEnvProbeSchema = z.looseObject({ env: z.string() })
+
+const secretFileProbeSchema = z.looseObject({ env: z.string().optional(), file: z.unknown() })
 
 function trimmedEntries(entries: string[] | undefined): string[] {
   return (entries ?? []).map((entry) => entry.trim()).filter(Boolean)
@@ -60,7 +66,10 @@ export function resolveSandboxSecret(
       }
     }
   }
+  const file = parsed.data.file?.trim()
+  if (parsed.data.file !== undefined && !file) return { env, reason: 'file must not be empty' }
   const secret: SandboxSecretConfig = { env, hosts }
+  if (file !== undefined) secret.file = file
   if (substitution !== undefined) {
     const resolvedSubstitution: SandboxSecretSubstitution = {}
     if (substitution.headers !== undefined) resolvedSubstitution.headers = substitution.headers
@@ -73,6 +82,12 @@ export function resolveSandboxSecret(
   if (parsed.data.violationAction !== undefined) secret.violationAction = parsed.data.violationAction
   if (parsed.data.requireTlsIdentity !== undefined) secret.requireTlsIdentity = parsed.data.requireTlsIdentity
   return { secret }
+}
+
+export function resolveSandboxSecretFilePath(file: string): string {
+  if (file === '~' || file.startsWith('~/')) return join(homedir(), file.slice(1))
+  if (isAbsolute(file)) return resolve(file)
+  return resolve(resolveConfigDir(), file)
 }
 
 export interface SandboxSecretValuesRequest {
@@ -149,6 +164,11 @@ export function describeInvalidLoopSecrets(
   const rawSecrets = settings?.secrets ?? []
   const seen = new Set<string>()
   for (const raw of rawSecrets) {
+    const fileProbe = secretFileProbeSchema.safeParse(raw)
+    if (fileProbe.success && fileProbe.data.file !== undefined) {
+      const env = (fileProbe.data.env ?? '').trim()
+      return `Invalid sandbox secret${env ? ` ${env}` : ''}: file is only supported in sandbox.network.secrets`
+    }
     const resolved = resolveSandboxSecret(raw)
     if ('reason' in resolved) {
       return `Invalid sandbox secret${resolved.env ? ` ${resolved.env}` : ''}: ${resolved.reason}`

@@ -1,7 +1,11 @@
 import { describe, test, expect, afterEach } from 'vitest'
+import { homedir } from 'os'
+import { join, resolve } from 'path'
 import {
   describeInvalidLoopSecrets,
   fetchSandboxSecretValues,
+  resolveSandboxSecret,
+  resolveSandboxSecretFilePath,
   sandboxSecretProviders,
   type SandboxSecretValuesRequest,
 } from '../../src/sandbox/secrets'
@@ -109,6 +113,49 @@ describe('fetchSandboxSecretValues', () => {
   })
 })
 
+describe('resolveSandboxSecret file', () => {
+  test('keeps a trimmed file path on the resolved secret', () => {
+    expect(resolveSandboxSecret({
+      env: 'TOKEN',
+      file: '  ~/.config/opencode/.secrets/token  ',
+      hosts: ['api.example.com'],
+    })).toEqual({
+      secret: {
+        env: 'TOKEN',
+        file: '~/.config/opencode/.secrets/token',
+        hosts: ['api.example.com'],
+      },
+    })
+  })
+
+  test('rejects a file path that is empty after trimming', () => {
+    expect(resolveSandboxSecret({ env: 'TOKEN', file: '   ', hosts: ['api.example.com'] }))
+      .toEqual({ env: 'TOKEN', reason: 'file must not be empty' })
+  })
+
+  test('resolves ~ and ~/ paths under the home directory', () => {
+    expect(resolveSandboxSecretFilePath('~')).toBe(homedir())
+    expect(resolveSandboxSecretFilePath('~/token')).toBe(join(homedir(), 'token'))
+    expect(resolveSandboxSecretFilePath('~/.config/opencode/token')).toBe(join(homedir(), '.config/opencode/token'))
+  })
+
+  test('leaves an absolute path as is', () => {
+    expect(resolveSandboxSecretFilePath('/run/secrets/token')).toBe('/run/secrets/token')
+  })
+
+  test('resolves a relative path against the opencode config directory', () => {
+    const saved = process.env['XDG_CONFIG_HOME']
+    process.env['XDG_CONFIG_HOME'] = '/tmp/forge-secret-xdg'
+    try {
+      expect(resolveSandboxSecretFilePath('.secrets/token'))
+        .toBe(resolve('/tmp/forge-secret-xdg/opencode', '.secrets/token'))
+    } finally {
+      if (saved === undefined) delete process.env['XDG_CONFIG_HOME']
+      else process.env['XDG_CONFIG_HOME'] = saved
+    }
+  })
+})
+
 describe('describeInvalidLoopSecrets', () => {
   const registeredId = 'registered-provider'
 
@@ -130,6 +177,12 @@ describe('describeInvalidLoopSecrets', () => {
   test('describes a rejected definition without an env name', () => {
     expect(describeInvalidLoopSecrets({ secrets: [{ env: '  ', hosts: ['api.example.com'] }] }))
       .toBe('Invalid sandbox secret: missing env name')
+  })
+
+  test('rejects a per-loop entry that reads its value from a file', () => {
+    expect(describeInvalidLoopSecrets({
+      secrets: [{ env: 'TOKEN', file: '/run/secrets/token', hosts: ['api.example.com'] }],
+    })).toBe('Invalid sandbox secret TOKEN: file is only supported in sandbox.network.secrets')
   })
 
   test('describes a duplicate env name', () => {
