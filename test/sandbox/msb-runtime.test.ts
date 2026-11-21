@@ -294,6 +294,27 @@ describe('create args', () => {
     expect(args).not.toContain(' GITHUB_TOKEN ')
   })
 
+  test('emits -e NAME=VALUE for vars after the bare env names', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      env: ['CI'],
+      vars: { GITEA_INSTANCE_URL: 'https://git.example.com' },
+    })
+    expect(args.slice(-4)).toEqual(['-e', 'CI', '-e', 'GITEA_INSTANCE_URL=https://git.example.com'])
+  })
+
+  test('emits a name present in both env and vars once, as the var assignment', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      env: ['HOME', 'CI'],
+      vars: { HOME: '/guest/home' },
+    })
+    expect(args.filter((arg) => arg === '-e')).toHaveLength(2)
+    expect(args).toContain('HOME=/guest/home')
+    expect(args).toContain('CI')
+    expect(args).not.toContain('HOME')
+  })
+
   test('emits one --secret env@hosts flag per secret with hosts joined by commas', () => {
     const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
@@ -1263,6 +1284,20 @@ describe('runtime', () => {
       'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
     ])
     expect(calls[0].opts?.timeout).toBe(120000)
+  })
+
+  test('createSandbox puts var values on argv and keeps them out of the child environment', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      vars: { GITEA_INSTANCE_URL: 'https://git.example.com' },
+      secretEnv: { GITEA_TOKEN: 'secret-value' },
+    })
+
+    expect(calls[0].args).toContain('GITEA_INSTANCE_URL=https://git.example.com')
+    expect(calls[0].opts?.env).toEqual({ GITEA_TOKEN: 'secret-value' })
+    expect(JSON.stringify(calls[0].opts?.env)).not.toContain('https://git.example.com')
   })
 
   test('createSandbox drops unparsable memory and cpus instead of passing them to msb', async () => {

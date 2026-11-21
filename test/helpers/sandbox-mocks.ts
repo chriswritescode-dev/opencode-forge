@@ -7,6 +7,7 @@ type MockCreateSandboxOpts = {
   resources?: SandboxResources
   networkAllow?: string[]
   env?: string[]
+  vars?: Record<string, string>
   secrets?: SandboxSecretConfig[]
   secretEnv?: Record<string, string>
   restrictEgress?: boolean

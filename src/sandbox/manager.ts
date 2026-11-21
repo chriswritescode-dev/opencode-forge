@@ -739,24 +739,21 @@ export function createSandboxManager(
     const secrets = resolvedSecrets.secrets
     const restrictEgress = egressRestrictionRequested(config.network?.allow, resolvedSecrets.egressSecrets)
     logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${target.resources.memory} cpus=${target.resources.cpus} lan=${target.allowLan} workspaces=${workspaces.length})`)
-    const createEnv = resolvePassthroughEnv()
-    for (const name of Object.keys(resolvedSecrets.vars)) {
-      if (!createEnv.includes(name)) createEnv.push(name)
-    }
     const createOpts: CreateSandboxOpts = {
       image: config.image,
       resources: target.resources,
       networkAllow: buildNetworkAllow(config.network?.allow, restrictEgress ? secrets : resolvedSecrets.egressSecrets, logger),
       restrictEgress,
-      env: createEnv,
+      env: resolvePassthroughEnv(),
       secrets,
       allowLan: target.allowLan,
     }
-    const secretEnv = { ...resolvedSecrets.vars, ...resolvedSecrets.secretEnv }
-    if (Object.keys(secretEnv).length > 0) createOpts.secretEnv = secretEnv
+    if (Object.keys(resolvedSecrets.vars).length > 0) createOpts.vars = resolvedSecrets.vars
+    if (resolvedSecrets.secretEnv !== undefined) createOpts.secretEnv = resolvedSecrets.secretEnv
     const idleTimeout = config.resolveIdleTimeout?.(worktreeName)
     if (idleTimeout) createOpts.idleTimeout = idleTimeout
     await runtime.createSandbox(containerName, workspaces, createOpts)
+    warnedSandboxVars.delete(containerName)
     await prepareCacheDisk(containerName)
     convergedSecrets.add(containerName)
     recordHandledSecretEnvs(containerName, secrets)
@@ -783,6 +780,7 @@ export function createSandboxManager(
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
       preparedCacheDisks.delete(containerName)
+      warnedSandboxVars.delete(containerName)
       logger.log(`Sandbox ${containerName} already gone`)
       try {
         await runtime.removeSandbox(containerName)
@@ -806,6 +804,7 @@ export function createSandboxManager(
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
       preparedCacheDisks.delete(containerName)
+      warnedSandboxVars.delete(containerName)
     }
     if (removalError) throw removalError
   }
@@ -855,6 +854,7 @@ export function createSandboxManager(
         convergedSecrets.delete(name)
         handledSecretEnvs.delete(name)
         preparedCacheDisks.delete(name)
+        warnedSandboxVars.delete(name)
         logger.log(`Removed orphaned sandbox: ${name}`)
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -867,6 +867,7 @@ export function createSandboxManager(
       convergedSecrets.clear()
       handledSecretEnvs.clear()
       preparedCacheDisks.clear()
+      warnedSandboxVars.clear()
     } else {
       for (const key of activeSandboxes.keys()) {
         if (!preserveWorktrees.includes(key)) {

@@ -241,6 +241,7 @@ export function buildMsbCreateArgs(
     dockerDisk?: string
     cacheDisk?: string
     env?: string[]
+    vars?: Record<string, string>
     secrets?: SandboxSecretConfig[]
     secretConfPath?: string
     allowLan?: boolean
@@ -278,10 +279,14 @@ export function buildMsbCreateArgs(
   } else if (opts.allowLan) {
     args.push('--net', 'public,private')
   }
+  const vars = opts.vars ?? {}
   for (const rawName of opts.env ?? []) {
     const name = rawName.trim()
-    if (!name || name.includes('=')) continue
+    if (!name || name.includes('=') || Object.hasOwn(vars, name)) continue
     args.push('-e', name)
+  }
+  for (const [name, value] of Object.entries(vars)) {
+    args.push('-e', `${name}=${value}`)
   }
   if (opts.secretConfPath) args.push('--secret-conf', opts.secretConfPath)
   else args.push(...buildSecretFlags(opts.secrets))
@@ -574,6 +579,7 @@ export interface CreateSandboxOpts {
   networkAllow?: string[]
   restrictEgress?: boolean
   env?: string[]
+  vars?: Record<string, string>
   secrets?: SandboxSecretConfig[]
   secretEnv?: Record<string, string>
   allowLan?: boolean
@@ -672,6 +678,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
         dockerDisk: normalizeMsbSize(opts.resources?.dockerDisk, logger),
         cacheDisk: normalizeMsbSize(opts.resources?.cacheDisk, logger),
         env: opts.env,
+        vars: opts.vars,
         secrets: opts.secrets,
         secretConfPath,
         allowLan: opts.allowLan,
