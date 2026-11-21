@@ -67,6 +67,7 @@ export interface SandboxSecretConfig {
   env: string
   file?: string
   hosts: string[]
+  vars?: Record<string, string>
   substitution?: SandboxSecretSubstitution
   passthrough?: string[]
   violationAction?: SandboxSecretViolationAction

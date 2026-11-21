@@ -255,6 +255,7 @@ export function createSandboxManager(
   const settingsLookups = new Set<string>()
   const warnedUnsetSecretEnv = new Set<string>()
   const warnedSecretFileEnv = new Map<string, string>()
+  const warnedSandboxVars = new Map<string, string>()
   let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
   let imageReady = false
 
@@ -522,7 +523,12 @@ export function createSandboxManager(
     worktreeName: string,
     projectDir: string,
     overrides?: SandboxOverrides,
-  ): Promise<{ secrets: SandboxSecretConfig[]; egressSecrets: SandboxSecretConfig[]; secretEnv?: Record<string, string> }> {
+  ): Promise<{
+    secrets: SandboxSecretConfig[]
+    egressSecrets: SandboxSecretConfig[]
+    secretEnv?: Record<string, string>
+    vars: Record<string, string>
+  }> {
     const effective = overrides ?? config.resolveOverrides?.(worktreeName)
     const perSandbox: SandboxSecretConfig[] = []
     for (const raw of effective?.secrets ?? []) {
@@ -535,6 +541,10 @@ export function createSandboxManager(
         logger.log(`Sandbox: skipping secret ${outcome.secret.env}: file is only supported in sandbox.network.secrets`)
         continue
       }
+      if (outcome.secret.vars !== undefined) {
+        logger.log(`Sandbox: skipping secret ${outcome.secret.env}: vars is only supported in sandbox.network.secrets`)
+        continue
+      }
       perSandbox.push(outcome.secret)
     }
     const perSandboxEnvs = new Set(perSandbox.map((secret) => secret.env))
@@ -542,6 +552,16 @@ export function createSandboxManager(
     const fromConfig: SandboxSecretConfig[] = []
     const egressFromConfig: SandboxSecretConfig[] = []
     const fileValues: Record<string, string> = {}
+    const vars: Record<string, string> = {}
+    const collectVars = (secret: SandboxSecretConfig): void => {
+      for (const [name, value] of Object.entries(secret.vars ?? {})) {
+        if (Object.hasOwn(vars, name)) {
+          logger.log(`Sandbox: skipping var ${name} from secret ${secret.env}: already set by an earlier secret`)
+          continue
+        }
+        vars[name] = value
+      }
+    }
     for (const raw of config.network?.secrets ?? []) {
       const outcome = resolveSandboxSecret(raw)
       if ('reason' in outcome) {
@@ -570,6 +590,7 @@ export function createSandboxManager(
         warnedSecretFileEnv.delete(env)
         fileValues[env] = value
         fromConfig.push(outcome.secret)
+        collectVars(outcome.secret)
         egressFromConfig.push(outcome.secret)
         continue
       }
@@ -578,6 +599,7 @@ export function createSandboxManager(
         continue
       }
       fromConfig.push(outcome.secret)
+      collectVars(outcome.secret)
       egressFromConfig.push(outcome.secret)
     }
 
@@ -602,7 +624,14 @@ export function createSandboxManager(
       secretEnv = { ...fileValues, ...secretEnv }
     }
 
-    return { secrets: [...fromConfig, ...keptPerSandbox], egressSecrets: egressFromConfig, secretEnv }
+    const secrets = [...fromConfig, ...keptPerSandbox]
+    for (const secret of secrets) {
+      if (!Object.hasOwn(vars, secret.env)) continue
+      logger.log(`Sandbox: skipping var ${secret.env}: it names a bound secret`)
+      delete vars[secret.env]
+    }
+
+    return { secrets, egressSecrets: egressFromConfig, secretEnv, vars }
   }
 
   async function adoptSecrets(
@@ -629,6 +658,12 @@ export function createSandboxManager(
         recordHandledSecretEnvs(containerName, resolved.secrets)
       }
     }
+    if (Object.keys(resolved.vars).length > 0) {
+      const sandboxEnv = await runtime.readSandboxEnv(containerName).catch(() => null)
+      if (sandboxEnv) warnUnappliedVars(containerName, resolved.vars, sandboxEnv)
+    } else {
+      warnedSandboxVars.delete(containerName)
+    }
     if (state === 'stopped' && resolved.secretEnv !== undefined) {
       await runtime.startSandbox(containerName, resolved.secretEnv)
     }
@@ -647,6 +682,24 @@ export function createSandboxManager(
     const introduced = known ? secrets.filter((s) => !known.has(s.env)) : secrets
     if (introduced.length === 0) return
     logger.log(`Sandbox: egress for secret host(s) of ${introduced.map((s) => s.env).join(', ')} may be unreachable in ${containerName}: msb cannot change egress rules on an existing sandbox, so recreate the sandbox for the new host(s) to be allowed`)
+  }
+
+  function warnUnappliedVars(
+    containerName: string,
+    vars: Record<string, string>,
+    sandboxEnv: Record<string, string>,
+  ): void {
+    const missing = Object.keys(vars)
+      .sort()
+      .filter((name) => !Object.hasOwn(sandboxEnv, name) || sandboxEnv[name] !== vars[name])
+    if (missing.length === 0) {
+      warnedSandboxVars.delete(containerName)
+      return
+    }
+    const signature = JSON.stringify(missing.map((name) => [name, vars[name]]))
+    if (warnedSandboxVars.get(containerName) === signature) return
+    warnedSandboxVars.set(containerName, signature)
+    logger.log(`Sandbox: vars ${missing.join(', ')} are not applied to existing sandbox ${containerName}: vars are set only when a sandbox is created; remove it with \`msb rm --force ${containerName}\` so it is recreated`)
   }
 
   async function prepareCacheDisk(containerName: string): Promise<void> {
@@ -700,10 +753,12 @@ export function createSandboxManager(
       secrets,
       allowLan: target.allowLan,
     }
+    if (Object.keys(resolvedSecrets.vars).length > 0) createOpts.vars = resolvedSecrets.vars
     if (resolvedSecrets.secretEnv !== undefined) createOpts.secretEnv = resolvedSecrets.secretEnv
     const idleTimeout = config.resolveIdleTimeout?.(worktreeName)
     if (idleTimeout) createOpts.idleTimeout = idleTimeout
     await runtime.createSandbox(containerName, workspaces, createOpts)
+    warnedSandboxVars.delete(containerName)
     await prepareCacheDisk(containerName)
     convergedSecrets.add(containerName)
     recordHandledSecretEnvs(containerName, secrets)
@@ -730,6 +785,7 @@ export function createSandboxManager(
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
       preparedCacheDisks.delete(containerName)
+      warnedSandboxVars.delete(containerName)
       logger.log(`Sandbox ${containerName} already gone`)
       try {
         await runtime.removeSandbox(containerName)
@@ -753,6 +809,7 @@ export function createSandboxManager(
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
       preparedCacheDisks.delete(containerName)
+      warnedSandboxVars.delete(containerName)
     }
     if (removalError) throw removalError
   }
@@ -802,6 +859,7 @@ export function createSandboxManager(
         convergedSecrets.delete(name)
         handledSecretEnvs.delete(name)
         preparedCacheDisks.delete(name)
+        warnedSandboxVars.delete(name)
         logger.log(`Removed orphaned sandbox: ${name}`)
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -814,6 +872,7 @@ export function createSandboxManager(
       convergedSecrets.clear()
       handledSecretEnvs.clear()
       preparedCacheDisks.clear()
+      warnedSandboxVars.clear()
     } else {
       for (const key of activeSandboxes.keys()) {
         if (!preserveWorktrees.includes(key)) {

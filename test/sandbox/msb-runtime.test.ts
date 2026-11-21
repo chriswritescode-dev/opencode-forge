@@ -20,6 +20,7 @@ import {
   msbImageMatches,
   parseMsbInspectSecrets,
   parseMsbInspectRuntimeSettings,
+  parseMsbInspectEnv,
   msbSizeToMib,
   checkMsbAvailability,
   describeMsbUnavailable,
@@ -291,6 +292,27 @@ describe('create args', () => {
     expect(args).toContain('-e')
     expect(args).toContain('GITHUB_TOKEN')
     expect(args).not.toContain(' GITHUB_TOKEN ')
+  })
+
+  test('emits -e NAME=VALUE for vars after the bare env names', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      env: ['CI'],
+      vars: { GITEA_INSTANCE_URL: 'https://git.example.com' },
+    })
+    expect(args.slice(-4)).toEqual(['-e', 'CI', '-e', 'GITEA_INSTANCE_URL=https://git.example.com'])
+  })
+
+  test('emits a name present in both env and vars once, as the var assignment', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      env: ['HOME', 'CI'],
+      vars: { HOME: '/guest/home' },
+    })
+    expect(args.filter((arg) => arg === '-e')).toHaveLength(2)
+    expect(args).toContain('HOME=/guest/home')
+    expect(args).toContain('CI')
+    expect(args).not.toContain('HOME')
   })
 
   test('emits one --secret env@hosts flag per secret with hosts joined by commas', () => {
@@ -930,6 +952,43 @@ describe('inspect secret parsing', () => {
   })
 })
 
+describe('inspect env parsing', () => {
+  test('parses the key and value entries into a record', () => {
+    const stdout = JSON.stringify({
+      name: 'forge-c',
+      status: 'Running',
+      config: {
+        env: [
+          { key: 'GITEA_INSTANCE_URL', value: 'https://git.example.com' },
+          { key: 'EMPTY_VALUE', value: '' },
+        ],
+      },
+    })
+    expect(parseMsbInspectEnv(stdout)).toEqual({
+      GITEA_INSTANCE_URL: 'https://git.example.com',
+      EMPTY_VALUE: '',
+    })
+  })
+
+  test('returns null when any entry is malformed and treats a missing env as empty', () => {
+    for (const malformed of [{ key: 'NO_VALUE' }, { value: 'no-key' }, { key: '', value: 'blank-key' }, 'not-an-entry']) {
+      const stdout = JSON.stringify({ config: { env: [{ key: 'KEEP', value: 'v' }, malformed] } })
+      expect(parseMsbInspectEnv(stdout)).toBeNull()
+    }
+    expect(parseMsbInspectEnv(JSON.stringify({ config: {} }))).toEqual({})
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: null } }))).toEqual({})
+  })
+
+  test('returns null when the envelope or env list does not parse', () => {
+    expect(parseMsbInspectEnv('not json')).toBeNull()
+    expect(parseMsbInspectEnv('[]')).toBeNull()
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: 'x' } }))).toBeNull()
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: { KEY: 'v' } } }))).toBeNull()
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: ['KEY=v', 'OTHER=w'] } }))).toBeNull()
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: [] } }))).toEqual({})
+  })
+})
+
 describe('resolveSandboxSecret', () => {
   test('preserves the exact plain shape with no extra keys', () => {
     const result = resolveSandboxSecret({ env: 'T', hosts: ['h'] })
@@ -1219,6 +1278,20 @@ describe('runtime', () => {
       'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
     ])
     expect(calls[0].opts?.timeout).toBe(120000)
+  })
+
+  test('createSandbox puts var values on argv and keeps them out of the child environment', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      vars: { GITEA_INSTANCE_URL: 'https://git.example.com' },
+      secretEnv: { GITEA_TOKEN: 'secret-value' },
+    })
+
+    expect(calls[0].args).toContain('GITEA_INSTANCE_URL=https://git.example.com')
+    expect(calls[0].opts?.env).toEqual({ GITEA_TOKEN: 'secret-value' })
+    expect(JSON.stringify(calls[0].opts?.env)).not.toContain('https://git.example.com')
   })
 
   test('createSandbox drops unparsable memory and cpus instead of passing them to msb', async () => {
