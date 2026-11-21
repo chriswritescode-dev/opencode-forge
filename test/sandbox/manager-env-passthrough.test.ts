@@ -769,4 +769,128 @@ describe('SandboxManager create-time env and secrets', () => {
       'Sandbox: skipping secret FORGE_TEST_LOOP_FILE: file is only supported in sandbox.network.secrets',
     )
   })
+
+  function unappliedVarWarnings(logger: ReturnType<typeof createMockLogger>): string[] {
+    return logger.log.mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.includes('are not applied to existing sandbox'))
+  }
+
+  function varsConfig(vars: Record<string, string>): SandboxManagerConfig {
+    return {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        secrets: [
+          { env: 'FORGE_TEST_ADOPT_VARS', hosts: ['git.example.com'], vars },
+        ],
+      },
+    }
+  }
+
+  test('adopting an existing sandbox warns when a configured var is missing from its env', async () => {
+    setEnv('FORGE_TEST_ADOPT_VARS', 'token-value')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    runtime.setSandboxEnv('forge-test', { UNRELATED: 'x' })
+    const logger = createMockLogger()
+
+    const manager = createSandboxManager(
+      runtime,
+      varsConfig({ GITEA_INSTANCE_URL: 'https://git.example.com' }),
+      logger,
+    )
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const warnings = unappliedVarWarnings(logger)
+    expect(warnings).toEqual([
+      'Sandbox: vars GITEA_INSTANCE_URL are not applied to existing sandbox forge-test: vars are set only when a sandbox is created; remove it with `msb rm --force forge-test` so it is recreated',
+    ])
+    expect(warnings[0]).not.toContain('https://git.example.com')
+    expect(warnings[0]).not.toContain('token-value')
+  })
+
+  test('adopting an existing sandbox warns when a configured var differs from its env', async () => {
+    setEnv('FORGE_TEST_ADOPT_VARS', 'token-value')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    runtime.setSandboxEnv('forge-test', { GITEA_INSTANCE_URL: 'https://old.example.com' })
+    const logger = createMockLogger()
+
+    const manager = createSandboxManager(
+      runtime,
+      varsConfig({ GITEA_INSTANCE_URL: 'https://git.example.com' }),
+      logger,
+    )
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(unappliedVarWarnings(logger)).toHaveLength(1)
+    expect(unappliedVarWarnings(logger)[0]).toContain('GITEA_INSTANCE_URL')
+  })
+
+  test('adopting an existing sandbox whose env matches the configured vars does not warn', async () => {
+    setEnv('FORGE_TEST_ADOPT_VARS', 'token-value')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    runtime.setSandboxEnv('forge-test', {
+      GITEA_INSTANCE_URL: 'https://git.example.com',
+      UNRELATED: 'x',
+    })
+    const logger = createMockLogger()
+
+    const manager = createSandboxManager(
+      runtime,
+      varsConfig({ GITEA_INSTANCE_URL: 'https://git.example.com' }),
+      logger,
+    )
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(unappliedVarWarnings(logger)).toEqual([])
+  })
+
+  test('adopting an existing sandbox whose env cannot be read does not warn', async () => {
+    setEnv('FORGE_TEST_ADOPT_VARS', 'token-value')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    runtime.setSandboxEnv('forge-test', null)
+    const logger = createMockLogger()
+
+    const manager = createSandboxManager(
+      runtime,
+      varsConfig({ GITEA_INSTANCE_URL: 'https://git.example.com' }),
+      logger,
+    )
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(unappliedVarWarnings(logger)).toEqual([])
+  })
+
+  test('warns at most once for the same unapplied vars across repeated adoption', async () => {
+    setEnv('FORGE_TEST_ADOPT_VARS', 'token-value')
+    vi.useFakeTimers()
+    try {
+      const runtime = createMockSandboxRuntime()
+      runtime.setSandboxState('forge-test', 'stopped')
+      runtime.setSandboxEnv('forge-test', {})
+      const logger = createMockLogger()
+
+      const manager = createSandboxManager(
+        runtime,
+        varsConfig({ GITEA_INSTANCE_URL: 'https://git.example.com' }),
+        logger,
+      )
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+      vi.advanceTimersByTime(3_000)
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+      vi.advanceTimersByTime(3_000)
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+
+      expect(unappliedVarWarnings(logger)).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

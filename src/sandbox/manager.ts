@@ -255,6 +255,7 @@ export function createSandboxManager(
   const settingsLookups = new Set<string>()
   const warnedUnsetSecretEnv = new Set<string>()
   const warnedSecretFileEnv = new Map<string, string>()
+  const warnedSandboxVars = new Map<string, string>()
   let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
   let imageReady = false
 
@@ -657,6 +658,10 @@ export function createSandboxManager(
         recordHandledSecretEnvs(containerName, resolved.secrets)
       }
     }
+    if (Object.keys(resolved.vars).length > 0) {
+      const sandboxEnv = await runtime.readSandboxEnv(containerName).catch(() => null)
+      if (sandboxEnv) warnUnappliedVars(containerName, resolved.vars, sandboxEnv)
+    }
     if (state === 'stopped' && resolved.secretEnv !== undefined) {
       await runtime.startSandbox(containerName, resolved.secretEnv)
     }
@@ -675,6 +680,21 @@ export function createSandboxManager(
     const introduced = known ? secrets.filter((s) => !known.has(s.env)) : secrets
     if (introduced.length === 0) return
     logger.log(`Sandbox: egress for secret host(s) of ${introduced.map((s) => s.env).join(', ')} may be unreachable in ${containerName}: msb cannot change egress rules on an existing sandbox, so recreate the sandbox for the new host(s) to be allowed`)
+  }
+
+  function warnUnappliedVars(
+    containerName: string,
+    vars: Record<string, string>,
+    sandboxEnv: Record<string, string>,
+  ): void {
+    const missing = Object.keys(vars)
+      .sort()
+      .filter((name) => !Object.hasOwn(sandboxEnv, name) || sandboxEnv[name] !== vars[name])
+    if (missing.length === 0) return
+    const signature = missing.join(',')
+    if (warnedSandboxVars.get(containerName) === signature) return
+    warnedSandboxVars.set(containerName, signature)
+    logger.log(`Sandbox: vars ${missing.join(', ')} are not applied to existing sandbox ${containerName}: vars are set only when a sandbox is created; remove it with \`msb rm --force ${containerName}\` so it is recreated`)
   }
 
   async function prepareCacheDisk(containerName: string): Promise<void> {

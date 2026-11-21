@@ -20,6 +20,7 @@ import {
   msbImageMatches,
   parseMsbInspectSecrets,
   parseMsbInspectRuntimeSettings,
+  parseMsbInspectEnv,
   msbSizeToMib,
   checkMsbAvailability,
   describeMsbUnavailable,
@@ -927,6 +928,49 @@ describe('inspect secret parsing', () => {
         JSON.stringify({ config: { network: { secrets: { secrets: 'x' } } } }),
       ),
     ).toBeNull()
+  })
+})
+
+describe('inspect env parsing', () => {
+  test('parses the key and value entries into a record', () => {
+    const stdout = JSON.stringify({
+      name: 'forge-c',
+      status: 'Running',
+      config: {
+        env: [
+          { key: 'GITEA_INSTANCE_URL', value: 'https://git.example.com' },
+          { key: 'EMPTY_VALUE', value: '' },
+        ],
+      },
+    })
+    expect(parseMsbInspectEnv(stdout)).toEqual({
+      GITEA_INSTANCE_URL: 'https://git.example.com',
+      EMPTY_VALUE: '',
+    })
+  })
+
+  test('skips malformed entries and treats a missing env as empty', () => {
+    const stdout = JSON.stringify({
+      config: {
+        env: [
+          { key: 'KEEP', value: 'v' },
+          { key: 'NO_VALUE' },
+          { value: 'no-key' },
+          { key: '', value: 'blank-key' },
+          'not-an-entry',
+        ],
+      },
+    })
+    expect(parseMsbInspectEnv(stdout)).toEqual({ KEEP: 'v' })
+    expect(parseMsbInspectEnv(JSON.stringify({ config: {} }))).toEqual({})
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: null } }))).toEqual({})
+  })
+
+  test('returns null when the envelope or env list does not parse', () => {
+    expect(parseMsbInspectEnv('not json')).toBeNull()
+    expect(parseMsbInspectEnv('[]')).toBeNull()
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: 'x' } }))).toBeNull()
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: { KEY: 'v' } } }))).toBeNull()
   })
 })
 

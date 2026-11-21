@@ -258,13 +258,17 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 # architecture; no archive is involved. The version matches the host CLI so
 # commands and config semantics stay aligned.
 ARG TEA_VERSION=0.16.0
+ARG TEA_SHA256_AMD64=9c142c8a0b31485eea2387031c1c404f12b7141075eb4ffbd7ced49441590636
+ARG TEA_SHA256_ARM64=0e14a036322eeb1fc55e266acafeb8490e523ed99f9232034ae74861e2339879
 RUN case "$(dpkg --print-architecture)" in \
-        amd64) tea_arch=amd64 ;; \
-        arm64) tea_arch=arm64 ;; \
+        amd64) tea_arch=amd64; tea_sha256="$TEA_SHA256_AMD64" ;; \
+        arm64) tea_arch=arm64; tea_sha256="$TEA_SHA256_ARM64" ;; \
         *) echo "unsupported architecture for tea: $(dpkg --print-architecture)" >&2; exit 1 ;; \
     esac \
-    && curl -fsSL -o /usr/local/bin/tea "https://gitea.com/gitea/tea/releases/download/v${TEA_VERSION}/tea-${TEA_VERSION}-linux-${tea_arch}" \
-    && chmod 0755 /usr/local/bin/tea \
+    && curl -fsSL -o /tmp/tea "https://gitea.com/gitea/tea/releases/download/v${TEA_VERSION}/tea-${TEA_VERSION}-linux-${tea_arch}" \
+    && echo "${tea_sha256}  /tmp/tea" | sha256sum -c - \
+    && install -m 0755 /tmp/tea /usr/local/bin/tea \
+    && rm -f /tmp/tea \
     && tea --version
 
 # Git credential helper for Gitea over HTTPS. The image never holds a real token:
@@ -278,21 +282,25 @@ RUN printf '%s\n' \
       '#!/bin/sh' \
       '[ "${1:-}" = "get" ] || exit 0' \
       'host=' \
+      'protocol=' \
       'while IFS= read -r line; do' \
       '  [ -z "$line" ] && break' \
       '  case "$line" in' \
       '    host=*) host=${line#host=} ;;' \
+      '    protocol=*) protocol=${line#protocol=} ;;' \
       '  esac' \
       'done' \
+      '[ "$protocol" = "https" ] || exit 0' \
       '[ -n "$host" ] && [ -n "$GITEA_TOKEN" ] && [ -n "$GITEA_INSTANCE_URL" ] || exit 0' \
       'instance_host=$(printf "%s\n" "$GITEA_INSTANCE_URL" | sed -E "s#^[A-Za-z][A-Za-z0-9+.-]*://##; s#/.*##; s#^[^@]*@##")' \
       '[ "$host" = "$instance_host" ] || exit 0' \
       'printf "username=oauth2\npassword=%s\n" "$GITEA_TOKEN"' \
       > /usr/local/bin/git-credential-gitea \
     && chmod 0755 /usr/local/bin/git-credential-gitea \
-    && git config --system credential.helper gitea \
+    && git config --system --add credential.helper gitea \
     && [ "$(printf 'protocol=https\nhost=example.invalid\n\n' | GITEA_TOKEN=placeholder GITEA_INSTANCE_URL=https://example.invalid /usr/local/bin/git-credential-gitea get)" = "$(printf 'username=oauth2\npassword=placeholder')" ] \
-    && [ -z "$(printf 'protocol=https\nhost=other.invalid\n\n' | GITEA_TOKEN=placeholder GITEA_INSTANCE_URL=https://example.invalid /usr/local/bin/git-credential-gitea get)" ]
+    && [ -z "$(printf 'protocol=https\nhost=other.invalid\n\n' | GITEA_TOKEN=placeholder GITEA_INSTANCE_URL=https://example.invalid /usr/local/bin/git-credential-gitea get)" ] \
+    && [ -z "$(printf 'protocol=http\nhost=example.invalid\n\n' | GITEA_TOKEN=placeholder GITEA_INSTANCE_URL=https://example.invalid /usr/local/bin/git-credential-gitea get)" ]
 
 # ast-grep pinned to its release zip for the function-flow-reviewer rule sweeps;
 # only `ast-grep` is linked, since the zip's `sg` would shadow Ubuntu's /usr/bin/sg.

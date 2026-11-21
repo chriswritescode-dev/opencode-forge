@@ -405,6 +405,35 @@ export function parseMsbInspectSecrets(stdout: string): MsbBoundSecret[] | null 
   return out
 }
 
+const msbInspectEnvEnvelopeSchema = z.looseObject({
+  config: z.looseObject({
+    env: jsonValueSchema.optional(),
+  }),
+})
+
+const msbEnvEntrySchema = z.looseObject({
+  key: z.string().min(1).optional().catch(undefined),
+  value: z.string().optional().catch(undefined),
+})
+
+export function parseMsbInspectEnv(stdout: string): Record<string, string> | null {
+  const data = decodeMsbJson(stdout)
+  if (data === undefined) return null
+  const envelope = msbInspectEnvEnvelopeSchema.safeParse(data)
+  if (!envelope.success) return null
+  const env = envelope.data.config.env
+  if (env === undefined || env === null) return {}
+  const entries = z.array(z.unknown()).safeParse(env)
+  if (!entries.success) return null
+  const out: Record<string, string> = {}
+  for (const raw of entries.data) {
+    const entry = msbEnvEntrySchema.safeParse(raw)
+    if (!entry.success || entry.data.key === undefined || entry.data.value === undefined) continue
+    out[entry.data.key] = entry.data.value
+  }
+  return out
+}
+
 const msbRuntimeSettingsEnvelopeSchema = z.looseObject({
   config: z.looseObject({
     resources: z.looseObject({
@@ -576,6 +605,7 @@ export interface SandboxRuntime {
   ): Promise<SecretRefreshResult>
   startSandbox(name: string, secretEnv?: Record<string, string>): Promise<void>
   readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null>
+  readSandboxEnv(name: string): Promise<Record<string, string> | null>
   resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
 
@@ -793,6 +823,15 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     }
   }
 
+  async function readSandboxEnv(name: string): Promise<Record<string, string> | null> {
+    try {
+      const result = await run(['inspect', name, '--format', 'json'], { timeout: MSB_QUERY_TIMEOUT })
+      return result.exitCode === 0 ? parseMsbInspectEnv(result.stdout) : null
+    } catch {
+      return null
+    }
+  }
+
   async function resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void> {
     const cpus = parseMsbCpus(resources.cpus, logger)
     const memory = normalizeMsbSize(resources.memory, logger)
@@ -819,6 +858,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     refreshSandboxSecrets,
     startSandbox,
     readSandboxSettings,
+    readSandboxEnv,
     resizeSandbox,
   }
 }
