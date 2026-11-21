@@ -913,6 +913,28 @@ describe('SandboxManager create-time env and secrets', () => {
     expect(JSON.stringify(unappliedVarWarnings(logger))).not.toContain('example.com')
   })
 
+  test('warns again when a sandbox that matched drifts back to the same unapplied vars', async () => {
+    setEnv('FORGE_TEST_ADOPT_VARS', 'token-value')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    runtime.setSandboxEnv('forge-test', {})
+    const logger = createMockLogger()
+    const manager = createSandboxManager(
+      runtime,
+      varsConfig({ GITEA_INSTANCE_URL: 'https://git.example.com' }),
+      logger,
+    )
+
+    await manager.start('test', '/home/user/worktrees/feature')
+    runtime.setSandboxEnv('forge-test', { GITEA_INSTANCE_URL: 'https://git.example.com' })
+    await manager.start('test', '/home/user/worktrees/feature')
+    runtime.setSandboxEnv('forge-test', {})
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(unappliedVarWarnings(logger)).toHaveLength(2)
+  })
+
   test('warns again when an externally recreated sandbox drifts to the same unapplied vars', async () => {
     setEnv('FORGE_TEST_ADOPT_VARS', 'token-value')
 

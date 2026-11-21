@@ -690,7 +690,10 @@ export function createSandboxManager(
     const missing = Object.keys(vars)
       .sort()
       .filter((name) => !Object.hasOwn(sandboxEnv, name) || sandboxEnv[name] !== vars[name])
-    if (missing.length === 0) return
+    if (missing.length === 0) {
+      warnedSandboxVars.delete(containerName)
+      return
+    }
     const signature = JSON.stringify(missing.map((name) => [name, vars[name]]))
     if (warnedSandboxVars.get(containerName) === signature) return
     warnedSandboxVars.set(containerName, signature)
