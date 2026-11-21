@@ -992,6 +992,8 @@ describe('inspect env parsing', () => {
     expect(parseMsbInspectEnv('[]')).toBeNull()
     expect(parseMsbInspectEnv(JSON.stringify({ config: { env: 'x' } }))).toBeNull()
     expect(parseMsbInspectEnv(JSON.stringify({ config: { env: { KEY: 'v' } } }))).toBeNull()
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: ['KEY=v', 'OTHER=w'] } }))).toBeNull()
+    expect(parseMsbInspectEnv(JSON.stringify({ config: { env: [] } }))).toEqual({})
   })
 })
 

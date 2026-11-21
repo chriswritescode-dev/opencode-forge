@@ -903,14 +903,37 @@ describe('SandboxManager create-time env and secrets', () => {
     runtime.setSandboxEnv('forge-test', {})
     const logger = createMockLogger()
     const config = varsConfig({ GITEA_INSTANCE_URL: 'https://git.example.com' })
+    const secret = config.network?.secrets?.[0]
+    if (!secret) throw new Error('missing secret fixture')
 
     const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
-    config.network!.secrets![0]!.vars = { GITEA_INSTANCE_URL: 'https://other.example.com' }
+    secret.vars = { GITEA_INSTANCE_URL: 'https://other.example.com' }
     await manager.start('test', '/home/user/worktrees/feature')
 
     expect(unappliedVarWarnings(logger)).toHaveLength(2)
     expect(JSON.stringify(unappliedVarWarnings(logger))).not.toContain('example.com')
+  })
+
+  test('warns again when vars are removed from config and later restored', async () => {
+    setEnv('FORGE_TEST_ADOPT_VARS', 'token-value')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    runtime.setSandboxEnv('forge-test', {})
+    const logger = createMockLogger()
+    const config = varsConfig({ GITEA_INSTANCE_URL: 'https://git.example.com' })
+    const secret = config.network?.secrets?.[0]
+    if (!secret) throw new Error('missing secret fixture')
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+    delete secret.vars
+    await manager.start('test', '/home/user/worktrees/feature')
+    secret.vars = { GITEA_INSTANCE_URL: 'https://git.example.com' }
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(unappliedVarWarnings(logger)).toHaveLength(2)
   })
 
   test('warns again when a sandbox that matched drifts back to the same unapplied vars', async () => {

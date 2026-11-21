@@ -661,6 +661,8 @@ export function createSandboxManager(
     if (Object.keys(resolved.vars).length > 0) {
       const sandboxEnv = await runtime.readSandboxEnv(containerName).catch(() => null)
       if (sandboxEnv) warnUnappliedVars(containerName, resolved.vars, sandboxEnv)
+    } else {
+      warnedSandboxVars.delete(containerName)
     }
     if (state === 'stopped' && resolved.secretEnv !== undefined) {
       await runtime.startSandbox(containerName, resolved.secretEnv)

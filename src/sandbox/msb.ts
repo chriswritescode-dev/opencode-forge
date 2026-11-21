@@ -436,6 +436,7 @@ export function parseMsbInspectEnv(stdout: string): Record<string, string> | nul
     if (!entry.success || entry.data.key === undefined || entry.data.value === undefined) continue
     out[entry.data.key] = entry.data.value
   }
+  if (entries.data.length > 0 && Object.keys(out).length === 0) return null
   return out
 }
 
