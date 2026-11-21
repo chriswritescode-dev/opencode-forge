@@ -222,6 +222,12 @@ describe('describeInvalidLoopSecrets', () => {
     })).toBe('Invalid sandbox secret TOKEN: vars is only supported in sandbox.network.secrets')
   })
 
+  test('accepts a per-loop entry with empty vars, matching the manager', () => {
+    expect(describeInvalidLoopSecrets({
+      secrets: [{ env: 'TOKEN', hosts: ['api.example.com'], vars: {} }],
+    })).toBeUndefined()
+  })
+
   test('describes a duplicate env name', () => {
     expect(describeInvalidLoopSecrets({
       secrets: [

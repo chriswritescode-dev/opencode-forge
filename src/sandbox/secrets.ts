@@ -35,6 +35,8 @@ const secretFileProbeSchema = z.looseObject({ env: z.string().optional(), file: 
 
 const secretVarsProbeSchema = z.looseObject({ env: z.string().optional(), vars: z.unknown() })
 
+const emptyVarsSchema = z.record(z.string(), z.unknown()).refine((vars) => Object.keys(vars).length === 0)
+
 function trimmedEntries(entries: string[] | undefined): string[] {
   return (entries ?? []).map((entry) => entry.trim()).filter(Boolean)
 }
@@ -183,7 +185,7 @@ export function describeInvalidLoopSecrets(
       return `Invalid sandbox secret${env ? ` ${env}` : ''}: file is only supported in sandbox.network.secrets`
     }
     const varsProbe = secretVarsProbeSchema.safeParse(raw)
-    if (varsProbe.success && varsProbe.data.vars !== undefined) {
+    if (varsProbe.success && varsProbe.data.vars !== undefined && !emptyVarsSchema.safeParse(varsProbe.data.vars).success) {
       const env = (varsProbe.data.env ?? '').trim()
       return `Invalid sandbox secret${env ? ` ${env}` : ''}: vars is only supported in sandbox.network.secrets`
     }

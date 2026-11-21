@@ -970,19 +970,11 @@ describe('inspect env parsing', () => {
     })
   })
 
-  test('skips malformed entries and treats a missing env as empty', () => {
-    const stdout = JSON.stringify({
-      config: {
-        env: [
-          { key: 'KEEP', value: 'v' },
-          { key: 'NO_VALUE' },
-          { value: 'no-key' },
-          { key: '', value: 'blank-key' },
-          'not-an-entry',
-        ],
-      },
-    })
-    expect(parseMsbInspectEnv(stdout)).toEqual({ KEEP: 'v' })
+  test('returns null when any entry is malformed and treats a missing env as empty', () => {
+    for (const malformed of [{ key: 'NO_VALUE' }, { value: 'no-key' }, { key: '', value: 'blank-key' }, 'not-an-entry']) {
+      const stdout = JSON.stringify({ config: { env: [{ key: 'KEEP', value: 'v' }, malformed] } })
+      expect(parseMsbInspectEnv(stdout)).toBeNull()
+    }
     expect(parseMsbInspectEnv(JSON.stringify({ config: {} }))).toEqual({})
     expect(parseMsbInspectEnv(JSON.stringify({ config: { env: null } }))).toEqual({})
   })

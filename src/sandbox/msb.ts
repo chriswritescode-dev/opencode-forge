@@ -433,10 +433,9 @@ export function parseMsbInspectEnv(stdout: string): Record<string, string> | nul
   const out: Record<string, string> = {}
   for (const raw of entries.data) {
     const entry = msbEnvEntrySchema.safeParse(raw)
-    if (!entry.success || entry.data.key === undefined || entry.data.value === undefined) continue
+    if (!entry.success || entry.data.key === undefined || entry.data.value === undefined) return null
     out[entry.data.key] = entry.data.value
   }
-  if (entries.data.length > 0 && Object.keys(out).length === 0) return null
   return out
 }
 
