@@ -334,7 +334,7 @@ RUN case "$(dpkg --print-architecture)" in \
 # The env block is image-wide and unconditional, so a sandbox that installs
 # codegraph separately at runtime still runs with telemetry, the background
 # daemon, and the file watcher disabled.
-ARG CODEGRAPH_VERSION=v1.6.2
+ARG CODEGRAPH_VERSION=v1.6.4
 ARG INSTALL_CODEGRAPH=true
 RUN if [ "$INSTALL_CODEGRAPH" = "true" ]; then \
         case "$(dpkg --print-architecture)" in \

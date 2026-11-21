@@ -47,7 +47,7 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 
 | Option | Default | Description |
 |---|---:|---|
-| `codeGraph.install` | `true` | Install the pinned `codegraph` (v1.6.2) into the sandbox template image; `false` builds the image without it. The template is built once, so rebuild it ("Build sandbox template") after changing this. |
+| `codeGraph.install` | `true` | Install the pinned `codegraph` (v1.6.4) into the sandbox template image; `false` builds the image without it. The template is built once, so rebuild it ("Build sandbox template") after changing this. |
 | `codeGraph.enabled` | unset | Unset means on whenever `codegraph` is in the sandbox; `false` turns the integration off. `true` behaves like unset but logs an error when a sandbox has no `codegraph`. |
 
 While the integration is on, sandboxed loops index their worktree with the sandbox's `codegraph` and write snapshot reports to `.forge/codegraph/` from inside the sandbox, so the loop agents can see the structural impact of their edits. A sandbox without `codegraph` (`codeGraph.install: false`, or a template built before codegraph was added) skips the snapshots. Non-sandboxed loops never take them.

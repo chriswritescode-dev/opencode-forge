@@ -706,14 +706,14 @@ exports.CodeGraph = { isInitialized: () => true, open: () => new Promise(() => {
 
   /**
    * An extracted published codegraph asset, taken from `FORGE_CODEGRAPH_RELEASE_DIR` when set,
-   * e.g. the `codegraph-darwin-arm64.tar.gz` asset of GitHub release v1.6.2, holding `node` and
+   * e.g. the `codegraph-darwin-arm64.tar.gz` asset of GitHub release v1.6.4, holding `node` and
    * `lib/`. Point it at the published asset, not a local source build: a source build can call
-   * itself v1.6.2 while exposing methods the release lacks.
+   * itself v1.6.4 while exposing methods the release lacks.
    */
-  const localRelease = process.env.FORGE_CODEGRAPH_RELEASE_DIR ?? join(homedir(), '.codegraph', 'versions', 'v1.6.2')
+  const localRelease = process.env.FORGE_CODEGRAPH_RELEASE_DIR ?? join(homedir(), '.codegraph', 'versions', 'v1.6.4')
   const hasLocalRelease = existsSync(join(localRelease, 'node')) && existsSync(join(localRelease, 'lib', 'dist', 'index.js'))
 
-  it.skipIf(!hasLocalRelease)('creates, syncs, and leaves locked a real codegraph v1.6.2 index through a .codegraph link without git hooks', () => {
+  it.skipIf(!hasLocalRelease)('creates, syncs, and leaves locked a real codegraph v1.6.4 index through a .codegraph link without git hooks', () => {
     const project = tempDir('forge-codegraph-project-')
     const indexDir = join(tempDir('forge-codegraph-cache-'), 'codegraph')
     mkdirSync(join(project, 'test'))
@@ -764,7 +764,7 @@ exports.CodeGraph = { isInitialized: () => true, open: () => new Promise(() => {
     expect(spawnSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: project }).status).not.toBe(0)
   })
 
-  it.skipIf(!hasLocalRelease)('reports changed and removed symbols through a real codegraph v1.6.2 index', () => {
+  it.skipIf(!hasLocalRelease)('reports changed and removed symbols through a real codegraph v1.6.4 index', () => {
     const project = tempDir('forge-codegraph-impact-')
     const indexDir = join(tempDir('forge-codegraph-impact-cache-'), 'codegraph')
     mkdirSync(join(project, 'src'))
