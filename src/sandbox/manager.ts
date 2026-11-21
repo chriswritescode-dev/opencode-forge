@@ -691,7 +691,7 @@ export function createSandboxManager(
       .sort()
       .filter((name) => !Object.hasOwn(sandboxEnv, name) || sandboxEnv[name] !== vars[name])
     if (missing.length === 0) return
-    const signature = missing.join(',')
+    const signature = JSON.stringify(missing.map((name) => [name, vars[name]]))
     if (warnedSandboxVars.get(containerName) === signature) return
     warnedSandboxVars.set(containerName, signature)
     logger.log(`Sandbox: vars ${missing.join(', ')} are not applied to existing sandbox ${containerName}: vars are set only when a sandbox is created; remove it with \`msb rm --force ${containerName}\` so it is recreated`)
