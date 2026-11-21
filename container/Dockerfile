@@ -253,6 +253,47 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Gitea CLI (`tea`) from its official release, so Gitea-authenticated workflows
+# are available inside the sandbox. The release ships a single static binary per
+# architecture; no archive is involved. The version matches the host CLI so
+# commands and config semantics stay aligned.
+ARG TEA_VERSION=0.16.0
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) tea_arch=amd64 ;; \
+        arm64) tea_arch=arm64 ;; \
+        *) echo "unsupported architecture for tea: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /usr/local/bin/tea "https://gitea.com/gitea/tea/releases/download/v${TEA_VERSION}/tea-${TEA_VERSION}-linux-${tea_arch}" \
+    && chmod 0755 /usr/local/bin/tea \
+    && tea --version
+
+# Git credential helper for Gitea over HTTPS. The image never holds a real token:
+# GITEA_TOKEN is msb's placeholder, substituted at the network boundary, and this
+# helper returns it as the Basic-auth password only for the host named by
+# GITEA_INSTANCE_URL. Scoping by that variable keeps the image free of any private
+# host, and it is the same variable tea's environment login reads. A missing
+# variable or token makes the helper decline, so git falls through to its normal
+# prompt/other helpers instead of sending a placeholder anywhere.
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      '[ "${1:-}" = "get" ] || exit 0' \
+      'host=' \
+      'while IFS= read -r line; do' \
+      '  [ -z "$line" ] && break' \
+      '  case "$line" in' \
+      '    host=*) host=${line#host=} ;;' \
+      '  esac' \
+      'done' \
+      '[ -n "$host" ] && [ -n "$GITEA_TOKEN" ] && [ -n "$GITEA_INSTANCE_URL" ] || exit 0' \
+      'instance_host=$(printf "%s\n" "$GITEA_INSTANCE_URL" | sed -E "s#^[A-Za-z][A-Za-z0-9+.-]*://##; s#/.*##; s#^[^@]*@##")' \
+      '[ "$host" = "$instance_host" ] || exit 0' \
+      'printf "username=oauth2\npassword=%s\n" "$GITEA_TOKEN"' \
+      > /usr/local/bin/git-credential-gitea \
+    && chmod 0755 /usr/local/bin/git-credential-gitea \
+    && git config --system credential.helper gitea \
+    && [ "$(printf 'protocol=https\nhost=example.invalid\n\n' | GITEA_TOKEN=placeholder GITEA_INSTANCE_URL=https://example.invalid /usr/local/bin/git-credential-gitea get)" = "$(printf 'username=oauth2\npassword=placeholder')" ] \
+    && [ -z "$(printf 'protocol=https\nhost=other.invalid\n\n' | GITEA_TOKEN=placeholder GITEA_INSTANCE_URL=https://example.invalid /usr/local/bin/git-credential-gitea get)" ]
+
 # ast-grep pinned to its release zip for the function-flow-reviewer rule sweeps;
 # only `ast-grep` is linked, since the zip's `sg` would shadow Ubuntu's /usr/bin/sg.
 ARG AST_GREP_VERSION=0.51.2

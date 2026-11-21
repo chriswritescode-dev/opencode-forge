@@ -522,7 +522,12 @@ export function createSandboxManager(
     worktreeName: string,
     projectDir: string,
     overrides?: SandboxOverrides,
-  ): Promise<{ secrets: SandboxSecretConfig[]; egressSecrets: SandboxSecretConfig[]; secretEnv?: Record<string, string> }> {
+  ): Promise<{
+    secrets: SandboxSecretConfig[]
+    egressSecrets: SandboxSecretConfig[]
+    secretEnv?: Record<string, string>
+    vars: Record<string, string>
+  }> {
     const effective = overrides ?? config.resolveOverrides?.(worktreeName)
     const perSandbox: SandboxSecretConfig[] = []
     for (const raw of effective?.secrets ?? []) {
@@ -535,6 +540,10 @@ export function createSandboxManager(
         logger.log(`Sandbox: skipping secret ${outcome.secret.env}: file is only supported in sandbox.network.secrets`)
         continue
       }
+      if (outcome.secret.vars !== undefined) {
+        logger.log(`Sandbox: skipping secret ${outcome.secret.env}: vars is only supported in sandbox.network.secrets`)
+        continue
+      }
       perSandbox.push(outcome.secret)
     }
     const perSandboxEnvs = new Set(perSandbox.map((secret) => secret.env))
@@ -542,6 +551,16 @@ export function createSandboxManager(
     const fromConfig: SandboxSecretConfig[] = []
     const egressFromConfig: SandboxSecretConfig[] = []
     const fileValues: Record<string, string> = {}
+    const vars: Record<string, string> = {}
+    const collectVars = (secret: SandboxSecretConfig): void => {
+      for (const [name, value] of Object.entries(secret.vars ?? {})) {
+        if (Object.hasOwn(vars, name)) {
+          logger.log(`Sandbox: skipping var ${name} from secret ${secret.env}: already set by an earlier secret`)
+          continue
+        }
+        vars[name] = value
+      }
+    }
     for (const raw of config.network?.secrets ?? []) {
       const outcome = resolveSandboxSecret(raw)
       if ('reason' in outcome) {
@@ -570,6 +589,7 @@ export function createSandboxManager(
         warnedSecretFileEnv.delete(env)
         fileValues[env] = value
         fromConfig.push(outcome.secret)
+        collectVars(outcome.secret)
         egressFromConfig.push(outcome.secret)
         continue
       }
@@ -578,6 +598,7 @@ export function createSandboxManager(
         continue
       }
       fromConfig.push(outcome.secret)
+      collectVars(outcome.secret)
       egressFromConfig.push(outcome.secret)
     }
 
@@ -602,7 +623,14 @@ export function createSandboxManager(
       secretEnv = { ...fileValues, ...secretEnv }
     }
 
-    return { secrets: [...fromConfig, ...keptPerSandbox], egressSecrets: egressFromConfig, secretEnv }
+    const secrets = [...fromConfig, ...keptPerSandbox]
+    for (const secret of secrets) {
+      if (!Object.hasOwn(vars, secret.env)) continue
+      logger.log(`Sandbox: skipping var ${secret.env}: it names a bound secret`)
+      delete vars[secret.env]
+    }
+
+    return { secrets, egressSecrets: egressFromConfig, secretEnv, vars }
   }
 
   async function adoptSecrets(
@@ -691,16 +719,21 @@ export function createSandboxManager(
     const secrets = resolvedSecrets.secrets
     const restrictEgress = egressRestrictionRequested(config.network?.allow, resolvedSecrets.egressSecrets)
     logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${target.resources.memory} cpus=${target.resources.cpus} lan=${target.allowLan} workspaces=${workspaces.length})`)
+    const createEnv = resolvePassthroughEnv()
+    for (const name of Object.keys(resolvedSecrets.vars)) {
+      if (!createEnv.includes(name)) createEnv.push(name)
+    }
     const createOpts: CreateSandboxOpts = {
       image: config.image,
       resources: target.resources,
       networkAllow: buildNetworkAllow(config.network?.allow, restrictEgress ? secrets : resolvedSecrets.egressSecrets, logger),
       restrictEgress,
-      env: resolvePassthroughEnv(),
+      env: createEnv,
       secrets,
       allowLan: target.allowLan,
     }
-    if (resolvedSecrets.secretEnv !== undefined) createOpts.secretEnv = resolvedSecrets.secretEnv
+    const secretEnv = { ...resolvedSecrets.vars, ...resolvedSecrets.secretEnv }
+    if (Object.keys(secretEnv).length > 0) createOpts.secretEnv = secretEnv
     const idleTimeout = config.resolveIdleTimeout?.(worktreeName)
     if (idleTimeout) createOpts.idleTimeout = idleTimeout
     await runtime.createSandbox(containerName, workspaces, createOpts)

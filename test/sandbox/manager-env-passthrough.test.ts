@@ -586,6 +586,145 @@ describe('SandboxManager create-time env and secrets', () => {
     expect(fileLogs()).toHaveLength(3)
   })
 
+  test('start applies the vars of a bound file secret to the create environment', async () => {
+    setEnv('FORGE_TEST_VARS_TOKEN', undefined)
+    const file = writeSecretFile('gitea-token', 'gitea-secret-value\n')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        secrets: [
+          {
+            env: 'FORGE_TEST_VARS_TOKEN',
+            file,
+            hosts: ['git.example.com'],
+            vars: { GITEA_INSTANCE_URL: 'https://git.example.com' },
+          },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual(['GITEA_INSTANCE_URL'])
+    expect(createCall[2]?.secretEnv).toEqual({
+      GITEA_INSTANCE_URL: 'https://git.example.com',
+      FORGE_TEST_VARS_TOKEN: 'gitea-secret-value',
+    })
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('gitea-secret-value')
+  })
+
+  test('start adds a var name once when passthrough env already carries it', async () => {
+    setEnv('FORGE_TEST_VARS_SECRET', 'token-value')
+    setEnv('GITEA_INSTANCE_URL', 'from-passthrough')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        env: ['GITEA_INSTANCE_URL'],
+        secrets: [
+          {
+            env: 'FORGE_TEST_VARS_SECRET',
+            hosts: ['git.example.com'],
+            vars: { GITEA_INSTANCE_URL: 'https://git.example.com' },
+          },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual(['GITEA_INSTANCE_URL'])
+    expect(createCall[2]?.secretEnv).toEqual({ GITEA_INSTANCE_URL: 'https://git.example.com' })
+  })
+
+  test('a var naming another bound secret is skipped', async () => {
+    setEnv('FORGE_TEST_VARS_A', 'real-a')
+    setEnv('FORGE_TEST_VARS_B', 'real-b')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        secrets: [
+          { env: 'FORGE_TEST_VARS_A', hosts: ['a.example.com'], vars: { FORGE_TEST_VARS_B: 'leaked' } },
+          { env: 'FORGE_TEST_VARS_B', hosts: ['b.example.com'] },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual([])
+    expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping var FORGE_TEST_VARS_B: it names a bound secret')
+  })
+
+  test('a secret skipped for a missing host variable contributes no vars', async () => {
+    setEnv('FORGE_TEST_VARS_UNSET', undefined)
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        secrets: [
+          {
+            env: 'FORGE_TEST_VARS_UNSET',
+            hosts: ['git.example.com'],
+            vars: { GITEA_INSTANCE_URL: 'https://git.example.com' },
+          },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual([])
+    expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_VARS_UNSET'))
+  })
+
+  test('skips a per-loop secret that declares vars', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      resolveOverrides: () => ({
+        secrets: [
+          {
+            env: 'FORGE_TEST_LOOP_VARS',
+            hosts: ['api.example.com'],
+            vars: { INSTANCE_URL: 'https://api.example.com' },
+          },
+        ],
+      }),
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.secrets).toEqual([])
+    expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(logger.log).toHaveBeenCalledWith(
+      'Sandbox: skipping secret FORGE_TEST_LOOP_VARS: vars is only supported in sandbox.network.secrets',
+    )
+  })
+
   test('adopting a stopped sandbox starts it with the file secret value', async () => {
     setEnv('FORGE_TEST_FILE_SECRET', undefined)
     const file = writeSecretFile('token', 'file-secret-value\n')

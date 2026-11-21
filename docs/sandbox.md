@@ -30,7 +30,7 @@ The image installs `codegraph` by default. Set `codeGraph.install` to `false` be
 
 `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a **Build sandbox template** command in the palette. Trigger it at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically. The dialog stays open for the duration and shows a live progress bar, the current Docker step, elapsed time, and streamed build output; on failure it keeps the last lines of Docker output so the cause is visible. A first build takes several minutes, and closing the dialog does not cancel it — it finishes in the background and reports with a toast. Restart OpenCode after changing sandbox configuration.
 
-The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, the Rust toolchain (rustup, cargo, rustc, clippy, rustfmt), ripgrep, git with Git LFS, jq, rsync, sqlite3, the GitHub CLI (`gh`), the Hugging Face CLI (`hf`), `codegraph` (pinned v1.6.2 under `/opt/codegraph`, with telemetry, daemon, and file watcher disabled image-wide; leave it out with `codeGraph.install: false`, see [Code Graph](configuration.md#code-graph)), Chromium, the recording tools `ffmpeg`, `ttyd`, and `vhs` (see [Recording](#recording)), and Docker Engine (see [Nested Docker](#nested-docker)).
+The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, the Rust toolchain (rustup, cargo, rustc, clippy, rustfmt), ripgrep, git with Git LFS, jq, rsync, sqlite3, the GitHub CLI (`gh`), the Gitea CLI (`tea`), the Hugging Face CLI (`hf`), `codegraph` (pinned v1.6.2 under `/opt/codegraph`, with telemetry, daemon, and file watcher disabled image-wide; leave it out with `codeGraph.install: false`, see [Code Graph](configuration.md#code-graph)), Chromium, the recording tools `ffmpeg`, `ttyd`, and `vhs` (see [Recording](#recording)), and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
@@ -53,6 +53,31 @@ The image ships `ffmpeg` (with `ffprobe`) and `ttyd` from Ubuntu's repository an
 `vhs` needs `ttyd` and `ffmpeg` on `PATH` and launches the first browser it finds there, which is the image's `chromium`. The image sets `VHS_NO_SANDBOX=true`, because that browser does not start with Chromium's own sandbox inside the sandbox image, the same reason the `chromium` command above takes `--no-sandbox`. In a tape, quote an absolute `Output` path (`Output "/tmp/demo.mp4"`); an unquoted leading `/` is read as the start of a regular expression.
 
 Playwright records browser video as WebM with its own bundled ffmpeg build; the system `ffmpeg` is what converts those clips to mp4.
+
+### Gitea
+
+The image ships the Gitea CLI (`tea`, pinned v0.16.0) and registers a Gitea git credential helper. With `GITEA_TOKEN` bound as a secret and `GITEA_INSTANCE_URL` set through that secret's `vars` — tea's environment login authenticates against that instance:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "secrets": [
+        {
+          "env": "GITEA_TOKEN",
+          "file": "./.secrets/gitea-token",
+          "hosts": ["git.example.com"],
+          "vars": { "GITEA_INSTANCE_URL": "https://git.example.com" }
+        }
+      ]
+    }
+  }
+}
+```
+
+`vars` keeps the instance URL next to the token, and the variables are set in the guest only when the secret itself is bound: a secret skipped for a missing or empty file, or for an unset host variable, skips its `vars` too.
+
+`git-credential-gitea` is registered as a system git credential helper. It answers only for the host in `GITEA_INSTANCE_URL`, returning `oauth2` with the `GITEA_TOKEN` placeholder as the password, so `git clone` and `git push` over HTTPS authenticate without storing the token in the guest. The real value is substituted at the network boundary, like any other bound secret.
 
 ## How It Works
 
@@ -195,6 +220,7 @@ Each entry accepts these optional fields alongside `env` and `hosts`:
 | `violationAction` | msb default (`block-and-log`) | What happens when a placeholder is sent to a host that may receive neither the credential nor the placeholder: `block`, `block-and-log`, or `block-and-terminate` (also stops the sandbox). |
 | `requireTlsIdentity` | `true` | Set `false` to let the secret be substituted over plain HTTP for its hosts. |
 | `file` | host env var | Read the value from this file instead of the host environment variable. `~`/`~/...` resolve under the home directory, an absolute path is used as is, and a relative path resolves against opencode's config directory. Read right before each msb call that needs the value; a missing, unreadable, or empty file skips the secret with a log. Not allowed for per-loop secrets. |
+| `vars` | `{}` | Plain guest environment variables set alongside the secret at create time, for values that must accompany the credential but are not secret. Keys must be valid environment variable names and must not repeat the secret's `env`; a key naming another bound secret is skipped with a log, so a var can never replace a credential. Values are passed unchanged in msb's environment, never on a command line. Applied only while the secret is bound — a skipped secret skips its vars. Not allowed for per-loop secrets. |
 
 An unrestricted header list lets an allowed endpoint echo a substituted secret back to the guest, so listing the credential field is recommended. A plain-HTTP LAN service that authenticates with the `Authorization` header only:
 

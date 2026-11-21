@@ -126,10 +126,19 @@
     //   // and a relative path resolves against this config's directory. The value is read right
     //   // before each msb create/start/modify, passed only in that child's environment, and a
     //   // missing or empty file skips the secret with a log. Not allowed for per-loop secrets.
+    //   // "vars" adds plain (non-secret) guest environment variables beside the credential; they
+    //   // are applied at create time only while that secret is bound.
     //   "secrets": [
     //     { "env": "NPM_TOKEN", "hosts": ["registry.npmjs.org"] },
     //     // Value read from a file instead of the environment.
     //     { "env": "GH_TOKEN", "file": "./.secrets/gh-token", "hosts": ["api.github.com"] },
+    //     // Guest instance URL set only when the token is bound.
+    //     {
+    //       "env": "GITEA_TOKEN",
+    //       "file": "./.secrets/gitea-token",
+    //       "hosts": ["git.example.com"],
+    //       "vars": { "GITEA_INSTANCE_URL": "https://git.example.com" }
+    //     },
     //     // Authorization header only, substituted over plain HTTP to a LAN host (needs allowLan).
     //     {
     //       "env": "REVIEW_TOKEN",

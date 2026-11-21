@@ -18,6 +18,7 @@ const sandboxSecretSchema = z.object({
   env: z.string(),
   file: z.string().optional(),
   hosts: z.array(z.string()).optional(),
+  vars: z.record(z.string(), z.string()).optional(),
   substitution: sandboxSecretSubstitutionSchema.optional(),
   passthrough: z.array(z.string()).optional(),
   violationAction: sandboxSecretViolationActionSchema.optional(),
@@ -26,9 +27,13 @@ const sandboxSecretSchema = z.object({
 
 const SECRET_ENTRY_RE = /^[^\s,@[\]]+$/
 
+const SECRET_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 const secretEnvProbeSchema = z.looseObject({ env: z.string() })
 
 const secretFileProbeSchema = z.looseObject({ env: z.string().optional(), file: z.unknown() })
+
+const secretVarsProbeSchema = z.looseObject({ env: z.string().optional(), vars: z.unknown() })
 
 function trimmedEntries(entries: string[] | undefined): string[] {
   return (entries ?? []).map((entry) => entry.trim()).filter(Boolean)
@@ -68,8 +73,16 @@ export function resolveSandboxSecret(
   }
   const file = parsed.data.file?.trim()
   if (parsed.data.file !== undefined && !file) return { env, reason: 'file must not be empty' }
+  const vars = parsed.data.vars
+  if (vars !== undefined) {
+    for (const name of Object.keys(vars)) {
+      if (!SECRET_VAR_NAME_RE.test(name)) return { env, reason: 'vars names must be valid environment variable names' }
+      if (name === env) return { env, reason: "vars must not redefine the secret's env" }
+    }
+  }
   const secret: SandboxSecretConfig = { env, hosts }
   if (file !== undefined) secret.file = file
+  if (vars !== undefined && Object.keys(vars).length > 0) secret.vars = { ...vars }
   if (substitution !== undefined) {
     const resolvedSubstitution: SandboxSecretSubstitution = {}
     if (substitution.headers !== undefined) resolvedSubstitution.headers = substitution.headers
@@ -168,6 +181,11 @@ export function describeInvalidLoopSecrets(
     if (fileProbe.success && fileProbe.data.file !== undefined) {
       const env = (fileProbe.data.env ?? '').trim()
       return `Invalid sandbox secret${env ? ` ${env}` : ''}: file is only supported in sandbox.network.secrets`
+    }
+    const varsProbe = secretVarsProbeSchema.safeParse(raw)
+    if (varsProbe.success && varsProbe.data.vars !== undefined) {
+      const env = (varsProbe.data.env ?? '').trim()
+      return `Invalid sandbox secret${env ? ` ${env}` : ''}: vars is only supported in sandbox.network.secrets`
     }
     const resolved = resolveSandboxSecret(raw)
     if ('reason' in resolved) {
