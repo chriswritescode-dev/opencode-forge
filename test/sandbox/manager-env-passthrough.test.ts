@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
+import { createSandboxManager, resolveSandboxEnvVarSources, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import type { SecretRefreshResult } from '../../src/sandbox/msb'
 import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 import { createMockLogger } from '../helpers/logger'
@@ -986,5 +986,253 @@ describe('SandboxManager create-time env and secrets', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     expect(unappliedVarWarnings(logger)).toHaveLength(2)
+  })
+
+  test('start forwards network vars and env-file values as bare names with values only in the runner env', async () => {
+    const file = writeSecretFile('review-token', '  review-token-value\n')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        vars: { REVIEW_SERVER_URL: 'https://review.example.com' },
+        envFiles: { REVIEW_TOKEN: file },
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual(['REVIEW_SERVER_URL', 'REVIEW_TOKEN'])
+    expect(createCall[2]?.secretEnv).toEqual({
+      REVIEW_SERVER_URL: 'https://review.example.com',
+      REVIEW_TOKEN: 'review-token-value',
+    })
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('review.example.com')
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('review-token-value')
+    expect(logger.log).not.toHaveBeenCalledWith(expect.stringContaining('REVIEW_'))
+  })
+
+  test('skips env-file names whose file is missing or empty and logs the reason', async () => {
+    setEnv('FORGE_TEST_ENV_FILE_MISSING', 'host-fallback')
+    const dir = mkdtempSync(join(tmpdir(), 'forge-env-file-'))
+    tempDirs.push(dir)
+    const empty = join(dir, 'empty')
+    writeFileSync(empty, '  \n')
+    const missing = join(dir, 'missing')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        env: ['FORGE_TEST_ENV_FILE_MISSING'],
+        envFiles: { FORGE_TEST_ENV_FILE_MISSING: missing, FORGE_TEST_ENV_FILE_EMPTY: empty },
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual([])
+    expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(logger.log).toHaveBeenCalledWith(
+      expect.stringContaining(`Sandbox: skipping env file FORGE_TEST_ENV_FILE_MISSING: could not read ${missing}:`),
+    )
+    expect(logger.log).toHaveBeenCalledWith(
+      `Sandbox: skipping env file FORGE_TEST_ENV_FILE_EMPTY: ${empty} is empty`,
+    )
+  })
+
+  test('prefers vars over envFiles over host passthrough for the same name and emits each name once', async () => {
+    setEnv('FORGE_TEST_PRECEDENCE_VAR', 'from-host')
+    setEnv('FORGE_TEST_PRECEDENCE_FILE', 'from-host')
+    setEnv('FORGE_TEST_PRECEDENCE_HOST', 'from-host')
+    const file = writeSecretFile('precedence-token', 'from-file\n')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        env: ['FORGE_TEST_PRECEDENCE_VAR', 'FORGE_TEST_PRECEDENCE_FILE', 'FORGE_TEST_PRECEDENCE_HOST'],
+        vars: { FORGE_TEST_PRECEDENCE_VAR: 'from-var' },
+        envFiles: {
+          FORGE_TEST_PRECEDENCE_VAR: file,
+          FORGE_TEST_PRECEDENCE_FILE: file,
+        },
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual([
+      'FORGE_TEST_PRECEDENCE_VAR',
+      'FORGE_TEST_PRECEDENCE_FILE',
+      'FORGE_TEST_PRECEDENCE_HOST',
+    ])
+    expect(createCall[2]?.secretEnv).toEqual({
+      FORGE_TEST_PRECEDENCE_VAR: 'from-var',
+      FORGE_TEST_PRECEDENCE_FILE: 'from-file',
+    })
+    expect(createCall[2]?.env?.filter((name) => name === 'FORGE_TEST_PRECEDENCE_VAR')).toHaveLength(1)
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('from-')
+  })
+
+  test('a network var or env file naming a bound secret is skipped', async () => {
+    const secretFile = writeSecretFile('bound-token', 'bound-secret-value\n')
+    const varFile = writeSecretFile('var-token', 'var-file-value\n')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        vars: { FORGE_TEST_BOUND_VAR: 'literal-should-lose' },
+        envFiles: { FORGE_TEST_BOUND_FILE: varFile },
+        secrets: [
+          { env: 'FORGE_TEST_BOUND_VAR', file: secretFile, hosts: ['api.example.com'] },
+          { env: 'FORGE_TEST_BOUND_FILE', file: secretFile, hosts: ['api.example.com'] },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual([])
+    expect(createCall[2]?.secretEnv).toEqual({
+      FORGE_TEST_BOUND_VAR: 'bound-secret-value',
+      FORGE_TEST_BOUND_FILE: 'bound-secret-value',
+    })
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping var FORGE_TEST_BOUND_VAR: it names a bound secret')
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping env file FORGE_TEST_BOUND_FILE: it names a bound secret')
+  })
+
+  test('trims network var names and skips empty or invalid ones', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        vars: {
+          ' FORGE_TEST_TRIMMED ': 'trimmed-value',
+          '': 'empty-name-value',
+          '1BAD': 'digit-first',
+          'BAD-NAME': 'dash-name',
+        },
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual(['FORGE_TEST_TRIMMED'])
+    expect(createCall[2]?.secretEnv).toEqual({ FORGE_TEST_TRIMMED: 'trimmed-value' })
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping var with an empty name')
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('Sandbox: skipping var 1BAD:'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('Sandbox: skipping var BAD-NAME:'))
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('trimmed-value')
+  })
+
+  test('adopting a stopped sandbox starts it with network vars, env-file values, and secret values', async () => {
+    const networkFile = writeSecretFile('network-token', 'network-file-value\n')
+    const secretFile = writeSecretFile('start-secret', 'start-secret-value\n')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'stopped')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        vars: { REVIEW_SERVER_URL: 'https://review.example.com' },
+        envFiles: { REVIEW_TOKEN: networkFile },
+        secrets: [{ env: 'FORGE_TEST_START_SECRET', file: secretFile, hosts: ['api.example.com'] }],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+    expect(runtime.getStartSandboxCalls()).toEqual([
+      ['forge-test', {
+        REVIEW_SERVER_URL: 'https://review.example.com',
+        REVIEW_TOKEN: 'network-file-value',
+        FORGE_TEST_START_SECRET: 'start-secret-value',
+      }],
+    ])
+  })
+
+  test('adopting a running sandbox does not reapply network vars or env files', async () => {
+    const file = writeSecretFile('running-token', 'file-value\n')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        vars: { REVIEW_SERVER_URL: 'https://review.example.com' },
+        envFiles: { REVIEW_TOKEN: file },
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+    expect(runtime.getStartSandboxCalls()).toEqual([])
+    expect(runtime.getRefreshSecretCalls()).toEqual([])
+  })
+})
+
+describe('resolveSandboxEnvVarSources', () => {
+  test('orders vars before env files, trims names, and drops invalid or already-claimed names', () => {
+    const logger = createMockLogger()
+    const sources = resolveSandboxEnvVarSources(
+      {
+        vars: { ' A ': 'literal', '1BAD': 'x', '': 'y' },
+        envFiles: { A: '/tmp/a', B: '/tmp/b', ' B ': '/tmp/c' },
+      },
+      new Set(),
+      logger,
+    )
+
+    expect(sources).toEqual([
+      { name: 'A', value: 'literal' },
+      { name: 'B', file: '/tmp/b' },
+    ])
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping var with an empty name')
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('Sandbox: skipping var 1BAD:'))
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping env file A: already set by an earlier var')
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping env file B: already set by an earlier env file')
+  })
+
+  test('skips names bound by a secret', () => {
+    const logger = createMockLogger()
+    const sources = resolveSandboxEnvVarSources(
+      { vars: { TOKEN: 'literal' }, envFiles: { TOKEN: '/tmp/token' } },
+      new Set(['TOKEN']),
+      logger,
+    )
+
+    expect(sources).toEqual([])
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping var TOKEN: it names a bound secret')
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping env file TOKEN: it names a bound secret')
+  })
+
+  test('keeps an empty literal value', () => {
+    const logger = createMockLogger()
+    expect(resolveSandboxEnvVarSources({ vars: { EMPTY: '' } }, new Set(), logger)).toEqual([
+      { name: 'EMPTY', value: '' },
+    ])
   })
 })
