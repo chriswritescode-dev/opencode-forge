@@ -123,7 +123,7 @@ File tools (`read`, `write`, `edit`, `patch`) run on the host, not in the sandbo
 
 ## Mode permissions
 
-`sandbox.permissions` denies requests depending on whether the session's shell runs in a sandbox or on the host. It covers loop sessions, which always run in their worktree sandbox, and regular sessions whose sandbox preference is on through `Toggle sandbox`. A matching rule forces the decision to `deny`, even when OpenCode's own rules would `allow` or `ask`. Rules use the same `{ action, resource }` wildcard format as [`autoApprove.deny`](configuration.md#auto-approve); only deny rules exist, and invalid entries are ignored with a startup warning.
+`sandbox.permissions` denies requests depending on whether the session's shell runs in a sandbox or on the host. `sandboxed` covers loop sessions running in their worktree sandbox and regular sessions with `Toggle sandbox` on; worktree-only loops and other host sessions get the `host` rules. A matching rule forces the decision to `deny`, even when OpenCode's own rules would `allow` or `ask`. Rules use the same `{ action, resource }` wildcard format as [`autoApprove.deny`](configuration.md#auto-approve); only deny rules exist, and invalid entries are ignored with a startup warning.
 
 The typical use is denying a command only while sandboxed, for example a `git push` that should stay on the host:
 

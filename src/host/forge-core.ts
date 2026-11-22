@@ -93,6 +93,7 @@ export interface ForgeCore {
   }
   tui: TuiRpcService
   dashboard: DashboardService
+  logger: Logger
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -1186,6 +1187,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     sandboxModeDenyRules,
     tui,
     dashboard,
+    logger,
     cleanup,
     shellShimPath,
   }

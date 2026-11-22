@@ -99,10 +99,10 @@
     // Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox (e.g.
     // after turning it on with the `Toggle sandbox` command), using the auto-approve policy. Defaults to true.
     // "autoApprovePermissions": true,
-    // Deny rules selected by where the session's shell runs. `sandboxed` applies to loop sessions and
-    // sessions with `Toggle sandbox` on; `host` applies to sessions running on the host. A matching
-    // rule denies even when OpenCode would allow or ask. Same { action, resource } wildcard format as
-    // `autoApprove.deny`, and deny only.
+    // Deny rules selected by where the session's shell runs. `sandboxed` applies to loop sessions
+    // running in a sandbox and sessions with `Toggle sandbox` on; `host` applies to sessions running
+    // on the host. A matching rule denies even when OpenCode would allow or ask. Same { action, resource }
+    // wildcard format as `autoApprove.deny`, and deny only.
     // "permissions": {
     //   "sandboxed": {
     //     "deny": [{ "action": "shell", "resource": "git push *" }]

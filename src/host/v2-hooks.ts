@@ -17,6 +17,7 @@ import {
 } from '../utils/auto-approve-policy'
 import { z } from 'zod'
 import { processShared } from '../utils/process-shared'
+import { errorMessage } from '../utils/error-message'
 import { recordIdleBackgroundWork, type BackgroundJob } from '../loop/idle-gate'
 
 const V2_TO_V1_TOOL_NAME_TABLE = invertRenameTable(V1_TO_V2_TOOL_NAMES)
@@ -40,6 +41,7 @@ export type ForgeHooksV2Core = Pick<
   | 'autoApproveDenyRules'
   | 'sandboxModeDenyRules'
   | 'shellShimPath'
+  | 'logger'
 >
 
 export type ForgeHooksV2CoreGetter = () => Promise<ForgeHooksV2Core | null>
@@ -163,7 +165,10 @@ async function applySandboxModeDeny(
   let sandboxed: boolean
   try {
     sandboxed = (await core.resolveShellSandbox(event.sessionID)) !== null
-  } catch {
+  } catch (err) {
+    core.logger.log(
+      `[sandbox] sandbox-mode deny for ${event.sessionID} could not resolve the shell mode, applying the matched rule: ${errorMessage(err)}`,
+    )
     sandboxed = matches.sandboxed !== undefined
   }
   const match = sandboxed ? matches.sandboxed : matches.host

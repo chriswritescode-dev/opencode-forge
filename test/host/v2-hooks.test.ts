@@ -20,6 +20,7 @@ import type { Logger, PluginConfig } from '../../src/types'
 import type { SessionInstructionEntries } from '../../src/hooks/sandbox-message'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createFakeV2Context, type V2HookRegistration } from '../helpers/fake-v2-context'
+import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 
 const PROJECT = '/tmp/forge-hooks-project'
 const WORKTREE = '/tmp/forge-hooks-worktree'
@@ -81,6 +82,7 @@ interface StubCoreOptions {
   chatMessage?: ForgeHooksV2Core['chatMessage']
   syncSandboxInstructions?: ForgeHooksV2Core['syncSandboxInstructions']
   compacting?: ForgeHooksV2Core['compacting']
+  logger?: Logger
 }
 
 interface StubCore {
@@ -96,6 +98,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
   const after: Array<{ tool: string; output: string }> = []
   const prompts: Array<{ sessionID?: string; messageID?: string; text: string }> = []
   const instructionSyncs: Array<{ sessionID: string; entries: SessionInstructionEntries }> = []
+  const logger = options.logger ?? createMockLogger()
   const core: ForgeHooksV2Core = {
     toolBefore: async (input, output) => {
       before.push({ tool: input.tool, args: output.args })
@@ -127,6 +130,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     autoApproveDenyRules: options.autoApproveDenyRules ?? [],
     sandboxModeDenyRules: options.sandboxModeDenyRules ?? { sandboxed: [], host: [] },
     shellShimPath: options.shellShimPath ?? null,
+    logger,
   }
   return { core, before, after, prompts, instructionSyncs }
 }
@@ -350,7 +354,9 @@ describe('registerForgeHooksV2 sandbox mode permission hook', () => {
 
   test('fails closed on the matching rule when the sandbox lookup throws', async () => {
     const { ctx, hooks } = createFakeV2Context()
+    const { logger: capturingLogger, logs } = createCapturingLogger()
     const { core } = createStubCore({
+      logger: capturingLogger,
       resolveShellSandbox: async () => {
         throw new Error('sandbox unavailable')
       },
@@ -362,6 +368,11 @@ describe('registerForgeHooksV2 sandbox mode permission hook', () => {
     await invokeHook(hooks, 'permission', 'evaluate', asked)
     expect(asked.effect).toBe('deny')
     expect(asked.message).toContain('sandbox.permissions.sandboxed')
+    expect(logs).toContainEqual({
+      level: 'log',
+      message:
+        '[sandbox] sandbox-mode deny for ses_sandbox could not resolve the shell mode, applying the matched rule: sandbox unavailable',
+    })
   })
 
   test('fails closed on a host rule when the sandbox lookup throws and only the host rule matches', async () => {

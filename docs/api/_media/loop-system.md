@@ -404,6 +404,6 @@ Variants use override → matching config value → last-used loop value. The au
 ## Tool Restrictions
 
 Inside active loop sessions:
-- `git push` is not denied by default; add a scoped `loop.permissions.deny` entry such as `{ "permission": "bash", "pattern": "git push *" }` to deny it. [`sandbox.permissions.sandboxed.deny`](configuration.md#sandbox) also denies it in every loop session, and in regular sessions with `Toggle sandbox` on
+- `git push` is not denied by default; add a scoped `loop.permissions.deny` entry such as `{ "permission": "bash", "pattern": "git push *" }` to deny it. [`sandbox.permissions.sandboxed.deny`](configuration.md#sandbox) also denies it in loop sessions whose shell runs in a sandbox (not in worktree-only mode), and in regular sessions with `Toggle sandbox` on
 - `execute-plan` is blocked (tool hooks)
 - `question` is blocked (tool hooks)
