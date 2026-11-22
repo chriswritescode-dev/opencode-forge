@@ -195,6 +195,23 @@ Select host environment variables can be injected into the sandbox at create tim
 
 Forge passes each name as the bare `-e <NAME>` form, so msb resolves the value from its own environment and the value never appears on forge's command line (or in `ps` output). Only names that are set in the host process are injected; unset names are skipped and logged.
 
+Plain guest variables can also be set from the config itself, either as literals or from files:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "vars": { "REVIEW_SERVER": "https://review.example.com" },
+      "envFiles": { "REVIEW_TOKEN": "./.secrets/review-token" }
+    }
+  }
+}
+```
+
+`vars` values are used verbatim, including empty strings. `envFiles` resolves paths like `secrets[].file`: `~` and `~/...` under the home directory, absolute paths as is, and relative paths against the opencode config directory that holds `forge-config.jsonc`. Forge reads and trims the file when it creates the sandbox, and skips a missing or empty file with a log. Both forms use the same bare `-e <NAME>` transport as `env`, so the value travels only in the msb child process environment and never on forge's command line. msb stores the value at create time, so it survives sandbox restarts; changing a value or a file, or adding an entry, needs the sandbox removed and recreated.
+
+Unlike `secrets`, these values are **real values inside the guest**, not placeholders. Use them for tools that cannot use msb substitution — for example a plain-HTTP service addressed by IP, which msb does not match against a secret's host names — and keep credentials that must not be readable inside the guest in `secrets`. A bound secret, or a secret's own `vars` entry, with the same name wins over `vars`, `envFiles`, and `env`; `vars` wins over `envFiles`, and both win over `env`.
+
 ## Secrets
 
 Host-held credentials are bound with `sandbox.network.secrets` instead of `env`. A secret **never enters the guest**: msb keeps a host-side source reference to the environment variable, exposes a `$MSB_<ENV>` placeholder inside the sandbox, and substitutes the real value only for the listed hosts at the network boundary.

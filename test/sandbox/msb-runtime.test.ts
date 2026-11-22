@@ -1438,6 +1438,27 @@ describe('runtime', () => {
     expect(calls[0].opts?.env).toBeUndefined()
   })
 
+  test('createSandbox emits a bare -e name for config env values and keeps the value in the runner env only', async () => {
+    const secretEnv = {
+      REVIEW_SERVER_URL: 'https://review.example.com',
+      REVIEW_TOKEN: 'review-token-value',
+    }
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      env: ['REVIEW_SERVER_URL', 'REVIEW_TOKEN'],
+      secretEnv,
+    })
+
+    expect(calls[0].args).toContain('REVIEW_SERVER_URL')
+    expect(calls[0].args).toContain('REVIEW_TOKEN')
+    expect(calls[0].args).not.toContain('REVIEW_SERVER_URL=https://review.example.com')
+    expect(calls[0].args.join(' ')).not.toContain('review.example.com')
+    expect(calls[0].args.join(' ')).not.toContain('review-token-value')
+    expect(calls[0].opts?.env).toEqual(secretEnv)
+  })
+
   test('createSandbox uses plain --secret flags when no per-secret policy needs a conf file', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })

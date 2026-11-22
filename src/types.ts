@@ -76,6 +76,8 @@ export interface SandboxSecretConfig {
 
 export interface SandboxNetworkConfig {
   env?: string[]
+  envFiles?: Record<string, string>
+  vars?: Record<string, string>
   allow?: string[]
   secrets?: SandboxSecretConfig[]
   allowLan?: boolean
