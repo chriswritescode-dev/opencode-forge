@@ -219,7 +219,7 @@ describe('SandboxManager create-time env and secrets', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const createCall = runtime.getCreateSandboxCalls()[0]
-    expect(createCall[2]?.env).toEqual(['FORGE_TEST_TOKEN'])
+    expect(createCall[2]?.env).toEqual([])
     expect(createCall[2]?.secrets).toEqual([{ env: 'FORGE_TEST_TOKEN', hosts: ['api.example.com'] }])
     // Only names (bare `-e NAME`) and references (`ENV@HOST`) are forwarded, never values.
     expect(JSON.stringify(createCall)).not.toContain('super-secret-value')
@@ -616,7 +616,7 @@ describe('SandboxManager create-time env and secrets', () => {
     expect(JSON.stringify(createCall[2]?.secretEnv)).not.toContain('https://git.example.com')
   })
 
-  test('start leaves a passthrough env name alone and passes the same-named var separately', async () => {
+  test('start skips a passthrough env name matching a secret var and passes the var separately', async () => {
     setEnv('FORGE_TEST_VARS_SECRET', 'token-value')
     setEnv('GITEA_INSTANCE_URL', 'from-passthrough')
 
@@ -640,9 +640,42 @@ describe('SandboxManager create-time env and secrets', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const createCall = runtime.getCreateSandboxCalls()[0]
-    expect(createCall[2]?.env).toEqual(['GITEA_INSTANCE_URL'])
+    expect(createCall[2]?.env).toEqual([])
     expect(createCall[2]?.vars).toEqual({ GITEA_INSTANCE_URL: 'https://git.example.com' })
     expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('from-passthrough')
+  })
+
+  test('start skips a passthrough env name naming a bound secret or a secret var', async () => {
+    setEnv('FORGE_TEST_ENV_SECRET', 'host-secret-value')
+    setEnv('FORGE_TEST_ENV_SECRET_VAR_KEY', 'host-var-value')
+    setEnv('FORGE_TEST_ENV_PASSTHROUGH', 'host-passthrough-value')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        env: ['FORGE_TEST_ENV_SECRET', 'FORGE_TEST_ENV_SECRET_VAR_KEY', 'FORGE_TEST_ENV_PASSTHROUGH'],
+        secrets: [
+          {
+            env: 'FORGE_TEST_ENV_SECRET',
+            hosts: ['api.example.com'],
+            vars: { FORGE_TEST_ENV_SECRET_VAR_KEY: 'from-secret-var' },
+          },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual(['FORGE_TEST_ENV_PASSTHROUGH'])
+    expect(createCall[2]?.vars).toEqual({ FORGE_TEST_ENV_SECRET_VAR_KEY: 'from-secret-var' })
+    expect(createCall[2]?.secretEnv).toBeUndefined()
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('host-secret-value')
+    expect(JSON.stringify(createCall[2]?.env)).not.toContain('host-var-value')
   })
 
   test('a var naming another bound secret is skipped', async () => {
@@ -1140,6 +1173,24 @@ describe('SandboxManager create-time env and secrets', () => {
     expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('Sandbox: skipping var 1BAD:'))
     expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('Sandbox: skipping var BAD-NAME:'))
     expect(JSON.stringify(createCall[2]?.env)).not.toContain('trimmed-value')
+  })
+
+  test('sets a var named __proto__ as a real guest variable', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        vars: { ['__proto__']: 'proto-value' },
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual(['__proto__'])
+    expect(Object.getOwnPropertyDescriptor(createCall[2]?.secretEnv ?? {}, '__proto__')?.value).toBe('proto-value')
   })
 
   test('adopting a stopped sandbox starts it with only the secret values, not network vars or env-file values', async () => {

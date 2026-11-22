@@ -589,7 +589,7 @@ export function createSandboxManager(
   }
 
   async function readSandboxEnvValues(sources: SandboxEnvVarSource[]): Promise<Record<string, string>> {
-    const values: Record<string, string> = {}
+    const values: Record<string, string> = Object.create(null)
     for (const source of sources) {
       if ('value' in source) {
         values[source.name] = source.value
@@ -851,7 +851,7 @@ export function createSandboxManager(
       resources: target.resources,
       networkAllow: buildNetworkAllow(config.network?.allow, restrictEgress ? secrets : resolvedSecrets.egressSecrets, logger),
       restrictEgress,
-      env: [...Object.keys(networkEnv), ...resolvePassthroughEnv(claimedEnvNames)],
+      env: [...Object.keys(networkEnv), ...resolvePassthroughEnv(new Set([...claimedEnvNames, ...boundSecretNames]))],
       secrets,
       allowLan: target.allowLan,
     }
