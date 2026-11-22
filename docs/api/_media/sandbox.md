@@ -121,6 +121,29 @@ File tools (`read`, `write`, `edit`, `patch`) run on the host, not in the sandbo
 }
 ```
 
+## Mode permissions
+
+`sandbox.permissions` denies requests depending on whether the session's shell runs in a sandbox or on the host. `sandboxed` covers loop sessions running in their worktree sandbox and regular sessions with `Toggle sandbox` on; worktree-only loops and other host sessions get the `host` rules. A matching rule forces the decision to `deny`, even when OpenCode's own rules would `allow` or `ask`. Rules use the same `{ action, resource }` wildcard format as [`autoApprove.deny`](configuration.md#auto-approve); only deny rules exist, and invalid entries are ignored with a startup warning.
+
+The typical use is denying a command only while sandboxed, for example a `git push` that should stay on the host:
+
+```jsonc
+{
+  "sandbox": {
+    "permissions": {
+      "sandboxed": {
+        "deny": [{ "action": "shell", "resource": "git push *" }]
+      },
+      "host": {
+        "deny": [{ "action": "shell", "resource": "rm -rf *" }]
+      }
+    }
+  }
+}
+```
+
+When no rule matches, Forge does not resolve the session's sandbox mode, so ordinary permission checks pay nothing for this config.
+
 ## Tool Behavior
 
 | Tool category | Behavior in a sandboxed session |

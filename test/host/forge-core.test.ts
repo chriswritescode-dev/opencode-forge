@@ -557,6 +557,45 @@ describe('createForgeCore', () => {
     expect(built.core.autoApproveDenyRules).toEqual([])
   })
 
+  test('defaults sandbox mode deny rules to empty lists', async () => {
+    const built = await buildCore()
+
+    expect(built.core.sandboxModeDenyRules).toEqual({ sandboxed: [], host: [] })
+  })
+
+  test('parses sandbox mode deny lists and warns about invalid entries', async () => {
+    const logFile = join(testDir, 'forge.log')
+    const built = await buildCore({
+      logging: { enabled: true, file: logFile },
+      sandbox: {
+        hostSessions: false,
+        permissions: {
+          sandboxed: {
+            deny: [
+              { action: 'shell', resource: 'git push *' },
+              { action: 'shell' },
+            ] as unknown as AutoApproveDenyRule[],
+          },
+          host: { deny: [{ action: 'shell', resource: 'rm -rf *' }] },
+        },
+      },
+    })
+
+    expect(built.core.sandboxModeDenyRules).toEqual({
+      sandboxed: [{ action: 'shell', resource: 'git push *' }],
+      host: [{ action: 'shell', resource: 'rm -rf *' }],
+    })
+    const log = readFileSync(logFile, 'utf-8')
+    expect(log).toContain('sandbox.permissions.sandboxed.deny entry 1 is ignored')
+    expect(
+      built.calls.some(
+        (call) =>
+          call.method === 'toast' &&
+          (call.params as { title?: string }).title === 'Forge sandbox permissions config',
+      ),
+    ).toBe(true)
+  })
+
   test('loopDefaults reports the configured max iterations and resolved sandbox resources', async () => {
     const built = await buildCore({
       loop: { defaultMaxIterations: 7 },
