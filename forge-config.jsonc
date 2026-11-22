@@ -99,6 +99,18 @@
     // Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox (e.g.
     // after turning it on with the `Toggle sandbox` command), using the auto-approve policy. Defaults to true.
     // "autoApprovePermissions": true,
+    // Deny rules selected by where the session's shell runs. `sandboxed` applies to loop sessions and
+    // sessions with `Toggle sandbox` on; `host` applies to sessions running on the host. A matching
+    // rule denies even when OpenCode would allow or ask. Same { action, resource } wildcard format as
+    // `autoApprove.deny`, and deny only.
+    // "permissions": {
+    //   "sandboxed": {
+    //     "deny": [{ "action": "shell", "resource": "git push *" }]
+    //   },
+    //   "host": {
+    //     "deny": [{ "action": "shell", "resource": "rm -rf *" }]
+    //   }
+    // },
     // Host environment variables pass through at create time as bare names (msb resolves each name
     // from its own environment, so values never appear on forge's command line); host-held
     // secrets are bound reference-only and exposed inside the sandbox as $MSB_<env> placeholders

@@ -49,11 +49,12 @@ export interface ParsedAutoApproveDenyRules {
 
 export function parseAutoApproveDenyRules(
   raw: readonly AutoApproveDenyRule[] | null | undefined,
+  label = 'autoApprove.deny',
 ): ParsedAutoApproveDenyRules {
   if (raw === undefined || raw === null) return { rules: [], warnings: [] }
   const entries = z.array(z.unknown()).safeParse(raw)
   if (!entries.success) {
-    return { rules: [], warnings: ['autoApprove.deny is ignored: expected an array of { action, resource } rules'] }
+    return { rules: [], warnings: [`${label} is ignored: expected an array of { action, resource } rules`] }
   }
 
   const rules: AutoApproveDenyRule[] = []
@@ -63,12 +64,29 @@ export function parseAutoApproveDenyRules(
     if (!candidate.success || candidate.data.action === undefined || candidate.data.resource === undefined) {
       const patternHint =
         candidate.success && Object.hasOwn(candidate.data, 'pattern') ? ' (use "resource", not "pattern")' : ''
-      warnings.push(`autoApprove.deny entry ${i} is ignored: expected non-empty string "action" and "resource"${patternHint}`)
+      warnings.push(`${label} entry ${i} is ignored: expected non-empty string "action" and "resource"${patternHint}`)
       return
     }
     rules.push({ action: candidate.data.action, resource: candidate.data.resource })
   })
   return { rules, warnings }
+}
+
+export interface MatchingDenyRule<T extends { action: string; resource: string }> {
+  rule: T
+  resource: string
+}
+
+export function findLastMatchingDenyRule<T extends { action: string; resource: string }>(
+  action: string,
+  resources: readonly string[],
+  denyRules: readonly T[],
+): MatchingDenyRule<T> | undefined {
+  for (const resource of resources) {
+    const rule = findLastMatchingRule(action, resource, denyRules)
+    if (rule) return { rule, resource }
+  }
+  return undefined
 }
 
 export function resolveAutoApproveDecision(input: {
@@ -78,13 +96,11 @@ export function resolveAutoApproveDecision(input: {
 }): AutoApproveDecision {
   const { action, resources, denyRules } = input
 
-  for (const resource of resources) {
-    const denyRule = findLastMatchingRule(action, resource, denyRules)
-    if (denyRule) {
-      return {
-        effect: 'deny',
-        message: `Blocked in auto-approve mode: \`${action} ${resource}\` matches the auto-approve deny rule \`${denyRule.action}: ${denyRule.resource}\`. Continue without it and report what was skipped.`,
-      }
+  const match = findLastMatchingDenyRule(action, resources, denyRules)
+  if (match) {
+    return {
+      effect: 'deny',
+      message: `Blocked in auto-approve mode: \`${action} ${match.resource}\` matches the auto-approve deny rule \`${match.rule.action}: ${match.rule.resource}\`. Continue without it and report what was skipped.`,
     }
   }
 
