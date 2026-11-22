@@ -759,15 +759,8 @@ export function createSandboxManager(
     } else {
       warnedSandboxVars.delete(containerName)
     }
-    if (state === 'stopped') {
-      const boundSecretNames = new Set(resolved.secrets.map((secret) => secret.env))
-      const networkEnv = await readSandboxEnvValues(
-        resolveSandboxEnvVarSources(config.network, boundSecretNames, logger),
-      )
-      const startEnv = { ...networkEnv, ...resolved.secretEnv }
-      if (Object.keys(startEnv).length > 0) {
-        await runtime.startSandbox(containerName, startEnv)
-      }
+    if (state === 'stopped' && resolved.secretEnv !== undefined) {
+      await runtime.startSandbox(containerName, resolved.secretEnv)
     }
   }
 
@@ -845,7 +838,10 @@ export function createSandboxManager(
     const resolvedSecrets = await resolveSandboxSecrets(worktreeName, absoluteProjectDir, overrides)
     const secrets = resolvedSecrets.secrets
     const restrictEgress = egressRestrictionRequested(config.network?.allow, resolvedSecrets.egressSecrets)
-    const boundSecretNames = new Set(secrets.map((secret) => secret.env))
+    const boundSecretNames = new Set([
+      ...secrets.map((secret) => secret.env),
+      ...Object.keys(resolvedSecrets.vars),
+    ])
     const envSources = resolveSandboxEnvVarSources(config.network, boundSecretNames, logger)
     const networkEnv = await readSandboxEnvValues(envSources)
     const claimedEnvNames = new Set(envSources.map((source) => source.name))

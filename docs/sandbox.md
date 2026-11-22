@@ -185,9 +185,9 @@ Plain guest variables can also be set from the config itself, either as literals
 }
 ```
 
-`vars` values are used verbatim, including empty strings. `envFiles` resolves paths like `secrets[].file`: `~` and `~/...` under the home directory, absolute paths as is, and relative paths against the opencode config directory that holds `forge-config.jsonc`. Forge reads and trims the file at each create or Forge-driven start, and skips a missing or empty file with a log. Both forms use the same bare `-e <NAME>` transport as `env`, so the value travels only in the msb child process environment and never on forge's command line.
+`vars` values are used verbatim, including empty strings. `envFiles` resolves paths like `secrets[].file`: `~` and `~/...` under the home directory, absolute paths as is, and relative paths against the opencode config directory that holds `forge-config.jsonc`. Forge reads and trims the file when it creates the sandbox, and skips a missing or empty file with a log. Both forms use the same bare `-e <NAME>` transport as `env`, so the value travels only in the msb child process environment and never on forge's command line. msb stores the value at create time, so it survives sandbox restarts; changing a value or a file, or adding an entry, needs the sandbox removed and recreated.
 
-Unlike `secrets`, these values are **real values inside the guest**, not placeholders. Use them for tools that cannot use msb substitution — for example a plain-HTTP service addressed by IP, which msb does not match against a secret's host names — and keep credentials that must not be readable inside the guest in `secrets`. A bound secret with the same name wins over `vars` and `envFiles`; `vars` wins over `envFiles`, and both win over `env`. The variables are set at create time only: a sandbox created before an entry was added keeps its old environment until it is removed and recreated.
+Unlike `secrets`, these values are **real values inside the guest**, not placeholders. Use them for tools that cannot use msb substitution — for example a plain-HTTP service addressed by IP, which msb does not match against a secret's host names — and keep credentials that must not be readable inside the guest in `secrets`. A bound secret with the same name wins over `vars` and `envFiles`; `vars` wins over `envFiles`, and both win over `env`.
 
 ## Secrets
 

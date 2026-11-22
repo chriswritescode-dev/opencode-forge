@@ -1142,7 +1142,7 @@ describe('SandboxManager create-time env and secrets', () => {
     expect(JSON.stringify(createCall[2]?.env)).not.toContain('trimmed-value')
   })
 
-  test('adopting a stopped sandbox starts it with network vars, env-file values, and secret values', async () => {
+  test('adopting a stopped sandbox starts it with only the secret values, not network vars or env-file values', async () => {
     const networkFile = writeSecretFile('network-token', 'network-file-value\n')
     const secretFile = writeSecretFile('start-secret', 'start-secret-value\n')
 
@@ -1163,12 +1163,73 @@ describe('SandboxManager create-time env and secrets', () => {
 
     expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
     expect(runtime.getStartSandboxCalls()).toEqual([
-      ['forge-test', {
-        REVIEW_SERVER_URL: 'https://review.example.com',
-        REVIEW_TOKEN: 'network-file-value',
-        FORGE_TEST_START_SECRET: 'start-secret-value',
-      }],
+      ['forge-test', { FORGE_TEST_START_SECRET: 'start-secret-value' }],
     ])
+  })
+
+  test('adopting a stopped sandbox with only network vars or env files does not start it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-env-file-stopped-'))
+    tempDirs.push(dir)
+    const missing = join(dir, 'missing')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'stopped')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        vars: { REVIEW_SERVER_URL: 'https://review.example.com' },
+        envFiles: { REVIEW_TOKEN: missing },
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+    expect(runtime.getStartSandboxCalls()).toEqual([])
+    expect(logger.log).not.toHaveBeenCalledWith(expect.stringContaining('could not read'))
+  })
+
+  test('a network var or env file naming a secret var is skipped and the secret var is kept', async () => {
+    const secretFile = writeSecretFile('collision-secret', 'collision-secret-value\n')
+    const file = writeSecretFile('collision-file', 'collision-file-value\n')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        vars: { FORGE_TEST_SECRET_VAR: 'literal-should-lose' },
+        envFiles: { FORGE_TEST_SECRET_FILE_VAR: file },
+        secrets: [
+          {
+            env: 'FORGE_TEST_COLLISION_SECRET',
+            file: secretFile,
+            hosts: ['api.example.com'],
+            vars: {
+              FORGE_TEST_SECRET_VAR: 'secret-var-value',
+              FORGE_TEST_SECRET_FILE_VAR: 'secret-file-var-value',
+            },
+          },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual([])
+    expect(createCall[2]?.secretEnv).toEqual({
+      FORGE_TEST_COLLISION_SECRET: 'collision-secret-value',
+    })
+    expect(createCall[2]?.vars).toEqual({
+      FORGE_TEST_SECRET_VAR: 'secret-var-value',
+      FORGE_TEST_SECRET_FILE_VAR: 'secret-file-var-value',
+    })
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping var FORGE_TEST_SECRET_VAR: it names a bound secret')
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: skipping env file FORGE_TEST_SECRET_FILE_VAR: it names a bound secret')
   })
 
   test('adopting a running sandbox does not reapply network vars or env files', async () => {
