@@ -3,6 +3,7 @@ import type { ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus, 
 import type { SelectRenderable } from '@opentui/core'
 import type { SandboxBuildStage } from '../sandbox/template'
 import { createMemo, createSignal, For, onCleanup, Show, untrack } from 'solid-js'
+import { errorMessage } from '../utils/error-message'
 import { claimFocusOnMount } from './focus'
 
 const BUILD_PROGRESS_BAR_WIDTH = 24
@@ -44,7 +45,14 @@ export function describeSandboxBuildStatus(view: SandboxBuildDialogStatusView): 
   const status = view.status
   const elapsed = formatElapsed(status?.elapsedMs)
   if (view.phase === 'confirm') {
-    return { statusLine: 'Ready to build.', detailLine: view.error || CONFIRM_DETAIL }
+    if (view.error) return { statusLine: 'Ready to build.', detailLine: view.error }
+    if (status?.contextExists === false) {
+      return {
+        statusLine: 'Sandbox build context missing on server.',
+        detailLine: `Bundled build context is missing at ${status.contextDir}. Reinstall opencode-forge.`,
+      }
+    }
+    return { statusLine: 'Ready to build.', detailLine: CONFIRM_DETAIL }
   }
   if (view.phase === 'success') {
     return { statusLine: `Built and loaded in ${elapsed}.`, detailLine: '' }
@@ -72,6 +80,14 @@ export function createSandboxBuildDialogState(options: SandboxBuildDialogStateOp
   const readStatus = options.readStatus
   const start = options.start
   const toast = options.toast
+
+  const invoke = async (fn: () => Promise<ForgeSandboxTemplateBuildOutput>): Promise<ForgeSandboxTemplateBuildOutput> => {
+    try {
+      return await fn()
+    } catch (err) {
+      return { error: errorMessage(err) }
+    }
+  }
 
   const [status, setStatus] = createSignal<ForgeSandboxTemplateBuildStatus | null>(null)
   const [statusError, setStatusError] = createSignal('')
@@ -108,7 +124,7 @@ export function createSandboxBuildDialogState(options: SandboxBuildDialogStateOp
   }
 
   const pollOnce = async () => {
-    const output = await readStatus()
+    const output = await invoke(readStatus)
     if (disposed) return
     if ('error' in output) {
       setStatusError(output.error)
@@ -121,7 +137,7 @@ export function createSandboxBuildDialogState(options: SandboxBuildDialogStateOp
   }
 
   void (async () => {
-    const output = await readStatus()
+    const output = await invoke(readStatus)
     if (disposed || untrack(engaged)) return
     if ('error' in output) {
       setStatusError(output.error)
@@ -152,10 +168,10 @@ export function createSandboxBuildDialogState(options: SandboxBuildDialogStateOp
     setStartError('')
     toast({ message: `Building ${image()}...`, variant: 'info', duration: 4000 })
     try {
-      const output = await start()
+      const output = await invoke(start)
       if (disposed) return
       if ('error' in output) {
-        const current = await readStatus()
+        const current = await invoke(readStatus)
         if (disposed) return
         if (!('error' in current) && current.phase === 'running') {
           setStatus(current)

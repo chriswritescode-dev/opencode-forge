@@ -121,6 +121,7 @@ export interface ForgeSandboxTemplateBuildStatus {
   tail: string[]
   elapsedMs?: number
   failure?: string
+  contextExists?: boolean
 }
 
 export type ForgeSandboxTemplateBuildOutput = ForgeSandboxTemplateBuildStatus | ForgeRpcError
@@ -353,6 +354,7 @@ const SANDBOX_TEMPLATE_BUILD_OUTPUT = {
     },
     elapsedMs: { type: 'integer', description: 'Server-measured elapsed time in milliseconds.' },
     failure: { type: 'string', description: 'Failure message when the build errored.' },
+    contextExists: { type: 'boolean', description: 'Whether the Docker build context directory exists on the server.' },
     error: OPTIONAL_STRING,
   },
   additionalProperties: false,
@@ -732,6 +734,7 @@ const sandboxTemplateBuildStatusSchema = z.object({
   tail: z.array(z.string()),
   elapsedMs: z.number().optional().catch(undefined),
   failure: optionalStringFieldSchema,
+  contextExists: z.boolean().optional().catch(undefined),
 })
 
 export function readForgeSandboxTemplateBuildStatus<P>(payload: P): ForgeSandboxTemplateBuildOutput {

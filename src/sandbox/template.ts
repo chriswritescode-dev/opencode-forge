@@ -129,6 +129,7 @@ function snapshotBuildRun(run: SandboxTemplateBuildRun): ForgeSandboxTemplateBui
     stage: run.stage,
     tail: [...run.tail],
     elapsedMs: (run.finishedAt ?? Date.now()) - run.startedAt,
+    contextExists: existsSync(run.contextDir),
   }
   if (run.step) status.step = { ...run.step }
   if (run.lastLine !== undefined) status.lastLine = run.lastLine
@@ -185,7 +186,7 @@ export function startSandboxTemplateBuild(input: StartSandboxTemplateBuildInput)
 
 export function readSandboxTemplateBuildStatus(input: { contextDir: string; tag: string }): ForgeSandboxTemplateBuildStatus {
   const run = buildTracker().current
-  if (!run) return { phase: 'idle', image: input.tag, contextDir: input.contextDir, tail: [] }
+  if (!run) return { phase: 'idle', image: input.tag, contextDir: input.contextDir, tail: [], contextExists: existsSync(input.contextDir) }
   return snapshotBuildRun(run)
 }
 

@@ -744,6 +744,16 @@ describe('V2 TUI setup', () => {
       expect(fake.sandboxTemplateBuildStart).toHaveBeenCalledTimes(1)
       expect(fake.sandboxTemplateBuildStart.mock.calls[0]?.[1]).toEqual({ location: { directory: '/test/project' } })
 
+      fake.setLocation({ directory: '/other/project' })
+
+      await deps.readStatus()
+      expect(fake.sandboxTemplateBuildStatus).toHaveBeenCalledTimes(2)
+      expect(fake.sandboxTemplateBuildStatus.mock.calls[1]?.[1]).toEqual({ location: { directory: '/other/project' } })
+
+      await deps.start()
+      expect(fake.sandboxTemplateBuildStart).toHaveBeenCalledTimes(2)
+      expect(fake.sandboxTemplateBuildStart.mock.calls[1]?.[1]).toEqual({ location: { directory: '/other/project' } })
+
       expect(fake.toasts.map((toast) => toast['title'])).not.toContain('Sandbox build context missing')
     } finally {
       cleanup()

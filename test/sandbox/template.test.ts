@@ -445,7 +445,23 @@ describe('sandbox template build tracker', () => {
       image: 'tag:1',
       contextDir: '/ctx',
       tail: [],
+      contextExists: false,
     })
+  })
+
+  test('reports an existing build context on an idle status', () => {
+    const contextDir = makeContextDir()
+    try {
+      expect(readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })).toEqual({
+        phase: 'idle',
+        image: 'tag:1',
+        contextDir,
+        tail: [],
+        contextExists: true,
+      })
+    } finally {
+      rmSync(contextDir, { recursive: true, force: true })
+    }
   })
 
   test('a running build caps the tail, keeps the latest line, and keeps the step monotonic', async () => {
@@ -463,7 +479,7 @@ describe('sandbox template build tracker', () => {
         onSettled: () => { resolveSettled() },
       })
 
-      expect(started).toMatchObject({ phase: 'running', image: 'tag:1', contextDir, stage: 'build', tail: [] })
+      expect(started).toMatchObject({ phase: 'running', image: 'tag:1', contextDir, stage: 'build', tail: [], contextExists: true })
 
       for (let step = 1; step <= 14; step += 1) emit(`#${step} [ ${step}/20] step ${step}\n`)
       emit('#15 [ 3/20] step 3\n')
@@ -471,6 +487,7 @@ describe('sandbox template build tracker', () => {
       const running = readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })
       expect(running.phase).toBe('running')
       expect(running.stage).toBe('build')
+      expect(running.contextExists).toBe(true)
       expect(running.tail).toHaveLength(12)
       expect(running.tail[0]).toBe('#4 [ 4/20] step 4')
       expect(running.tail[11]).toBe('#15 [ 3/20] step 3')
@@ -485,6 +502,7 @@ describe('sandbox template build tracker', () => {
       const finished = readSandboxTemplateBuildStatus({ contextDir, tag: 'tag:1' })
       expect(finished.phase).toBe('success')
       expect(finished.stage).toBe('load')
+      expect(finished.contextExists).toBe(true)
       expect(finished.step).toBeUndefined()
       expect(finished.tail.at(-1)).toBe('Loading tag:1 into the msb image store...')
     } finally {
@@ -610,6 +628,7 @@ describe('sandbox template build tracker', () => {
         image: 'tag:1',
         contextDir,
         tail: [],
+        contextExists: false,
       })
     } finally {
       rmSync(tmp, { recursive: true, force: true })

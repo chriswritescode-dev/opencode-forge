@@ -229,6 +229,10 @@ describe('FORGE_RPC', () => {
     expect(start.output.properties.phase.enum).toEqual(['idle', 'running', 'success', 'error'])
     expect(start.output.properties.stage.enum).toEqual(['build', 'save', 'load'])
     expect(start.output.properties.tail).toEqual({ type: 'array', items: { type: 'string' }, description: 'Last 12 progress lines of the build.' })
+    expect(start.output.properties.contextExists).toEqual({
+      type: 'boolean',
+      description: 'Whether the Docker build context directory exists on the server.',
+    })
   })
 
   test('readForgeSandboxTemplateBuildStatus parses a full status, an idle status, and errors', () => {
@@ -244,8 +248,13 @@ describe('FORGE_RPC', () => {
     }
     expect(readForgeSandboxTemplateBuildStatus(running)).toEqual(running)
 
-    const idle = { phase: 'idle', image: 'oc-forge-sandbox:latest', contextDir: '/ctx', tail: [] }
+    const idle = { phase: 'idle', image: 'oc-forge-sandbox:latest', contextDir: '/ctx', tail: [], contextExists: false }
     expect(readForgeSandboxTemplateBuildStatus(idle)).toEqual(idle)
+
+    expect(readForgeSandboxTemplateBuildStatus({ ...running, contextExists: true })).toEqual({ ...running, contextExists: true })
+    expect(readForgeSandboxTemplateBuildStatus({ ...running, contextExists: false })).toEqual({ ...running, contextExists: false })
+    expect(readForgeSandboxTemplateBuildStatus({ phase: 'idle', image: 'oc-forge-sandbox:latest', contextDir: '/ctx', tail: [] }))
+      .toEqual({ phase: 'idle', image: 'oc-forge-sandbox:latest', contextDir: '/ctx', tail: [] })
 
     expect(readForgeSandboxTemplateBuildStatus({ error: 'no docker' })).toEqual({ error: 'no docker' })
     expect(readForgeSandboxTemplateBuildStatus({ phase: 'error', failure: 'boom' }))
