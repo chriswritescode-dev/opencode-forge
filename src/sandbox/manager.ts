@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { SandboxRuntime, SandboxWorkspace, CreateSandboxOpts, SandboxState } from './msb'
 import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
-import { fetchSandboxSecretValues, resolveSandboxSecret } from './secrets'
+import { fetchSandboxSecretValues, resolveSandboxSecret, resolveSandboxSecretFilePath } from './secrets'
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
-import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
+import type { Logger, SandboxNetworkConfig, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, basename, dirname, posix as posixPath } from 'path'
 import { mkdirSync, existsSync } from 'fs'
+import { readFile } from 'fs/promises'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
@@ -24,7 +25,7 @@ export interface SandboxManagerConfig {
   tmpDir?: string
   listSkillPaths?: (projectDir: string) => Promise<string[]>
   fallbackSkillsDir?: string
-  network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[]; allowLan?: boolean }
+  network?: SandboxNetworkConfig
   resolveIdleTimeout?: (worktreeName: string) => string | undefined
 }
 
@@ -236,6 +237,61 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
   return mounts
 }
 
+const SANDBOX_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+type SandboxEnvSourceKind = 'var' | 'env file'
+
+export type SandboxEnvVarSource =
+  | { name: string; value: string }
+  | { name: string; file: string }
+
+function claimSandboxEnvName(
+  rawName: string,
+  kind: SandboxEnvSourceKind,
+  claimed: Map<string, SandboxEnvSourceKind>,
+  boundSecretNames: ReadonlySet<string>,
+  logger: Logger,
+): string | undefined {
+  const name = rawName.trim()
+  if (!name) {
+    logger.log(`Sandbox: skipping ${kind} with an empty name`)
+    return undefined
+  }
+  if (!SANDBOX_ENV_NAME_RE.test(name)) {
+    logger.log(`Sandbox: skipping ${kind} ${name}: env name must contain only letters, digits, and underscores and must not start with a digit`)
+    return undefined
+  }
+  if (boundSecretNames.has(name)) {
+    logger.log(`Sandbox: skipping ${kind} ${name}: it names a bound secret`)
+    return undefined
+  }
+  const prior = claimed.get(name)
+  if (prior !== undefined) {
+    logger.log(`Sandbox: skipping ${kind} ${name}: already set by an earlier ${prior}`)
+    return undefined
+  }
+  claimed.set(name, kind)
+  return name
+}
+
+export function resolveSandboxEnvVarSources(
+  network: Pick<SandboxNetworkConfig, 'vars' | 'envFiles'> | undefined,
+  boundSecretNames: ReadonlySet<string>,
+  logger: Logger,
+): SandboxEnvVarSource[] {
+  const claimed = new Map<string, SandboxEnvSourceKind>()
+  const sources: SandboxEnvVarSource[] = []
+  for (const [rawName, value] of Object.entries(network?.vars ?? {})) {
+    const name = claimSandboxEnvName(rawName, 'var', claimed, boundSecretNames, logger)
+    if (name !== undefined) sources.push({ name, value })
+  }
+  for (const [rawName, file] of Object.entries(network?.envFiles ?? {})) {
+    const name = claimSandboxEnvName(rawName, 'env file', claimed, boundSecretNames, logger)
+    if (name !== undefined) sources.push({ name, file })
+  }
+  return sources
+}
+
 export function createSandboxManager(
   runtime: SandboxRuntime,
   config: SandboxManagerConfig,
@@ -253,6 +309,9 @@ export function createSandboxManager(
   const handledSecretEnvs = new Map<string, Set<string>>()
   const settingsLookups = new Set<string>()
   const warnedUnsetSecretEnv = new Set<string>()
+  const warnedSecretFileEnv = new Map<string, string>()
+  const warnedEnvFileEnv = new Map<string, string>()
+  const warnedSandboxVars = new Map<string, string>()
   let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
   let imageReady = false
 
@@ -491,14 +550,21 @@ export function createSandboxManager(
     return { overrides, resources, cpus, memoryMib, allowLan, settings }
   }
 
-  function resolvePassthroughEnv(): string[] {
-    return (config.network?.env ?? []).filter((name) => {
+  function resolvePassthroughEnv(excluded: ReadonlySet<string>): string[] {
+    const names: string[] = []
+    const seen = new Set<string>()
+    for (const rawName of config.network?.env ?? []) {
+      const name = rawName.trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      if (excluded.has(name)) continue
       if (process.env[name] === undefined) {
         logger.log(`Sandbox: skipping env passthrough ${name}: host variable is not set`)
-        return false
+        continue
       }
-      return true
-    })
+      names.push(name)
+    }
+    return names
   }
 
   function warnUnsetSecretEnv(env: string, source: 'config' | 'loop'): void {
@@ -510,11 +576,54 @@ export function createSandboxManager(
     logger.log(`Sandbox: skipping secret ${env}: host variable is not set; sandboxed shell commands will fail until the variable is exported in the environment that launches opencode (${origin})`)
   }
 
+  function warnSecretFileSkipped(env: string, detail: string): void {
+    if (warnedSecretFileEnv.get(env) === detail) return
+    warnedSecretFileEnv.set(env, detail)
+    logger.log(`Sandbox: skipping secret ${env}: ${detail}`)
+  }
+
+  function warnEnvFileSkipped(name: string, detail: string): void {
+    if (warnedEnvFileEnv.get(name) === detail) return
+    warnedEnvFileEnv.set(name, detail)
+    logger.log(`Sandbox: skipping env file ${name}: ${detail}`)
+  }
+
+  async function readSandboxEnvValues(sources: SandboxEnvVarSource[]): Promise<Record<string, string>> {
+    const values: Record<string, string> = Object.create(null)
+    for (const source of sources) {
+      if ('value' in source) {
+        values[source.name] = source.value
+        continue
+      }
+      const path = resolveSandboxSecretFilePath(source.file)
+      let content: string
+      try {
+        content = (await readFile(path, 'utf8')).trim()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        warnEnvFileSkipped(source.name, `could not read ${path}: ${message}`)
+        continue
+      }
+      if (!content) {
+        warnEnvFileSkipped(source.name, `${path} is empty`)
+        continue
+      }
+      warnedEnvFileEnv.delete(source.name)
+      values[source.name] = content
+    }
+    return values
+  }
+
   async function resolveSandboxSecrets(
     worktreeName: string,
     projectDir: string,
     overrides?: SandboxOverrides,
-  ): Promise<{ secrets: SandboxSecretConfig[]; egressSecrets: SandboxSecretConfig[]; secretEnv?: Record<string, string> }> {
+  ): Promise<{
+    secrets: SandboxSecretConfig[]
+    egressSecrets: SandboxSecretConfig[]
+    secretEnv?: Record<string, string>
+    vars: Record<string, string>
+  }> {
     const effective = overrides ?? config.resolveOverrides?.(worktreeName)
     const perSandbox: SandboxSecretConfig[] = []
     for (const raw of effective?.secrets ?? []) {
@@ -523,12 +632,31 @@ export function createSandboxManager(
         logger.log(`Sandbox: skipping secret${outcome.env ? ` ${outcome.env}` : ''}: ${outcome.reason}`)
         continue
       }
+      if (outcome.secret.file !== undefined) {
+        logger.log(`Sandbox: skipping secret ${outcome.secret.env}: file is only supported in sandbox.network.secrets`)
+        continue
+      }
+      if (outcome.secret.vars !== undefined) {
+        logger.log(`Sandbox: skipping secret ${outcome.secret.env}: vars is only supported in sandbox.network.secrets`)
+        continue
+      }
       perSandbox.push(outcome.secret)
     }
     const perSandboxEnvs = new Set(perSandbox.map((secret) => secret.env))
 
     const fromConfig: SandboxSecretConfig[] = []
     const egressFromConfig: SandboxSecretConfig[] = []
+    const fileValues: Record<string, string> = {}
+    const vars: Record<string, string> = {}
+    const collectVars = (secret: SandboxSecretConfig): void => {
+      for (const [name, value] of Object.entries(secret.vars ?? {})) {
+        if (Object.hasOwn(vars, name)) {
+          logger.log(`Sandbox: skipping var ${name} from secret ${secret.env}: already set by an earlier secret`)
+          continue
+        }
+        vars[name] = value
+      }
+    }
     for (const raw of config.network?.secrets ?? []) {
       const outcome = resolveSandboxSecret(raw)
       if ('reason' in outcome) {
@@ -540,11 +668,33 @@ export function createSandboxManager(
         egressFromConfig.push(outcome.secret)
         continue
       }
+      if (outcome.secret.file !== undefined) {
+        const path = resolveSandboxSecretFilePath(outcome.secret.file)
+        let value: string
+        try {
+          value = (await readFile(path, 'utf8')).trim()
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          warnSecretFileSkipped(env, `could not read ${path}: ${message}`)
+          continue
+        }
+        if (!value) {
+          warnSecretFileSkipped(env, `${path} is empty`)
+          continue
+        }
+        warnedSecretFileEnv.delete(env)
+        fileValues[env] = value
+        fromConfig.push(outcome.secret)
+        collectVars(outcome.secret)
+        egressFromConfig.push(outcome.secret)
+        continue
+      }
       if (process.env[env] === undefined) {
         warnUnsetSecretEnv(env, 'config')
         continue
       }
       fromConfig.push(outcome.secret)
+      collectVars(outcome.secret)
       egressFromConfig.push(outcome.secret)
     }
 
@@ -565,8 +715,18 @@ export function createSandboxManager(
         return false
       })
     }
+    if (Object.keys(fileValues).length > 0) {
+      secretEnv = { ...fileValues, ...secretEnv }
+    }
 
-    return { secrets: [...fromConfig, ...keptPerSandbox], egressSecrets: egressFromConfig, secretEnv }
+    const secrets = [...fromConfig, ...keptPerSandbox]
+    for (const secret of secrets) {
+      if (!Object.hasOwn(vars, secret.env)) continue
+      logger.log(`Sandbox: skipping var ${secret.env}: it names a bound secret`)
+      delete vars[secret.env]
+    }
+
+    return { secrets, egressSecrets: egressFromConfig, secretEnv, vars }
   }
 
   async function adoptSecrets(
@@ -593,6 +753,12 @@ export function createSandboxManager(
         recordHandledSecretEnvs(containerName, resolved.secrets)
       }
     }
+    if (Object.keys(resolved.vars).length > 0) {
+      const sandboxEnv = await runtime.readSandboxEnv(containerName).catch(() => null)
+      if (sandboxEnv) warnUnappliedVars(containerName, resolved.vars, sandboxEnv)
+    } else {
+      warnedSandboxVars.delete(containerName)
+    }
     if (state === 'stopped' && resolved.secretEnv !== undefined) {
       await runtime.startSandbox(containerName, resolved.secretEnv)
     }
@@ -611,6 +777,24 @@ export function createSandboxManager(
     const introduced = known ? secrets.filter((s) => !known.has(s.env)) : secrets
     if (introduced.length === 0) return
     logger.log(`Sandbox: egress for secret host(s) of ${introduced.map((s) => s.env).join(', ')} may be unreachable in ${containerName}: msb cannot change egress rules on an existing sandbox, so recreate the sandbox for the new host(s) to be allowed`)
+  }
+
+  function warnUnappliedVars(
+    containerName: string,
+    vars: Record<string, string>,
+    sandboxEnv: Record<string, string>,
+  ): void {
+    const missing = Object.keys(vars)
+      .sort()
+      .filter((name) => !Object.hasOwn(sandboxEnv, name) || sandboxEnv[name] !== vars[name])
+    if (missing.length === 0) {
+      warnedSandboxVars.delete(containerName)
+      return
+    }
+    const signature = JSON.stringify(missing.map((name) => [name, vars[name]]))
+    if (warnedSandboxVars.get(containerName) === signature) return
+    warnedSandboxVars.set(containerName, signature)
+    logger.log(`Sandbox: vars ${missing.join(', ')} are not applied to existing sandbox ${containerName}: vars are set only when a sandbox is created; remove it with \`msb rm --force ${containerName}\` so it is recreated`)
   }
 
   async function prepareCacheDisk(containerName: string): Promise<void> {
@@ -654,20 +838,30 @@ export function createSandboxManager(
     const resolvedSecrets = await resolveSandboxSecrets(worktreeName, absoluteProjectDir, overrides)
     const secrets = resolvedSecrets.secrets
     const restrictEgress = egressRestrictionRequested(config.network?.allow, resolvedSecrets.egressSecrets)
+    const boundSecretNames = new Set([
+      ...secrets.map((secret) => secret.env),
+      ...Object.keys(resolvedSecrets.vars),
+    ])
+    const envSources = resolveSandboxEnvVarSources(config.network, boundSecretNames, logger)
+    const networkEnv = await readSandboxEnvValues(envSources)
+    const claimedEnvNames = new Set(envSources.map((source) => source.name))
     logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${target.resources.memory} cpus=${target.resources.cpus} lan=${target.allowLan} workspaces=${workspaces.length})`)
     const createOpts: CreateSandboxOpts = {
       image: config.image,
       resources: target.resources,
       networkAllow: buildNetworkAllow(config.network?.allow, restrictEgress ? secrets : resolvedSecrets.egressSecrets, logger),
       restrictEgress,
-      env: resolvePassthroughEnv(),
+      env: [...Object.keys(networkEnv), ...resolvePassthroughEnv(new Set([...claimedEnvNames, ...boundSecretNames]))],
       secrets,
       allowLan: target.allowLan,
     }
-    if (resolvedSecrets.secretEnv !== undefined) createOpts.secretEnv = resolvedSecrets.secretEnv
+    if (Object.keys(resolvedSecrets.vars).length > 0) createOpts.vars = resolvedSecrets.vars
+    const secretEnv = { ...networkEnv, ...resolvedSecrets.secretEnv }
+    if (Object.keys(secretEnv).length > 0) createOpts.secretEnv = secretEnv
     const idleTimeout = config.resolveIdleTimeout?.(worktreeName)
     if (idleTimeout) createOpts.idleTimeout = idleTimeout
     await runtime.createSandbox(containerName, workspaces, createOpts)
+    warnedSandboxVars.delete(containerName)
     await prepareCacheDisk(containerName)
     convergedSecrets.add(containerName)
     recordHandledSecretEnvs(containerName, secrets)
@@ -694,6 +888,7 @@ export function createSandboxManager(
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
       preparedCacheDisks.delete(containerName)
+      warnedSandboxVars.delete(containerName)
       logger.log(`Sandbox ${containerName} already gone`)
       try {
         await runtime.removeSandbox(containerName)
@@ -717,6 +912,7 @@ export function createSandboxManager(
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
       preparedCacheDisks.delete(containerName)
+      warnedSandboxVars.delete(containerName)
     }
     if (removalError) throw removalError
   }
@@ -766,6 +962,7 @@ export function createSandboxManager(
         convergedSecrets.delete(name)
         handledSecretEnvs.delete(name)
         preparedCacheDisks.delete(name)
+        warnedSandboxVars.delete(name)
         logger.log(`Removed orphaned sandbox: ${name}`)
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -778,6 +975,7 @@ export function createSandboxManager(
       convergedSecrets.clear()
       handledSecretEnvs.clear()
       preparedCacheDisks.clear()
+      warnedSandboxVars.clear()
     } else {
       for (const key of activeSandboxes.keys()) {
         if (!preserveWorktrees.includes(key)) {

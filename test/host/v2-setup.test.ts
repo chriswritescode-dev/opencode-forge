@@ -8,7 +8,7 @@ import { sandboxSecretProviders } from '../../src/sandbox/secrets'
 import { CONCURRENT_BUILD_MESSAGE } from '../../src/sandbox/template'
 import { processShared } from '../../src/utils/process-shared'
 import { VERSION } from '../../src/version'
-import { isPromptQueued, hasSuppressedIdle, recordSuppressedIdle, __resetIdleGate } from '../../src/loop/idle-gate'
+import { isPromptQueued, hasSuppressedIdle, recordSuppressedIdle, recordIdleBackgroundWork, hasPendingBackgroundWork, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { ForgeClient } from '../../src/client/port'
 import { createFakeV2Context } from '../helpers/fake-v2-context'
 import { useTempConfigHome } from '../helpers/temp-config'
@@ -675,6 +675,24 @@ describe('V2 server setup', () => {
         properties: { sessionID: 'ses_started', status: { type: 'busy' } },
       },
     ])
+  })
+
+  test('a session.execution.started clears recorded background work that predates it', async () => {
+    const stream = createV2EventStream()
+    const fake = createFakeV2Context({
+      location: { directory: '/project-a' },
+      event: { subscribe: stream.subscribe },
+    })
+
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    recordIdleBackgroundWork('ses_woken', [{ kind: 'shell', label: 'pnpm dev' }], 1000)
+    stream.push({
+      id: 'evt_woken',
+      type: V2_EVENT_TYPES.sessionExecutionStarted,
+      created: 2000,
+      data: { sessionID: 'ses_woken' },
+    })
+    await waitFor(() => !hasPendingBackgroundWork('ses_woken'))
   })
 
   test('an event waiting on the core is not delivered once cleanup has started', async () => {

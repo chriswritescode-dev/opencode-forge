@@ -94,8 +94,13 @@ export interface ForgeCore {
   getSessionAutoApproveState(sessionID: string): Promise<ForgeAutoApproveState>
   setSessionAutoApprove(sessionID: string, enabled: boolean): Promise<ForgeAutoApproveState>
   autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule>
+  sandboxModeDenyRules: {
+    sandboxed: ReadonlyArray<AutoApproveDenyRule>
+    host: ReadonlyArray<AutoApproveDenyRule>
+  }
   tui: TuiRpcService
   dashboard: DashboardService
+  logger: Logger
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -481,6 +486,34 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     })
   }
   const autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule> = parsedAutoApproveDeny.rules
+
+  const parsedSandboxedDeny = parseAutoApproveDenyRules(
+    config.sandbox?.permissions?.sandboxed?.deny,
+    'sandbox.permissions.sandboxed.deny',
+  )
+  const parsedHostDeny = parseAutoApproveDenyRules(
+    config.sandbox?.permissions?.host?.deny,
+    'sandbox.permissions.host.deny',
+  )
+  const sandboxPermissionWarnings = [...parsedSandboxedDeny.warnings, ...parsedHostDeny.warnings]
+  for (const warning of sandboxPermissionWarnings) {
+    logger.log(warning)
+  }
+  if (sandboxPermissionWarnings.length > 0 && !isForgeWorktreeDir(dataDir, directory)) {
+    publishToast({
+      client: forgeClient,
+      directory,
+      logger,
+      title: 'Forge sandbox permissions config',
+      message: sandboxPermissionWarnings.join(' '),
+      variant: 'warning',
+      duration: 10_000,
+    })
+  }
+  const sandboxModeDenyRules = {
+    sandboxed: parsedSandboxedDeny.rules,
+    host: parsedHostDeny.rules,
+  }
 
   let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
   const runtime = createMsbRuntime(logger)
@@ -1216,8 +1249,10 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     getSessionAutoApproveState,
     setSessionAutoApprove,
     autoApproveDenyRules,
+    sandboxModeDenyRules,
     tui,
     dashboard,
+    logger,
     cleanup,
     shellShimPath,
   }

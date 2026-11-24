@@ -99,6 +99,18 @@
     // Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox (e.g.
     // after turning it on with the `Toggle sandbox` command), using the auto-approve policy. Defaults to true.
     // "autoApprovePermissions": true,
+    // Deny rules selected by where the session's shell runs. `sandboxed` applies to loop sessions
+    // running in a sandbox and sessions with `Toggle sandbox` on; `host` applies to sessions running
+    // on the host. A matching rule denies even when OpenCode would allow or ask. Same { action, resource }
+    // wildcard format as `autoApprove.deny`, and deny only.
+    // "permissions": {
+    //   "sandboxed": {
+    //     "deny": [{ "action": "shell", "resource": "git push *" }]
+    //   },
+    //   "host": {
+    //     "deny": [{ "action": "shell", "resource": "rm -rf *" }]
+    //   }
+    // },
     // Host environment variables pass through at create time as bare names (msb resolves each name
     // from its own environment, so values never appear on forge's command line); host-held
     // secrets are bound reference-only and exposed inside the sandbox as $MSB_<env> placeholders
@@ -113,6 +125,13 @@
     //   // appears on forge's command line). Host-held credentials belong in "secrets" instead,
     //   // which never enter the guest.
     //   "env": ["MY_VAR"],
+    //   // Literal guest environment variables, set at create time. Values travel only in the
+    //   // msb child environment (bare `-e NAME`), never on forge's command line, but they are
+    //   // real values inside the guest; credentials belong in "secrets" instead.
+    //   "vars": { "REVIEW_SERVER": "https://review.example.com" },
+    //   // Guest environment variables read from files at create time. Paths resolve like
+    //   // secrets[].file, and the trimmed contents become the real guest value.
+    //   "envFiles": { "REVIEW_TOKEN": "./.secrets/review-token" },
     //   // Host-held credentials bound at create time. Each entry references a host env var and
     //   // the hostnames allowed to receive its real value at the network boundary; the value
     //   // never enters the guest. Optional per-secret fields tune substitution and policy:
@@ -121,9 +140,24 @@
     //   // "requireTlsIdentity" (false substitutes over plain HTTP for the secret's hosts).
     //   // The named variable must be exported in the environment that launches opencode: a bound
     //   // secret with a missing variable makes every sandboxed shell command fail, and forge
-    //   // logs a warning naming the variable.
+    //   // logs a warning naming the variable. Instead of a host variable, "file" reads the value
+    //   // from a file: "~/..." resolves under the home directory, an absolute path is used as is,
+    //   // and a relative path resolves against this config's directory. The value is read right
+    //   // before each msb create/start/modify, passed only in that child's environment, and a
+    //   // missing or empty file skips the secret with a log. Not allowed for per-loop secrets.
+    //   // "vars" adds plain (non-secret) guest environment variables beside the credential; they
+    //   // are applied at create time only while that secret is bound.
     //   "secrets": [
     //     { "env": "NPM_TOKEN", "hosts": ["registry.npmjs.org"] },
+    //     // Value read from a file instead of the environment.
+    //     { "env": "GH_TOKEN", "file": "./.secrets/gh-token", "hosts": ["api.github.com"] },
+    //     // Guest instance URL set only when the token is bound.
+    //     {
+    //       "env": "GITEA_TOKEN",
+    //       "file": "./.secrets/gitea-token",
+    //       "hosts": ["git.example.com"],
+    //       "vars": { "GITEA_INSTANCE_URL": "https://git.example.com" }
+    //     },
     //     // Authorization header only, substituted over plain HTTP to a LAN host (needs allowLan).
     //     {
     //       "env": "REVIEW_TOKEN",

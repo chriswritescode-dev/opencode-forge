@@ -1,7 +1,11 @@
 import { describe, test, expect, afterEach } from 'vitest'
+import { homedir } from 'os'
+import { join, resolve } from 'path'
 import {
   describeInvalidLoopSecrets,
   fetchSandboxSecretValues,
+  resolveSandboxSecret,
+  resolveSandboxSecretFilePath,
   sandboxSecretProviders,
   type SandboxSecretValuesRequest,
 } from '../../src/sandbox/secrets'
@@ -109,6 +113,80 @@ describe('fetchSandboxSecretValues', () => {
   })
 })
 
+describe('resolveSandboxSecret file', () => {
+  test('keeps a trimmed file path on the resolved secret', () => {
+    expect(resolveSandboxSecret({
+      env: 'TOKEN',
+      file: '  ~/.config/opencode/.secrets/token  ',
+      hosts: ['api.example.com'],
+    })).toEqual({
+      secret: {
+        env: 'TOKEN',
+        file: '~/.config/opencode/.secrets/token',
+        hosts: ['api.example.com'],
+      },
+    })
+  })
+
+  test('rejects a file path that is empty after trimming', () => {
+    expect(resolveSandboxSecret({ env: 'TOKEN', file: '   ', hosts: ['api.example.com'] }))
+      .toEqual({ env: 'TOKEN', reason: 'file must not be empty' })
+  })
+
+  test('resolves ~ and ~/ paths under the home directory', () => {
+    expect(resolveSandboxSecretFilePath('~')).toBe(homedir())
+    expect(resolveSandboxSecretFilePath('~/token')).toBe(join(homedir(), 'token'))
+    expect(resolveSandboxSecretFilePath('~/.config/opencode/token')).toBe(join(homedir(), '.config/opencode/token'))
+  })
+
+  test('leaves an absolute path as is', () => {
+    expect(resolveSandboxSecretFilePath('/run/secrets/token')).toBe('/run/secrets/token')
+  })
+
+  test('resolves a relative path against the opencode config directory', () => {
+    const saved = process.env['XDG_CONFIG_HOME']
+    process.env['XDG_CONFIG_HOME'] = '/tmp/forge-secret-xdg'
+    try {
+      expect(resolveSandboxSecretFilePath('.secrets/token'))
+        .toBe(resolve('/tmp/forge-secret-xdg/opencode', '.secrets/token'))
+    } finally {
+      if (saved === undefined) delete process.env['XDG_CONFIG_HOME']
+      else process.env['XDG_CONFIG_HOME'] = saved
+    }
+  })
+})
+
+describe('resolveSandboxSecret vars', () => {
+  test('keeps vars on the resolved secret unchanged', () => {
+    expect(resolveSandboxSecret({
+      env: 'GITEA_TOKEN',
+      hosts: ['git.example.com'],
+      vars: { GITEA_INSTANCE_URL: 'https://git.example.com', _OTHER_1: ' value ' },
+    })).toEqual({
+      secret: {
+        env: 'GITEA_TOKEN',
+        hosts: ['git.example.com'],
+        vars: { GITEA_INSTANCE_URL: 'https://git.example.com', _OTHER_1: ' value ' },
+      },
+    })
+  })
+
+  test('omits an empty vars object', () => {
+    expect(resolveSandboxSecret({ env: 'TOKEN', hosts: ['api.example.com'], vars: {} }))
+      .toEqual({ secret: { env: 'TOKEN', hosts: ['api.example.com'] } })
+  })
+
+  test('rejects a vars name that is not an environment variable name', () => {
+    expect(resolveSandboxSecret({ env: 'TOKEN', hosts: ['api.example.com'], vars: { 'BAD-NAME': 'x' } }))
+      .toEqual({ env: 'TOKEN', reason: 'vars names must be valid environment variable names' })
+  })
+
+  test('rejects a vars name that redefines the secret env', () => {
+    expect(resolveSandboxSecret({ env: 'TOKEN', hosts: ['api.example.com'], vars: { TOKEN: 'x' } }))
+      .toEqual({ env: 'TOKEN', reason: "vars must not redefine the secret's env" })
+  })
+})
+
 describe('describeInvalidLoopSecrets', () => {
   const registeredId = 'registered-provider'
 
@@ -130,6 +208,24 @@ describe('describeInvalidLoopSecrets', () => {
   test('describes a rejected definition without an env name', () => {
     expect(describeInvalidLoopSecrets({ secrets: [{ env: '  ', hosts: ['api.example.com'] }] }))
       .toBe('Invalid sandbox secret: missing env name')
+  })
+
+  test('rejects a per-loop entry that reads its value from a file', () => {
+    expect(describeInvalidLoopSecrets({
+      secrets: [{ env: 'TOKEN', file: '/run/secrets/token', hosts: ['api.example.com'] }],
+    })).toBe('Invalid sandbox secret TOKEN: file is only supported in sandbox.network.secrets')
+  })
+
+  test('rejects a per-loop entry that declares vars', () => {
+    expect(describeInvalidLoopSecrets({
+      secrets: [{ env: 'TOKEN', hosts: ['api.example.com'], vars: { INSTANCE_URL: 'https://example.com' } }],
+    })).toBe('Invalid sandbox secret TOKEN: vars is only supported in sandbox.network.secrets')
+  })
+
+  test('accepts a per-loop entry with empty vars, matching the manager', () => {
+    expect(describeInvalidLoopSecrets({
+      secrets: [{ env: 'TOKEN', hosts: ['api.example.com'], vars: {} }],
+    })).toBeUndefined()
   })
 
   test('describes a duplicate env name', () => {

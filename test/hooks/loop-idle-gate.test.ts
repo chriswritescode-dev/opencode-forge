@@ -14,6 +14,10 @@ import {
   consumeSuppressedIdle,
   clearSuppressedIdle,
   clearIdleGateForSession,
+  recordIdleBackgroundWork,
+  clearBackgroundWorkStartedAt,
+  getPendingBackgroundWork,
+  hasPendingBackgroundWork,
   __resetIdleGate,
 } from '../../src/loop/idle-gate'
 import type { Logger } from '../../src/types'
@@ -215,5 +219,54 @@ describe('suppressed-idle tracking', () => {
     expect(isPromptQueued('session-a')).toBe(false)
     expect(isPromptQueued('session-b')).toBe(true)
     expect(hasSuppressedIdle('session-b')).toBe(false)
+  })
+})
+
+describe('idle background-work tracking', () => {
+  beforeEach(() => {
+    __resetIdleGate()
+  })
+
+  const jobs = [
+    { kind: 'shell' as const, label: 'pnpm dev' },
+    { kind: 'subagent' as const, label: 'audit helpers' },
+  ]
+
+  test('recording jobs marks only that session and keeps their labels', () => {
+    recordIdleBackgroundWork('session-abc', jobs)
+    expect(hasPendingBackgroundWork('session-abc')).toBe(true)
+    expect(hasPendingBackgroundWork('session-xyz')).toBe(false)
+    expect(getPendingBackgroundWork('session-abc')?.jobs).toEqual(jobs)
+  })
+
+  test('recording no jobs clears the marker', () => {
+    recordIdleBackgroundWork('session-abc', jobs)
+    recordIdleBackgroundWork('session-abc', [])
+    expect(hasPendingBackgroundWork('session-abc')).toBe(false)
+    expect(getPendingBackgroundWork('session-abc')).toBeNull()
+  })
+
+  test('clearBackgroundWorkStartedAt ignores a start older than the recorded state', () => {
+    const recordedAt = Date.now()
+    recordIdleBackgroundWork('session-abc', jobs, recordedAt)
+    clearBackgroundWorkStartedAt('session-abc', recordedAt - 1)
+    expect(hasPendingBackgroundWork('session-abc')).toBe(true)
+  })
+
+  test('clearBackgroundWorkStartedAt clears when the start is at or after the recorded state', () => {
+    const recordedAt = Date.now()
+    recordIdleBackgroundWork('session-abc', jobs, recordedAt)
+    clearBackgroundWorkStartedAt('session-abc', recordedAt)
+    expect(hasPendingBackgroundWork('session-abc')).toBe(false)
+
+    recordIdleBackgroundWork('session-abc', jobs, recordedAt)
+    clearBackgroundWorkStartedAt('session-abc', recordedAt + 1)
+    expect(hasPendingBackgroundWork('session-abc')).toBe(false)
+  })
+
+  test('clearIdleGateForSession clears pending background work', () => {
+    recordIdleBackgroundWork('session-abc', jobs)
+    clearIdleGateForSession('session-abc')
+    expect(hasPendingBackgroundWork('session-abc')).toBe(false)
   })
 })

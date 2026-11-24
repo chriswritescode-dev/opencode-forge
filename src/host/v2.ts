@@ -24,6 +24,7 @@ import {
   v2IdleEvents,
 } from './v2-events'
 import {
+  clearBackgroundWorkStartedAt,
   clearIdleGateForSession,
   clearSuppressedIdle,
   consumeSuppressedIdle,
@@ -405,6 +406,10 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
         if (event.type === V2_EVENT_TYPES.sessionDeleted) {
           const sessionId = v2EventSessionId(event)
           if (sessionId) clearIdleGateForSession(sessionId)
+        }
+        if (event.type === V2_EVENT_TYPES.sessionExecutionStarted) {
+          const sessionId = v2EventSessionId(event)
+          if (sessionId) clearBackgroundWorkStartedAt(sessionId, event.created)
         }
         const inboxEvent = readV2InboxEvent(event)
         if (inboxEvent) {

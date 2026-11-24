@@ -102,7 +102,7 @@ test('forge-cache-prune keeps uv tool installs and bin symlinks while wiping exp
 test('the image installs a pinned codegraph by default behind a build argument that can skip it', () => {
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
 
-  expect(dockerfile).toContain('ARG CODEGRAPH_VERSION=v1.6.2')
+  expect(dockerfile).toContain('ARG CODEGRAPH_VERSION=v1.6.4')
   expect(dockerfile).not.toMatch(/pnpm add -g fallow/)
   expect(dockerfile).toContain('ARG INSTALL_CODEGRAPH=true')
 

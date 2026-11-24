@@ -7,6 +7,7 @@ import { findingRecurrenceKey, isRecurrenceEscalated } from './finding-recurrenc
 import { formatFindingDetails } from '../utils/review-format'
 import { blockingBugFindings, type SectionScope } from './section-scope'
 import { LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME } from '../constants/loop'
+import type { BackgroundJob } from './idle-gate'
 
 export interface SectionDigestEntry {
   index: number
@@ -49,6 +50,13 @@ export const AUDITOR_HANDOFF_INSTRUCTION: string = auditorHandoffInstruction(tru
 export function buildHandoffNudgePrompt(role: LoopHandoffRole): string {
   const tool = role === 'post_action' ? LOOP_COMPLETE_TOOL_NAME : LOOP_HANDOFF_TOOL_NAME
   return `You ended your turn without calling \`${tool}\`. Finish the work, then call it.`
+}
+
+export function buildBackgroundStallPrompt(role: LoopHandoffRole, jobs: BackgroundJob[], elapsedMs: number): string {
+  const tool = role === 'post_action' ? LOOP_COMPLETE_TOOL_NAME : LOOP_HANDOFF_TOOL_NAME
+  const minutes = Math.max(1, Math.round(elapsedMs / 60000))
+  const jobLines = jobs.map(job => `- ${job.kind}: ${job.label}`).join('\n')
+  return `This background work has shown no progress for ${String(minutes)} minute${minutes === 1 ? '' : 's'}:\n${jobLines}\n\nCheck it, stop it if it is stuck, finish the work, then call \`${tool}\`.`
 }
 
 function formatSectionsSummary(digest: SectionDigestEntry[]): string {

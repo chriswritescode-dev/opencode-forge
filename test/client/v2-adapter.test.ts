@@ -132,6 +132,21 @@ describe('createForgeClientFromV2', () => {
 
       expect(info.permission).toBeUndefined()
     })
+
+    it('classifies a tagged SessionNotFoundError as not-found with a non-empty message', async () => {
+      const { client } = clientFor({
+        session: {
+          get: vi.fn().mockRejectedValue({ _tag: 'SessionNotFoundError', sessionID: 'ses_x', message: '' }),
+        },
+      })
+
+      const err = failure(await client.session.get({ sessionID: 'ses_x' }).catch((e: unknown) => e))
+
+      expect(err.kind).toBe('not-found')
+      expect(err.method).toBe('session.get')
+      expect(err.message.length).toBeGreaterThan(0)
+      expect(err.message).toContain('SessionNotFoundError')
+    })
   })
 
   describe('session.update', () => {
@@ -493,6 +508,55 @@ describe('createForgeClientFromV2', () => {
       await client.recordStatusEvent({ type: 'session.deleted', properties: { sessionID: 'ses_1' } })
 
       expect(await client.session.status()).toEqual({})
+    })
+
+    it('ignores a late status event for a deleted session', async () => {
+      const { client } = clientFor()
+
+      await client.recordStatusEvent({ type: 'session.status', properties: { sessionID: 'ses_gone', status: { type: 'busy' } } })
+      await client.recordStatusEvent({ type: 'session.deleted', properties: { sessionID: 'ses_gone' } })
+      await client.recordStatusEvent({ type: 'session.status', properties: { sessionID: 'ses_gone', status: { type: 'busy' } } })
+      await client.recordStatusEvent({ type: 'session.idle', properties: { sessionID: 'ses_gone' } })
+
+      expect(await client.session.status()).toEqual({})
+    })
+
+    it('evicts a busy session and ignores later events once delete is requested successfully', async () => {
+      const { ctx } = createFakeV2Context()
+      const requestSessionDelete = vi.fn().mockResolvedValue(undefined)
+      const client = createForgeClientFromV2(ctx, {
+        directory: '/tmp/forge-project',
+        workspace: createFakeForgeClient().client.workspace,
+        requestSessionDelete,
+      })
+
+      await client.recordStatusEvent({ type: 'session.status', properties: { sessionID: 'ses_deleted', status: { type: 'busy' } } })
+      await client.session.delete({ sessionID: 'ses_deleted' })
+
+      expect(requestSessionDelete).toHaveBeenCalledWith('ses_deleted')
+      expect(await client.session.status()).toEqual({})
+
+      await client.recordStatusEvent({ type: 'session.status', properties: { sessionID: 'ses_deleted', status: { type: 'busy' } } })
+      await client.recordStatusEvent({ type: 'session.idle', properties: { sessionID: 'ses_deleted' } })
+
+      expect(await client.session.status()).toEqual({})
+    })
+
+    it('leaves the recorded status untouched when the delete request fails', async () => {
+      const { ctx } = createFakeV2Context()
+      const requestSessionDelete = vi.fn().mockRejectedValue(new Error('delete failed'))
+      const client = createForgeClientFromV2(ctx, {
+        directory: '/tmp/forge-project',
+        workspace: createFakeForgeClient().client.workspace,
+        requestSessionDelete,
+      })
+
+      await client.recordStatusEvent({ type: 'session.status', properties: { sessionID: 'ses_keep', status: { type: 'busy' } } })
+
+      const err = failure(await client.session.delete({ sessionID: 'ses_keep' }).catch((e: unknown) => e))
+
+      expect(err.method).toBe('session.delete')
+      expect(await client.session.status()).toEqual({ ses_keep: { type: 'busy' } })
     })
 
     it('preserves retry status fields', async () => {

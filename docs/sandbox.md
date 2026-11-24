@@ -30,7 +30,7 @@ The image installs `codegraph` by default. Set `codeGraph.install` to `false` be
 
 `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a **Build sandbox template** command in the palette. Trigger it at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically on the machine running the OpenCode server, so it also works from a TUI connected to a remote server; Docker and `msb` must be installed on that server. The dialog polls the server for progress and shows a live progress bar, the current Docker step, elapsed time, and streamed build output; on failure it keeps the last lines of Docker output so the cause is visible. A first build takes several minutes, and closing the dialog does not cancel it — reopening the dialog shows the build already in progress, and the server reports completion with a toast. Restart OpenCode after changing sandbox configuration.
 
-The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, the Rust toolchain (rustup, cargo, rustc, clippy, rustfmt), ripgrep, git with Git LFS, jq, rsync, sqlite3, the GitHub CLI (`gh`), the Hugging Face CLI (`hf`), `codegraph` (pinned v1.6.2 under `/opt/codegraph`, with telemetry, daemon, and file watcher disabled image-wide; leave it out with `codeGraph.install: false`, see [Code Graph](configuration.md#code-graph)), Chromium, the recording tools `ffmpeg`, `ttyd`, and `vhs` (see [Recording](#recording)), and Docker Engine (see [Nested Docker](#nested-docker)).
+The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, the Rust toolchain (rustup, cargo, rustc, clippy, rustfmt), ripgrep, git with Git LFS, jq, rsync, sqlite3, the GitHub CLI (`gh`), the Gitea CLI (`tea`), the Hugging Face CLI (`hf`), `codegraph` (pinned v1.6.4 under `/opt/codegraph`, with telemetry, daemon, and file watcher disabled image-wide; leave it out with `codeGraph.install: false`, see [Code Graph](configuration.md#code-graph)), Chromium, the recording tools `ffmpeg`, `ttyd`, and `vhs` (see [Recording](#recording)), and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
@@ -53,6 +53,31 @@ The image ships `ffmpeg` (with `ffprobe`) and `ttyd` from Ubuntu's repository an
 `vhs` needs `ttyd` and `ffmpeg` on `PATH` and launches the first browser it finds there, which is the image's `chromium`. The image sets `VHS_NO_SANDBOX=true`, because that browser does not start with Chromium's own sandbox inside the sandbox image, the same reason the `chromium` command above takes `--no-sandbox`. In a tape, quote an absolute `Output` path (`Output "/tmp/demo.mp4"`); an unquoted leading `/` is read as the start of a regular expression.
 
 Playwright records browser video as WebM with its own bundled ffmpeg build; the system `ffmpeg` is what converts those clips to mp4.
+
+### Gitea
+
+The image ships the Gitea CLI (`tea`, pinned v0.16.0) and registers a Gitea git credential helper. With `GITEA_TOKEN` bound as a secret and `GITEA_INSTANCE_URL` set through that secret's `vars` — tea's environment login authenticates against that instance:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "secrets": [
+        {
+          "env": "GITEA_TOKEN",
+          "file": "./.secrets/gitea-token",
+          "hosts": ["git.example.com"],
+          "vars": { "GITEA_INSTANCE_URL": "https://git.example.com" }
+        }
+      ]
+    }
+  }
+}
+```
+
+`vars` keeps the instance URL next to the token and passes it to the guest as a plain `-e GITEA_INSTANCE_URL=...` argument on msb's command line — it is not a credential and never enters the host msb process environment. The variables are set only when the secret itself is bound: a secret skipped for a missing or empty file, or for an unset host variable, skips its `vars` too.
+
+`git-credential-gitea` is registered as a system git credential helper. It answers only for the host in `GITEA_INSTANCE_URL`, returning `oauth2` with the `GITEA_TOKEN` placeholder as the password, so `git clone` and `git push` over HTTPS authenticate without storing the token in the guest. The real value is substituted at the network boundary, like any other bound secret.
 
 ## How It Works
 
@@ -95,6 +120,29 @@ File tools (`read`, `write`, `edit`, `patch`) run on the host, not in the sandbo
   }
 }
 ```
+
+## Mode permissions
+
+`sandbox.permissions` denies requests depending on whether the session's shell runs in a sandbox or on the host. `sandboxed` covers loop sessions running in their worktree sandbox and regular sessions with `Toggle sandbox` on; worktree-only loops and other host sessions get the `host` rules. A matching rule forces the decision to `deny`, even when OpenCode's own rules would `allow` or `ask`. Rules use the same `{ action, resource }` wildcard format as [`autoApprove.deny`](configuration.md#auto-approve); only deny rules exist, and invalid entries are ignored with a startup warning.
+
+The typical use is denying a command only while sandboxed, for example a `git push` that should stay on the host:
+
+```jsonc
+{
+  "sandbox": {
+    "permissions": {
+      "sandboxed": {
+        "deny": [{ "action": "shell", "resource": "git push *" }]
+      },
+      "host": {
+        "deny": [{ "action": "shell", "resource": "rm -rf *" }]
+      }
+    }
+  }
+}
+```
+
+When no rule matches, Forge does not resolve the session's sandbox mode, so ordinary permission checks pay nothing for this config.
 
 ## Tool Behavior
 
@@ -147,6 +195,23 @@ Select host environment variables can be injected into the sandbox at create tim
 
 Forge passes each name as the bare `-e <NAME>` form, so msb resolves the value from its own environment and the value never appears on forge's command line (or in `ps` output). Only names that are set in the host process are injected; unset names are skipped and logged.
 
+Plain guest variables can also be set from the config itself, either as literals or from files:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "vars": { "REVIEW_SERVER": "https://review.example.com" },
+      "envFiles": { "REVIEW_TOKEN": "./.secrets/review-token" }
+    }
+  }
+}
+```
+
+`vars` values are used verbatim, including empty strings. `envFiles` resolves paths like `secrets[].file`: `~` and `~/...` under the home directory, absolute paths as is, and relative paths against the opencode config directory that holds `forge-config.jsonc`. Forge reads and trims the file when it creates the sandbox, and skips a missing or empty file with a log. Both forms use the same bare `-e <NAME>` transport as `env`, so the value travels only in the msb child process environment and never on forge's command line. msb stores the value at create time, so it survives sandbox restarts; changing a value or a file, or adding an entry, needs the sandbox removed and recreated.
+
+Unlike `secrets`, these values are **real values inside the guest**, not placeholders. Use them for tools that cannot use msb substitution — for example a plain-HTTP service addressed by IP, which msb does not match against a secret's host names — and keep credentials that must not be readable inside the guest in `secrets`. A bound secret, or a secret's own `vars` entry, with the same name wins over `vars`, `envFiles`, and `env`; `vars` wins over `envFiles`, and both win over `env`.
+
 ## Secrets
 
 Host-held credentials are bound with `sandbox.network.secrets` instead of `env`. A secret **never enters the guest**: msb keeps a host-side source reference to the environment variable, exposes a `$MSB_<ENV>` placeholder inside the sandbox, and substitutes the real value only for the listed hosts at the network boundary.
@@ -163,7 +228,23 @@ Host-held credentials are bound with `sandbox.network.secrets` instead of `env`.
 }
 ```
 
-Each entry maps to `msb create --secret <env>:<options>@<hosts>`, where the options express the optional fields below, for example `headers=*`, `headers=[authorization]`, `no-headers`, `query`, `body`, or `passthrough=[host]`. Once a sandbox has a secret bound, `msb create`, `msb start`, `msb modify`, and an `msb exec` that has to start a stopped sandbox all need the named host environment variable in the environment of the process invoking msb; `msb exec` against a running sandbox does not. Without it msb reports `error: invalid config: secret X: host environment variable X is not set`. Because the shell shim inherits opencode's process environment, a sandbox that has stopped cannot be started by a routed command when the variable is missing there. The variables named in `sandbox.network.secrets` must therefore be exported in the environment that **launches opencode**, not merely present in an interactive shell. Forge logs an explicit warning naming the variable when a configured secret's host variable is unset.
+Each entry maps to `msb create --secret <env>:<options>@<hosts>`, where the options express the optional fields below, for example `headers=*`, `headers=[authorization]`, `no-headers`, `query`, `body`, or `passthrough=[host]`. A secret without `file` takes its value from the named host environment variable: once such a sandbox has a secret bound, `msb create`, `msb start`, `msb modify`, and an `msb exec` that has to start a stopped sandbox all need the named host environment variable in the environment of the process invoking msb; `msb exec` against a running sandbox does not. Without it msb reports `error: invalid config: secret X: host environment variable X is not set`. Because the shell shim inherits opencode's process environment, a sandbox that has stopped cannot be started by a routed command when the variable is missing there. The variables named in `sandbox.network.secrets` must therefore be exported in the environment that **launches opencode**, not merely present in an interactive shell. Forge logs an explicit warning naming the variable when a configured secret's host variable is unset.
+
+A `file` field takes the value from a file instead, so no host variable is required:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "secrets": [
+        { "env": "GH_TOKEN", "file": "./.secrets/gh-token", "hosts": ["api.github.com", "github.com"] }
+      ]
+    }
+  }
+}
+```
+
+`~` and `~/...` resolve under the home directory, an absolute path is used as is, and a relative path resolves against the opencode config directory that holds `forge-config.jsonc`. Forge reads the file immediately before each `msb create`, `msb start`, and `msb modify` that needs the value, trims surrounding whitespace, and passes the value only in that child process's environment — never on a command line, in the `--secret-conf` file, or in a log line. A missing, unreadable, or empty file skips the secret and logs the variable, the resolved path, and the error. Because `msb exec` start-in-place only sees opencode's own environment, Forge starts a stopped sandbox that has `file` secrets itself with `msb start` first. `file` is rejected for per-loop secrets, whose definitions arrive over the HTTP-reachable plugin RPC.
 
 ### Secret options
 
@@ -178,6 +259,8 @@ Each entry accepts these optional fields alongside `env` and `hosts`:
 | `passthrough` | `[]` | Extra hosts that may receive the unchanged placeholder. Grants neither network access nor the credential. |
 | `violationAction` | msb default (`block-and-log`) | What happens when a placeholder is sent to a host that may receive neither the credential nor the placeholder: `block`, `block-and-log`, or `block-and-terminate` (also stops the sandbox). |
 | `requireTlsIdentity` | `true` | Set `false` to let the secret be substituted over plain HTTP for its hosts. |
+| `file` | host env var | Read the value from this file instead of the host environment variable. `~`/`~/...` resolve under the home directory, an absolute path is used as is, and a relative path resolves against opencode's config directory. Read right before each msb call that needs the value; a missing, unreadable, or empty file skips the secret with a log. Not allowed for per-loop secrets. |
+| `vars` | `{}` | Plain guest environment variables set alongside the secret at create time, for values that must accompany the credential but are not secret. Keys must be valid environment variable names and must not repeat the secret's `env`; a key naming another bound secret is skipped with a log, so a var can never replace a credential. Values are passed to the guest as `-e NAME=VALUE` arguments on msb's command line because they are not secret, and they never enter the host msb process environment. Credentials belong in the secret itself, never in `vars`. Applied only while the secret is bound — a skipped secret skips its vars. Adopting an existing sandbox whose env does not match these values logs a warning naming the affected vars and the `msb rm --force <name>` command, because vars are fixed when the sandbox is created. Not allowed for per-loop secrets. |
 
 An unrestricted header list lets an allowed endpoint echo a substituted secret back to the guest, so listing the credential field is recommended. A plain-HTTP LAN service that authenticates with the `Authorization` header only:
 
@@ -215,9 +298,9 @@ One placeholder caveat: a secret introduced by `msb modify` on an already-existi
 
 ### Per-loop secrets
 
-A loop can carry its own secret definitions in addition to `sandbox.network.secrets`, which is unchanged. The definitions travel over the plugin RPC: `FORGE_RPC.executePlan` accepts `sandbox.secrets` and an optional `sandbox.secretProvider` for `loop` mode, and `FORGE_RPC.loopRestart` accepts an optional `sandbox: { secrets, secretProvider }` that replaces the loop's stored definitions — an empty `secrets` array clears them, and omitting `sandbox` reuses them. Entries take the same `env`, `hosts`, and optional `substitution`, `passthrough`, `violationAction`, and `requireTlsIdentity` fields as `sandbox.network.secrets`. Only the definitions — names, hosts, and policy, never a value — are stored on the loop row. `hostSandboxSet` does not accept them, so host-session sandboxes cannot carry per-loop secrets yet.
+A loop can carry its own secret definitions in addition to `sandbox.network.secrets`, which is unchanged. The definitions travel over the plugin RPC: `FORGE_RPC.executePlan` accepts `sandbox.secrets` and an optional `sandbox.secretProvider` for `loop` mode, and `FORGE_RPC.loopRestart` accepts an optional `sandbox: { secrets, secretProvider }` that replaces the loop's stored definitions — an empty `secrets` array clears them, and omitting `sandbox` reuses them. Entries take the same `env`, `hosts`, and optional `substitution`, `passthrough`, `violationAction`, and `requireTlsIdentity` fields as `sandbox.network.secrets`, except `file`: per-loop definitions arrive over the HTTP-reachable plugin RPC, so a client must not be able to make Forge read an arbitrary host file. Only the definitions — names, hosts, and policy, never a value — are stored on the loop row. `hostSandboxSet` does not accept them, so host-session sandboxes cannot carry per-loop secrets yet.
 
-`executePlan` returns an error and launches nothing when secrets are passed for `execute-here` or `new-session`, when the loop is not sandboxed, when a definition is invalid, when an `env` name repeats, or when the named provider is not registered. `loopRestart` rejects the same definition problems and secrets for a loop that is not sandboxed.
+`executePlan` returns an error and launches nothing when secrets are passed for `execute-here` or `new-session`, when the loop is not sandboxed, when a definition is invalid, when an entry sets `file`, when an `env` name repeats, or when the named provider is not registered. `loopRestart` rejects the same definition problems and secrets for a loop that is not sandboxed.
 
 Values never cross the RPC. OpenCode serves every plugin RPC method over HTTP at `POST /api/rpc/:rpcID/:method`, so a method returning secret values would be reachable by any client of the server, including a sandbox with LAN access. Values therefore come from an in-process provider registered in Forge's process-shared store:
 
@@ -233,7 +316,7 @@ Registration is order-independent: either plugin may load first. The request car
 
 Forge asks right before each msb call that needs the values: `msb create` (including its `--replace` retry), the `msb modify` secret refresh when an existing sandbox is adopted, and `msb start` for a stopped sandbox. The values are passed only in that child process's environment, never as arguments, never logged, and never stored by Forge. A running, already-converged sandbox causes no provider call, and `msb exec` on a running sandbox needs no value.
 
-A stopped sandbox is normally started in place by `msb exec` using OpenCode's own environment, which lacks provider-supplied values, so for a sandbox with provider secrets Forge runs `msb start` itself with the values before any command is routed into it. Sandboxes without provider secrets keep the start-in-place behavior.
+A stopped sandbox is normally started in place by `msb exec` using OpenCode's own environment, which lacks provider-supplied and file-supplied values, so for a sandbox with either kind of secret Forge runs `msb start` itself with the values before any command is routed into it. Sandboxes with neither keep the start-in-place behavior.
 
 If the provider is not registered, throws, does not answer within 30 s, returns an invalid result, or omits a value, the sandbox does not start and the error names the provider and the missing variable names; the loop's routed commands fail rather than run without the secret. After an OpenCode restart, a provider that loads after Forge is picked up on the next routed call.
 

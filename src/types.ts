@@ -65,7 +65,9 @@ export interface SandboxSecretSubstitution {
 
 export interface SandboxSecretConfig {
   env: string
+  file?: string
   hosts: string[]
+  vars?: Record<string, string>
   substitution?: SandboxSecretSubstitution
   passthrough?: string[]
   violationAction?: SandboxSecretViolationAction
@@ -74,6 +76,8 @@ export interface SandboxSecretConfig {
 
 export interface SandboxNetworkConfig {
   env?: string[]
+  envFiles?: Record<string, string>
+  vars?: Record<string, string>
   allow?: string[]
   secrets?: SandboxSecretConfig[]
   allowLan?: boolean
@@ -102,6 +106,15 @@ export interface SandboxMountConfig {
   readonly?: boolean
 }
 
+export interface SandboxModeDenyConfig {
+  deny?: AutoApproveDenyRule[]
+}
+
+export interface SandboxPermissionsConfig {
+  sandboxed?: SandboxModeDenyConfig
+  host?: SandboxModeDenyConfig
+}
+
 export interface SandboxConfig {
   mode?: 'msb'
   enabled?: boolean
@@ -111,6 +124,7 @@ export interface SandboxConfig {
   mounts?: SandboxMountConfig[]
   network?: SandboxNetworkConfig
   autoApprovePermissions?: boolean
+  permissions?: SandboxPermissionsConfig
   hostSessions?: boolean
 }
 

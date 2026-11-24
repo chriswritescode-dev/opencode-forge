@@ -153,9 +153,16 @@ const SESSION_STATUS_CACHE_CAPACITY = 1000
 const MODEL_CONTEXT_CACHE_TTL_MS = 60_000
 
 const sessionStatusCache = processShared('v2-session-status.v1', () => new LRUCache<SessionStatus[string]>(SESSION_STATUS_CACHE_CAPACITY))
+const deletedSessionIDs = processShared('v2-deleted-sessions.v1', () => new LRUCache<true>(SESSION_STATUS_CACHE_CAPACITY))
+
+function forgetSession(sessionID: string): void {
+  sessionStatusCache.delete(sessionID)
+  deletedSessionIDs.set(sessionID, true)
+}
 
 export function resetV2SessionStatusCache(): void {
   sessionStatusCache.clear()
+  deletedSessionIDs.clear()
 }
 
 async function call<T>(method: string, run: () => Promise<T>): Promise<T> {
@@ -385,18 +392,19 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
   function recordStatusEvent(event: ForgeEvent): void {
     if (event.type === FORGE_EVENT_TYPES.sessionDeleted) {
       const sessionID = event.properties.sessionID
-      if (sessionID !== undefined) sessionStatusCache.delete(sessionID)
+      if (sessionID !== undefined) forgetSession(sessionID)
       return
     }
     if (event.type === FORGE_EVENT_TYPES.sessionIdle) {
       const sessionID = event.properties.sessionID
-      if (sessionID !== undefined) sessionStatusCache.set(sessionID, { type: 'idle' })
+      if (sessionID !== undefined && !deletedSessionIDs.has(sessionID)) sessionStatusCache.set(sessionID, { type: 'idle' })
       return
     }
     if (event.type === FORGE_EVENT_TYPES.sessionStatus) {
       const sessionID = event.properties.sessionID
+      if (sessionID === undefined || deletedSessionIDs.has(sessionID)) return
       const status = sessionStatusEntrySchema.safeParse(event.properties.status)
-      if (sessionID !== undefined && status.success) sessionStatusCache.set(sessionID, status.data)
+      if (status.success) sessionStatusCache.set(sessionID, status.data)
     }
   }
 
@@ -471,7 +479,10 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
       if (!requestSessionDelete) {
         return Promise.reject(unavailableError('session.delete', 'session.delete is not available on this host'))
       }
-      return call('session.delete', () => requestSessionDelete(params.sessionID))
+      return call('session.delete', async () => {
+        await requestSessionDelete(params.sessionID)
+        forgetSession(params.sessionID)
+      })
     },
   }
 

@@ -7,7 +7,7 @@ import type { LoopState } from '../../src/loop/state'
 import { __resetLoopRuntimeSharedState, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
 import { createLoopService } from '../../src/loop/service'
 import { createLoopAttemptsRepo, type LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
-import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
+import { recordInboxEnqueued, recordInboxSettled, recordIdleBackgroundWork, hasPendingBackgroundWork, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
   getPromptInFlight,
@@ -21,7 +21,7 @@ import { createMockLogger } from '../helpers/logger'
 import { makeLoopState, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { formatAuditHandoffResult, formatPostActionReport, formatPostActionSummary } from '../../src/loop/handoff'
-import { buildHandoffNudgePrompt } from '../../src/loop/prompts'
+import { buildBackgroundStallPrompt, buildHandoffNudgePrompt } from '../../src/loop/prompts'
 import { LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
 import { CODE_GRAPH_PROBE_COMMAND } from '../../src/loop/code-graph'
 
@@ -1576,6 +1576,67 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect((auditorCalls[0].params as any).parts?.[0]?.text).toBe('Continue where you left off.')
 
       await stopWatchdogAndDrain(loop, state.loopName)
+    })
+  })
+
+  describe('watchdog background-work nudge', () => {
+    function createBackgroundWatchdogLoop(client: ForgeClient): Loop {
+      return buildRuntime({
+        client,
+        stallConfig: { stallTimeoutMs: 10_000, busyStallTimeoutMs: 30, maxConsecutiveStalls: 100 },
+      }).loop
+    }
+
+    test('a stuck background job gets the background-stall prompt and the session is not aborted', async () => {
+      const { client, calls } = createFakeForgeClient({ session: { status: async () => ({}) } })
+      const loop = createBackgroundWatchdogLoop(client)
+
+      const state = makeLoopState({ phase: 'coding', totalSections: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      const jobs = [{ kind: 'shell' as const, label: 'pnpm dev' }]
+      recordIdleBackgroundWork(state.sessionId, jobs)
+
+      vi.useFakeTimers()
+      try {
+        loop.startWatchdog(state.loopName)
+        await vi.advanceTimersByTimeAsync(35)
+        loop.clearLoopTimers(state.loopName)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      expect(codePrompts).toHaveLength(1)
+      expect((codePrompts[0].params as any).parts?.[0]?.text).toBe(buildBackgroundStallPrompt('coder', jobs, 30))
+      expect(calls.some(c => c.method === 'session.abort')).toBe(false)
+      expect(loopService.getActiveState(state.loopName)!.active).toBe(true)
+    })
+
+    test('does nothing once the background entry is cleared', async () => {
+      const { client, calls } = createFakeForgeClient({ session: { status: async () => ({}) } })
+      const loop = createBackgroundWatchdogLoop(client)
+
+      const state = makeLoopState({ phase: 'coding', totalSections: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      recordIdleBackgroundWork(state.sessionId, [{ kind: 'shell' as const, label: 'pnpm dev' }])
+      recordIdleBackgroundWork(state.sessionId, [])
+
+      vi.useFakeTimers()
+      try {
+        loop.startWatchdog(state.loopName)
+        await vi.advanceTimersByTimeAsync(200)
+        loop.clearLoopTimers(state.loopName)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      expect(calls.filter(c => c.method === 'session.promptAsync')).toHaveLength(0)
+      expect(calls.some(c => c.method === 'session.abort')).toBe(false)
+      expect(loopService.getActiveState(state.loopName)!.active).toBe(true)
     })
   })
 
@@ -4411,6 +4472,61 @@ describe('stall handling terminates with stall timeout when configured cap is re
     function handoffNudgeTexts(calls: RecordedCall[], sessionID: string, agent?: 'code' | 'auditor-loop'): string[] {
       return promptTexts(calls, sessionID, agent).filter(text => text.includes('You ended your turn without calling `loop-handoff`.'))
     }
+
+    test('an idle turn with pending background work sends no nudge and keeps the loop active', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Waiting on the dev server.' }] },
+          ],
+        },
+      })
+      const { loop, logs } = buildRuntime({ client })
+
+      const state = makeLoopState({ phase: 'coding', totalSections: 0, iteration: 1, maxIterations: 5 })
+      loopService.setState(state.loopName, state)
+
+      const backgroundJobs = [{ kind: 'shell' as const, label: 'pnpm dev' }]
+      recordIdleBackgroundWork(state.sessionId, backgroundJobs)
+
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(promptTexts(calls, state.sessionId)).toHaveLength(0)
+      expect(logs.some(log => log.message.includes('skipping the nudge because the session\'s background work will wake it'))).toBe(true)
+
+      recordIdleBackgroundWork(state.sessionId, [])
+      expect(hasPendingBackgroundWork(state.sessionId)).toBe(false)
+
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+
+      expect(handoffNudgeTexts(calls, state.sessionId, 'code')).toHaveLength(1)
+      expect(loopService.getActiveState(state.loopName)!.active).toBe(true)
+    })
+
+    test('a recorded handoff is still applied while background work is pending', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Done with the change.' }] },
+          ],
+        },
+      })
+      const { loop } = buildRuntime({ client })
+
+      const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0, iteration: 1, maxIterations: 5 })
+      loopService.setState(state.loopName, state)
+
+      await recordCoderHandoff(loop, state.sessionId)
+      recordIdleBackgroundWork(state.sessionId, [{ kind: 'subagent' as const, label: 'audit helpers' }])
+
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+
+      expect(loopService.getActiveState(state.loopName)!.phase).toBe('auditing')
+    })
 
     test('a rotation that reuses the same coder session and iteration starts a fresh nudge budget of three', async () => {
       const { client, calls } = createFakeForgeClient({

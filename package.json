@@ -1,6 +1,6 @@
 {
   "name": "opencode-forge",
-  "version": "1.3.2",
+  "version": "1.3.4",
   "type": "module",
   "oc-plugin": [
     "server",
@@ -51,7 +51,7 @@
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
   "engines": {
-    "opencode": ">=2.0.14"
+    "opencode": ">=2.2.2"
   },
   "dependencies": {
     "@opencode/plugin": "2.2.2",

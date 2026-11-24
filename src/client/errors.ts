@@ -3,6 +3,7 @@ import { ForgeClientError, type ForgeClientErrorKind } from './port'
 
 const messageCarrierSchema = z.looseObject({ message: z.string() })
 const dataMessageCarrierSchema = z.looseObject({ data: z.looseObject({ message: z.string() }) })
+const taggedErrorSchema = z.looseObject({ _tag: z.string(), sessionID: z.string().optional() })
 const stringMessageSchema = z.string()
 
 function extractMessage(cause: unknown): string {
@@ -21,11 +22,15 @@ function extractMessage(cause: unknown): string {
 }
 
 export function classify(cause: unknown, method: string): ForgeClientError {
-  const rawMessage = extractMessage(cause)
+  const tagged = taggedErrorSchema.safeParse(cause)
+  const extracted = extractMessage(cause)
+  const rawMessage = extracted.length === 0 && tagged.success
+    ? [tagged.data._tag, tagged.data.sessionID].filter((part) => part !== undefined).join(' ')
+    : extracted
   let kind: ForgeClientErrorKind = 'request'
   if (/Unable to connect|fetch failed|ECONNREFUSED/i.test(rawMessage)) {
     kind = 'connection'
-  } else if (/not found/i.test(rawMessage)) {
+  } else if ((tagged.success && tagged.data._tag.endsWith('NotFoundError')) || /not found/i.test(rawMessage)) {
     kind = 'not-found'
   }
   return new ForgeClientError({ kind, method, message: rawMessage, cause })

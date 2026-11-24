@@ -7,6 +7,7 @@ import { buildAgents } from '../../src/agents'
 import { buildArchitectReminder, createForgeCore, type ForgeCore } from '../../src/host/forge-core'
 import { closeDatabase, createLoopsRepo, initializeDatabase } from '../../src/storage'
 import { registerForgeHooksV2, toV1ToolName, type ForgeHooksV2Core } from '../../src/host/v2-hooks'
+import { getPendingBackgroundWork, hasPendingBackgroundWork, recordIdleBackgroundWork, __resetIdleGate } from '../../src/loop/idle-gate'
 import { createSessionHooks } from '../../src/hooks/session'
 import { resolvePromptsDir } from '../../src/install/paths'
 import {
@@ -19,6 +20,7 @@ import type { Logger, PluginConfig } from '../../src/types'
 import type { SessionInstructionEntries } from '../../src/hooks/sandbox-message'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createFakeV2Context, type V2HookRegistration } from '../helpers/fake-v2-context'
+import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 
 const PROJECT = '/tmp/forge-hooks-project'
 const WORKTREE = '/tmp/forge-hooks-worktree'
@@ -72,6 +74,7 @@ interface StubCoreOptions {
   resolveShellSandbox?: ForgeHooksV2Core['resolveShellSandbox']
   autoApprovesPermissions?: ForgeHooksV2Core['autoApprovesPermissions']
   autoApproveDenyRules?: ForgeHooksV2Core['autoApproveDenyRules']
+  sandboxModeDenyRules?: ForgeHooksV2Core['sandboxModeDenyRules']
   architectReminderFor?: ForgeHooksV2Core['architectReminderFor']
   systemAddendumFor?: ForgeHooksV2Core['systemAddendumFor']
   toolBefore?: ForgeHooksV2Core['toolBefore']
@@ -79,6 +82,7 @@ interface StubCoreOptions {
   chatMessage?: ForgeHooksV2Core['chatMessage']
   syncSandboxInstructions?: ForgeHooksV2Core['syncSandboxInstructions']
   compacting?: ForgeHooksV2Core['compacting']
+  logger?: Logger
 }
 
 interface StubCore {
@@ -94,6 +98,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
   const after: Array<{ tool: string; output: string }> = []
   const prompts: Array<{ sessionID?: string; messageID?: string; text: string }> = []
   const instructionSyncs: Array<{ sessionID: string; entries: SessionInstructionEntries }> = []
+  const logger = options.logger ?? createMockLogger()
   const core: ForgeHooksV2Core = {
     toolBefore: async (input, output) => {
       before.push({ tool: input.tool, args: output.args })
@@ -123,7 +128,9 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     resolveShellSandbox: options.resolveShellSandbox ?? (async () => null),
     autoApprovesPermissions: options.autoApprovesPermissions ?? (async () => false),
     autoApproveDenyRules: options.autoApproveDenyRules ?? [],
+    sandboxModeDenyRules: options.sandboxModeDenyRules ?? { sandboxed: [], host: [] },
     shellShimPath: options.shellShimPath ?? null,
+    logger,
   }
   return { core, before, after, prompts, instructionSyncs }
 }
@@ -239,6 +246,165 @@ describe('registerForgeHooksV2 permission hook', () => {
     await invokeHook(hooks, 'permission', 'evaluate', asked)
     expect(asked.effect).toBe('deny')
     expect(asked.message).toContain('matches the auto-approve deny rule')
+  })
+})
+
+describe('registerForgeHooksV2 sandbox mode permission hook', () => {
+  interface PermissionEvent {
+    sessionID: string
+    action: string
+    resources: string[]
+    effect: 'allow' | 'deny' | 'ask'
+    message?: string
+  }
+
+  function permissionEvent(overrides: Partial<PermissionEvent> = {}): PermissionEvent {
+    return { sessionID: 'ses_sandbox', action: 'shell', resources: ['git push origin main'], effect: 'ask', ...overrides }
+  }
+
+  const sandboxedDenyRules = [{ action: 'shell', resource: 'git push *' }]
+  const hostDenyRules = [{ action: 'shell', resource: 'rm -rf *' }]
+
+  test('denies an allow effect that matches a sandboxed rule while sandboxed', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({
+      resolveShellSandbox: async () => sandboxContext(),
+      sandboxModeDenyRules: { sandboxed: sandboxedDenyRules, host: [] },
+    })
+    await registerHooks(ctx, core)
+
+    const allowed = permissionEvent({ effect: 'allow' })
+    await invokeHook(hooks, 'permission', 'evaluate', allowed)
+    expect(allowed.effect).toBe('deny')
+    expect(allowed.message).toContain('Blocked while sandboxed')
+    expect(allowed.message).toContain('sandbox.permissions.sandboxed')
+    expect(allowed.message).toContain('git push origin main')
+    expect(allowed.message).toContain('git push *')
+  })
+
+  test('denies an ask effect that matches a sandboxed rule while sandboxed', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({
+      autoApprovesPermissions: async () => true,
+      resolveShellSandbox: async () => sandboxContext(),
+      sandboxModeDenyRules: { sandboxed: sandboxedDenyRules, host: [] },
+    })
+    await registerHooks(ctx, core)
+
+    const asked = permissionEvent()
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('deny')
+    expect(asked.message).toContain('sandbox.permissions.sandboxed')
+  })
+
+  test('leaves a matching sandboxed rule untouched on the host', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({
+      resolveShellSandbox: async () => null,
+      sandboxModeDenyRules: { sandboxed: sandboxedDenyRules, host: [] },
+    })
+    await registerHooks(ctx, core)
+
+    const allowed = permissionEvent({ effect: 'allow' })
+    await invokeHook(hooks, 'permission', 'evaluate', allowed)
+    expect(allowed.effect).toBe('allow')
+    expect(allowed.message).toBeUndefined()
+  })
+
+  test('denies a host rule on the host only', async () => {
+    const hostContext = createFakeV2Context()
+    const { core } = createStubCore({
+      resolveShellSandbox: async () => null,
+      sandboxModeDenyRules: { sandboxed: [], host: hostDenyRules },
+    })
+    await registerHooks(hostContext.ctx, core)
+
+    const deniedOnHost = permissionEvent({ resources: ['rm -rf /tmp/build'] })
+    await invokeHook(hostContext.hooks, 'permission', 'evaluate', deniedOnHost)
+    expect(deniedOnHost.effect).toBe('deny')
+    expect(deniedOnHost.message).toContain('Blocked on the host')
+    expect(deniedOnHost.message).toContain('sandbox.permissions.host')
+
+    const sandboxedContext = createFakeV2Context()
+    const sandboxedCore = createStubCore({
+      resolveShellSandbox: async () => sandboxContext(),
+      sandboxModeDenyRules: { sandboxed: [], host: hostDenyRules },
+    })
+    await registerHooks(sandboxedContext.ctx, sandboxedCore.core)
+
+    const allowedInSandbox = permissionEvent({ resources: ['rm -rf /tmp/build'], effect: 'allow' })
+    await invokeHook(sandboxedContext.hooks, 'permission', 'evaluate', allowedInSandbox)
+    expect(allowedInSandbox.effect).toBe('allow')
+  })
+
+  test('does not resolve the shell sandbox when no rule matches', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const resolveShellSandbox = vi.fn(async () => sandboxContext())
+    const { core } = createStubCore({
+      resolveShellSandbox,
+      sandboxModeDenyRules: { sandboxed: sandboxedDenyRules, host: hostDenyRules },
+    })
+    await registerHooks(ctx, core)
+
+    const asked = permissionEvent({ resources: ['ls'] })
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('ask')
+    expect(resolveShellSandbox).not.toHaveBeenCalled()
+  })
+
+  test('fails closed on the matching rule when the sandbox lookup throws', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { logger: capturingLogger, logs } = createCapturingLogger()
+    const { core } = createStubCore({
+      logger: capturingLogger,
+      resolveShellSandbox: async () => {
+        throw new Error('sandbox unavailable')
+      },
+      sandboxModeDenyRules: { sandboxed: sandboxedDenyRules, host: hostDenyRules },
+    })
+    await registerHooks(ctx, core)
+
+    const asked = permissionEvent()
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('deny')
+    expect(asked.message).toContain('sandbox.permissions.sandboxed')
+    expect(logs).toContainEqual({
+      level: 'log',
+      message:
+        '[sandbox] sandbox-mode deny for ses_sandbox could not resolve the shell mode, applying the matched rule: sandbox unavailable',
+    })
+  })
+
+  test('fails closed on a host rule when the sandbox lookup throws and only the host rule matches', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({
+      resolveShellSandbox: async () => {
+        throw new Error('sandbox unavailable')
+      },
+      sandboxModeDenyRules: { sandboxed: [], host: hostDenyRules },
+    })
+    await registerHooks(ctx, core)
+
+    const asked = permissionEvent({ resources: ['rm -rf /tmp/build'] })
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('deny')
+    expect(asked.message).toContain('sandbox.permissions.host')
+  })
+
+  test('leaves an already denied effect untouched without a sandbox lookup', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const resolveShellSandbox = vi.fn(async () => sandboxContext())
+    const { core } = createStubCore({
+      resolveShellSandbox,
+      sandboxModeDenyRules: { sandboxed: sandboxedDenyRules, host: hostDenyRules },
+    })
+    await registerHooks(ctx, core)
+
+    const denied = permissionEvent({ effect: 'deny', message: 'opencode denied it' })
+    await invokeHook(hooks, 'permission', 'evaluate', denied)
+    expect(denied.effect).toBe('deny')
+    expect(denied.message).toBe('opencode denied it')
+    expect(resolveShellSandbox).not.toHaveBeenCalled()
   })
 })
 
@@ -1075,6 +1241,46 @@ describe('registerForgeHooksV2 session hooks', () => {
       expect.stringContaining('Your summary will be the ONLY context after compaction'),
       'compaction context',
     ])
+  })
+})
+
+describe('registerForgeHooksV2 experimental idle hook', () => {
+  async function idleEvent(sessionID: string, background: unknown[]) {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore()
+    await registerHooks(ctx, core)
+    await invokeHook(hooks, 'session', 'experimental.idle', { sessionID, background })
+  }
+
+  test('records background work owned by the idle session with its labels', async () => {
+    __resetIdleGate()
+    await idleEvent('ses_own', [
+      { kind: 'shell', sessionID: 'ses_own', shellID: 'shell_1', command: 'pnpm dev' },
+      { kind: 'subagent', sessionID: 'ses_own', childSessionID: 'ses_child', agent: 'code', description: 'audit helpers' },
+    ])
+    expect(getPendingBackgroundWork('ses_own')?.jobs).toEqual([
+      { kind: 'shell', label: 'pnpm dev' },
+      { kind: 'subagent', label: 'audit helpers' },
+    ])
+  })
+
+  test('records a newer job kind such as codemode by its job ID', async () => {
+    __resetIdleGate()
+    await idleEvent('ses_own', [{ kind: 'codemode', sessionID: 'ses_own', jobID: 'job_123' }])
+    expect(getPendingBackgroundWork('ses_own')?.jobs).toEqual([{ kind: 'codemode', label: 'job_123' }])
+  })
+
+  test('ignores background work owned only by a descendant session', async () => {
+    __resetIdleGate()
+    await idleEvent('ses_parent', [{ kind: 'subagent', sessionID: 'ses_child', agent: 'code', description: 'audit helpers' }])
+    expect(hasPendingBackgroundWork('ses_parent')).toBe(false)
+  })
+
+  test('clears the marker when the session has no remaining work', async () => {
+    __resetIdleGate()
+    recordIdleBackgroundWork('ses_done', [{ kind: 'shell', label: 'pnpm dev' }])
+    await idleEvent('ses_done', [])
+    expect(hasPendingBackgroundWork('ses_done')).toBe(false)
   })
 })
 

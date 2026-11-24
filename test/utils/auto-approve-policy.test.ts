@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   matchPermissionWildcard,
   findLastMatchingRule,
+  findLastMatchingDenyRule,
   parseAutoApproveDenyRules,
   resolveAutoApproveDecision,
 } from '../../src/utils/auto-approve-policy'
@@ -90,6 +91,49 @@ describe('parseAutoApproveDenyRules', () => {
     expect(result.warnings).toEqual([
       'autoApprove.deny entry 0 is ignored: expected non-empty string "action" and "resource" (use "resource", not "pattern")',
     ])
+  })
+
+  test('uses a custom label in warnings', () => {
+    expect(parseAutoApproveDenyRules({ action: 'shell' }, 'sandbox.permissions.host.deny')).toEqual({
+      rules: [],
+      warnings: ['sandbox.permissions.host.deny is ignored: expected an array of { action, resource } rules'],
+    })
+    expect(
+      parseAutoApproveDenyRules([{ action: 'shell', resource: 'git push *' }, { action: 'shell' }], 'sandbox.permissions.sandboxed.deny'),
+    ).toEqual({
+      rules: [{ action: 'shell', resource: 'git push *' }],
+      warnings: [
+        'sandbox.permissions.sandboxed.deny entry 1 is ignored: expected non-empty string "action" and "resource"',
+      ],
+    })
+  })
+})
+
+describe('findLastMatchingDenyRule', () => {
+  test('returns the last matching rule and the resource that matched', () => {
+    const rules = [
+      { action: 'shell', resource: 'git *' },
+      { action: 'shell', resource: 'git push *' },
+    ]
+    expect(findLastMatchingDenyRule('shell', ['git push origin main'], rules)).toEqual({
+      rule: { action: 'shell', resource: 'git push *' },
+      resource: 'git push origin main',
+    })
+  })
+
+  test('checks every resource until one matches', () => {
+    const rules = [{ action: 'shell', resource: 'git push *' }]
+    expect(findLastMatchingDenyRule('shell', ['ls', 'git push origin main'], rules)).toEqual({
+      rule: { action: 'shell', resource: 'git push *' },
+      resource: 'git push origin main',
+    })
+  })
+
+  test('returns undefined when nothing matches', () => {
+    const rules = [{ action: 'shell', resource: 'git push *' }]
+    expect(findLastMatchingDenyRule('read', ['git push origin main'], rules)).toBeUndefined()
+    expect(findLastMatchingDenyRule('shell', ['ls'], rules)).toBeUndefined()
+    expect(findLastMatchingDenyRule('shell', ['git push origin main'], [])).toBeUndefined()
   })
 })
 

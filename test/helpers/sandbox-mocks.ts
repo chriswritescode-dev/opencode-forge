@@ -7,6 +7,7 @@ type MockCreateSandboxOpts = {
   resources?: SandboxResources
   networkAllow?: string[]
   env?: string[]
+  vars?: Record<string, string>
   secrets?: SandboxSecretConfig[]
   secretEnv?: Record<string, string>
   restrictEgress?: boolean
@@ -26,6 +27,8 @@ export interface MockSandboxRuntime extends SandboxRuntime {
   getResizeCalls(): Array<[string, Pick<SandboxResources, 'cpus' | 'memory'>]>
   /** Sets what `readSandboxSettings` reports for a sandbox; `null` simulates an unreadable one. */
   setSandboxSettings(name: string, settings: SandboxRuntimeSettings | null): void
+  /** Sets what `readSandboxEnv` reports for a sandbox; `null` simulates an unreadable one. */
+  setSandboxEnv(name: string, env: Record<string, string> | null): void
   setSandboxes(newSandboxes: string[]): void
   setRunning(name: string, running: boolean): void
   setSandboxState(name: string, state: SandboxState): void
@@ -45,6 +48,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
   const startSandboxCalls: Array<[string, Record<string, string> | undefined]> = []
   const resizeCalls: Array<[string, Pick<SandboxResources, 'cpus' | 'memory'>]> = []
   const sandboxSettings = new Map<string, SandboxRuntimeSettings | null>()
+  const sandboxEnv = new Map<string, Record<string, string> | null>()
   let sandboxes = ['forge-foo', 'forge-bar']
   const sandboxStates = new Map<string, SandboxState>()
   let shouldBeAvailable = true
@@ -72,6 +76,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
       }
       sandboxStates.delete(name)
       sandboxSettings.delete(name)
+      sandboxEnv.delete(name)
     },
     exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
     getSandboxState: async (name: string) => sandboxStates.get(name) ?? 'missing',
@@ -92,6 +97,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     readSandboxSettings: async (name: string) => sandboxSettings.has(name)
       ? sandboxSettings.get(name)!
       : { cpus: 4, memoryMib: 8192, allowLan: false },
+    readSandboxEnv: async (name: string) => sandboxEnv.has(name) ? sandboxEnv.get(name)! : null,
     resizeSandbox: async (name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>) => {
       resizeCalls.push([name, resources])
     },
@@ -102,6 +108,9 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     getResizeCalls: () => resizeCalls,
     setSandboxSettings: (name: string, settings: SandboxRuntimeSettings | null) => {
       sandboxSettings.set(name, settings)
+    },
+    setSandboxEnv: (name: string, env: Record<string, string> | null) => {
+      sandboxEnv.set(name, env)
     },
     setSandboxes: (newSandboxes: string[]) => {
       sandboxes = newSandboxes

@@ -8,9 +8,17 @@ import { SHIM_ENV_CONTAINER } from '../sandbox/shell-shim'
 import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client/v2-adapter'
 import { DEFAULT_MODEL_SUBAGENTS } from '../config'
 import { findLastIndex } from '../utils/array'
-import { resolveAutoApproveDecision, type PermissionEffectLike } from '../utils/auto-approve-policy'
+import {
+  findLastMatchingDenyRule,
+  resolveAutoApproveDecision,
+  type AutoApproveDenyRule,
+  type MatchingDenyRule,
+  type PermissionEffectLike,
+} from '../utils/auto-approve-policy'
 import { z } from 'zod'
 import { processShared } from '../utils/process-shared'
+import { errorMessage } from '../utils/error-message'
+import { recordIdleBackgroundWork, type BackgroundJob } from '../loop/idle-gate'
 
 const V2_TO_V1_TOOL_NAME_TABLE = invertRenameTable(V1_TO_V2_TOOL_NAMES)
 
@@ -31,7 +39,9 @@ export type ForgeHooksV2Core = Pick<
   | 'resolveShellSandbox'
   | 'autoApprovesPermissions'
   | 'autoApproveDenyRules'
+  | 'sandboxModeDenyRules'
   | 'shellShimPath'
+  | 'logger'
 >
 
 export type ForgeHooksV2CoreGetter = () => Promise<ForgeHooksV2Core | null>
@@ -62,6 +72,16 @@ const toolArgsSchema = z.looseObject({
   include: z.string().optional().catch(undefined),
   pattern: z.string().optional().catch(undefined),
   patchText: z.string().optional().catch(undefined),
+})
+
+const backgroundJobSchema = z.looseObject({
+  kind: z.string(),
+  sessionID: z.string(),
+  command: z.string().optional().catch(undefined),
+  description: z.string().optional().catch(undefined),
+  agent: z.string().optional().catch(undefined),
+  path: z.string().optional().catch(undefined),
+  jobID: z.string().optional().catch(undefined),
 })
 
 async function wrapShellToolForSandbox(
@@ -116,6 +136,48 @@ async function resolvePermissionAsk(core: ForgeHooksV2Core, event: AutoApprovePe
   })
   event.effect = decision.effect
   if (decision.effect === 'deny') event.message = decision.message
+}
+
+interface SandboxModeDenyMatches {
+  sandboxed?: MatchingDenyRule<AutoApproveDenyRule>
+  host?: MatchingDenyRule<AutoApproveDenyRule>
+}
+
+function matchSandboxModeDenyRules(
+  core: ForgeHooksV2Core,
+  action: string,
+  resources: ReadonlyArray<string>,
+): SandboxModeDenyMatches | null {
+  const sandboxed = findLastMatchingDenyRule(action, resources, core.sandboxModeDenyRules.sandboxed)
+  const host = findLastMatchingDenyRule(action, resources, core.sandboxModeDenyRules.host)
+  if (!sandboxed && !host) return null
+  return { sandboxed, host }
+}
+
+async function applySandboxModeDeny(
+  core: ForgeHooksV2Core,
+  event: AutoApprovePermissionEvent,
+): Promise<void> {
+  if (event.effect === 'deny') return
+  const matches = matchSandboxModeDenyRules(core, event.action, event.resources)
+  if (!matches) return
+
+  let sandboxed: boolean
+  try {
+    sandboxed = (await core.resolveShellSandbox(event.sessionID)) !== null
+  } catch (err) {
+    core.logger.log(
+      `[sandbox] sandbox-mode deny for ${event.sessionID} could not resolve the shell mode, applying the matched rule: ${errorMessage(err)}`,
+    )
+    sandboxed = matches.sandboxed !== undefined
+  }
+  const match = sandboxed ? matches.sandboxed : matches.host
+  if (!match) return
+
+  const label = sandboxed ? 'while sandboxed' : 'on the host'
+  const configKey = sandboxed ? 'sandbox.permissions.sandboxed' : 'sandbox.permissions.host'
+  event.effect = 'deny'
+  event.message = `Blocked ${label}: \`${event.action} ${match.resource}\` matches the ${configKey} deny rule \`${match.rule.action}: ${match.rule.resource}\`. Continue without it and report what was skipped.`
 }
 
 interface ToolExecuteBeforeEvent {
@@ -233,6 +295,7 @@ export async function registerForgeHooksV2(
   await ctx.permission.hook('evaluate', async (event) => {
     const core = await getCore()
     if (!core) return
+    await applySandboxModeDeny(core, event)
     await resolvePermissionAsk(core, event)
   })
 
@@ -291,5 +354,18 @@ export async function registerForgeHooksV2(
     await core.compacting({ sessionID: event.sessionID }, output)
     if (output.prompt !== undefined) event.system.push({ type: 'text', text: output.prompt })
     for (const text of output.context) event.system.push({ type: 'text', text })
+  })
+
+  await ctx.session.hook('experimental.idle', (event) => {
+    const jobs: BackgroundJob[] = []
+    for (const entry of event.background) {
+      const parsed = backgroundJobSchema.safeParse(entry)
+      if (!parsed.success || parsed.data.sessionID !== event.sessionID) continue
+      const job = parsed.data
+      const label = [job.command, job.description, job.agent, job.path, job.jobID]
+        .find((value) => value !== undefined && value.length > 0) ?? job.kind
+      jobs.push({ kind: job.kind, label })
+    }
+    recordIdleBackgroundWork(event.sessionID, jobs)
   })
 }

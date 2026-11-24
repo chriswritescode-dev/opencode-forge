@@ -6,7 +6,7 @@
 
 # Interface: CreateSessionDirectoryLookupOptions
 
-Defined in: [host/forge-core.ts:182](https://github.com/chriswritescode-dev/opencode-forge/blob/33411f7792e4ace534fb2db9c3bd6489847d5c2a/src/host/forge-core.ts#L182)
+Defined in: [host/forge-core.ts:187](https://github.com/chriswritescode-dev/opencode-forge/blob/dbb019caa3eea2dac6a54db04ba4469a39c8cbf2/src/host/forge-core.ts#L187)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [host/forge-core.ts:182](https://github.com/chriswritescode-dev/open
 
 > **client**: `ForgeClient`
 
-Defined in: [host/forge-core.ts:183](https://github.com/chriswritescode-dev/opencode-forge/blob/33411f7792e4ace534fb2db9c3bd6489847d5c2a/src/host/forge-core.ts#L183)
+Defined in: [host/forge-core.ts:188](https://github.com/chriswritescode-dev/opencode-forge/blob/dbb019caa3eea2dac6a54db04ba4469a39c8cbf2/src/host/forge-core.ts#L188)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [host/forge-core.ts:183](https://github.com/chriswritescode-dev/open
 
 > **directory**: `string`
 
-Defined in: [host/forge-core.ts:184](https://github.com/chriswritescode-dev/opencode-forge/blob/33411f7792e4ace534fb2db9c3bd6489847d5c2a/src/host/forge-core.ts#L184)
+Defined in: [host/forge-core.ts:189](https://github.com/chriswritescode-dev/opencode-forge/blob/dbb019caa3eea2dac6a54db04ba4469a39c8cbf2/src/host/forge-core.ts#L189)
 
 ***
 
@@ -30,7 +30,7 @@ Defined in: [host/forge-core.ts:184](https://github.com/chriswritescode-dev/open
 
 > **loop**: `Loop`
 
-Defined in: [host/forge-core.ts:185](https://github.com/chriswritescode-dev/opencode-forge/blob/33411f7792e4ace534fb2db9c3bd6489847d5c2a/src/host/forge-core.ts#L185)
+Defined in: [host/forge-core.ts:190](https://github.com/chriswritescode-dev/opencode-forge/blob/dbb019caa3eea2dac6a54db04ba4469a39c8cbf2/src/host/forge-core.ts#L190)
 
 ***
 
@@ -38,4 +38,4 @@ Defined in: [host/forge-core.ts:185](https://github.com/chriswritescode-dev/open
 
 > `optional` **negativeTtlMs?**: `number`
 
-Defined in: [host/forge-core.ts:186](https://github.com/chriswritescode-dev/opencode-forge/blob/33411f7792e4ace534fb2db9c3bd6489847d5c2a/src/host/forge-core.ts#L186)
+Defined in: [host/forge-core.ts:191](https://github.com/chriswritescode-dev/opencode-forge/blob/dbb019caa3eea2dac6a54db04ba4469a39c8cbf2/src/host/forge-core.ts#L191)
