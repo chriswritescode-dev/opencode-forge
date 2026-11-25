@@ -210,7 +210,37 @@ describe('createForgePlanCommands', () => {
     expect(openDialog.mock.calls[0][0].initial).toMatchObject({
       executionAgent: '',
       auditorAgent: '',
-      loopSettings: undefined,
+      loopSettings: { postActionAgent: undefined },
     })
+  })
+
+  test('restartLoop passes a defined loopSettings so stored preferences cannot seed the post-action agent', async () => {
+    const client = {
+      loadLoops: async () => ({ loops: [loop()] }),
+      restartLoop: vi.fn(async () => ({ sessionId: 'ses_restart' })),
+      selectSession: vi.fn(async () => {}),
+    } as unknown as ForgeProjectClient
+    const cache = {
+      snapshot: () => ({ openCodeDefault: 'b/default', defaults: { postActionAgent: 'other-loop-agent' } }),
+    } as unknown as ExecutionContextCache
+    const host = {
+      toast: () => {},
+      prompt: vi.fn(async () => undefined),
+      colors: () => ({}),
+    } as unknown as ForgeTuiHost
+    const commands = createForgePlanCommands({
+      host,
+      pluginConfig: {} as PluginConfig,
+      currentSessionId: () => 'ses_1',
+      ensureClient: async () => ({ client, cache }),
+    })
+    const openDialog = vi.mocked(openExecutionDialog)
+    openDialog.mockClear()
+
+    await commands.restartLoop()
+
+    const initial = openDialog.mock.calls[0][0].initial
+    expect(initial?.loopSettings).toBeDefined()
+    expect(initial?.loopSettings?.postActionAgent).toBeUndefined()
   })
 })

@@ -976,8 +976,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const resolvedExecutionAgent = normalizeAgentName(command.executionAgent) ?? normalizeAgentName(deps.config.loop?.executionAgent)
     const resolvedAuditorAgent = normalizeAgentName(command.auditorAgent) ?? normalizeAgentName(deps.config.loop?.auditorAgent)
     const resolvedPostActionAgent = normalizeAgentName(command.postActionAgent) ?? normalizeAgentName(deps.config.loop?.postAction?.agent)
-    const resolvedPostActionModel = normalizeModelString(command.postActionModel) ?? normalizeModelString(deps.config.loop?.postAction?.model)
-    const resolvedPostActionVariant = command.postActionModel !== undefined
+    const commandPostActionModel = normalizeModelString(command.postActionModel)
+    const resolvedPostActionModel = commandPostActionModel ?? normalizeModelString(deps.config.loop?.postAction?.model)
+    const resolvedPostActionVariant = commandPostActionModel !== undefined
       ? normalizeModelString(command.postActionVariant)
       : (normalizeModelString(command.postActionVariant) ?? normalizeModelString(deps.config.loop?.postAction?.variant))
     

@@ -1340,6 +1340,26 @@ describe('handleStartLoop loop agents and post-action overrides', () => {
     expect((h.promptAsync.mock.calls[0][0] as { agent?: string }).agent).toBe('my-coder')
   })
 
+  test('keeps the configured post-action model and variant when the command model is blank', async () => {
+    const h = await buildService({ loop: { postAction: { model: 'prov/cfgpost', variant: 'cfgvar' } } })
+
+    const result = await h.service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Blank Model Plan\n\nBody.' },
+        postActionModel: '',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const state = h.loopService.getActiveState(result.data.loopName)!
+    expect(state.postActionModel).toBe('prov/cfgpost')
+    expect(state.postActionVariant).toBe('cfgvar')
+  })
+
   test('falls back to configured loop agents and post-action settings', async () => {
     const h = await buildService({
       loop: {

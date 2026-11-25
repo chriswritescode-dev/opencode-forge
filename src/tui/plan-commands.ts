@@ -53,7 +53,7 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
         executionVariant: currentLoop.executionVariant,
         executionAgent: currentLoop.executionAgent ?? '',
         auditorAgent: currentLoop.auditorAgent ?? '',
-        loopSettings: currentLoop.postActionAgent ? { postActionAgent: currentLoop.postActionAgent } : undefined,
+        loopSettings: { postActionAgent: currentLoop.postActionAgent },
       },
       restart: {
         loops,
