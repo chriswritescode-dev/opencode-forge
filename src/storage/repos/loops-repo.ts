@@ -55,6 +55,11 @@ const loopRowSchema = z.object({
   sandbox_settings: z.string().nullable(),
   base_commit: z.string().nullable(),
   standby_session_id: z.string().nullable(),
+  execution_agent: z.string().nullable(),
+  auditor_agent: z.string().nullable(),
+  post_action_agent: z.string().nullable(),
+  post_action_model: z.string().nullable(),
+  post_action_variant: z.string().nullable(),
 })
 const loopRowsSchema = z.array(loopRowSchema)
 
@@ -128,6 +133,11 @@ export interface LoopRow {
   sandboxSettings?: LoopSandboxSettings | null
   baseCommit: string | null
   standbySessionId: string | null
+  executionAgent?: string | null
+  auditorAgent?: string | null
+  postActionAgent?: string | null
+  postActionModel?: string | null
+  postActionVariant?: string | null
 }
 
 export interface LoopLargeFields {
@@ -204,6 +214,11 @@ export interface LoopsRepo {
       executionModel?: string | null
       executionVariant?: string | null
       sandboxSettings?: LoopSandboxSettings | null
+      executionAgent?: string | null
+      auditorAgent?: string | null
+      postActionAgent?: string | null
+      postActionModel?: string | null
+      postActionVariant?: string | null
     }
   ): void
   terminate(
@@ -266,6 +281,11 @@ function mapRow(row: z.infer<typeof loopRowSchema>): LoopRow {
     sandboxSettings: parseSandboxSettings(row.sandbox_settings),
     baseCommit: row.base_commit,
     standbySessionId: row.standby_session_id,
+    executionAgent: row.execution_agent,
+    auditorAgent: row.auditor_agent,
+    postActionAgent: row.post_action_agent,
+    postActionModel: row.post_action_model,
+    postActionVariant: row.post_action_variant,
   }
 }
 
@@ -289,7 +309,8 @@ const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktre
   termination_reason, completion_summary, workspace_id, host_session_id,
   current_section_index, total_sections,
   execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit,
-  standby_session_id`
+  standby_session_id, execution_agent, auditor_agent, post_action_agent, post_action_model,
+  post_action_variant`
 
 const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
 
@@ -563,6 +584,11 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       execution_model = CASE WHEN ? = 1 THEN ? ELSE execution_model END,
       execution_variant = CASE WHEN ? = 1 THEN ? ELSE execution_variant END,
       sandbox_settings = CASE WHEN ? = 1 THEN ? ELSE sandbox_settings END,
+      execution_agent = CASE WHEN ? = 1 THEN ? ELSE execution_agent END,
+      auditor_agent = CASE WHEN ? = 1 THEN ? ELSE auditor_agent END,
+      post_action_agent = CASE WHEN ? = 1 THEN ? ELSE post_action_agent END,
+      post_action_model = CASE WHEN ? = 1 THEN ? ELSE post_action_model END,
+      post_action_variant = CASE WHEN ? = 1 THEN ? ELSE post_action_variant END,
       started_at = ?,
       completed_at = NULL,
       termination_reason = NULL,
@@ -591,7 +617,9 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       completion_summary = ?, workspace_id = ?, host_session_id = ?,
       current_section_index = ?, total_sections = ?,
       execution_variant = ?, auditor_variant = ?, auditor_fallback_index = ?,
-      sandbox_settings = ?, base_commit = ?, standby_session_id = ?
+      sandbox_settings = ?, base_commit = ?, standby_session_id = ?,
+      execution_agent = ?, auditor_agent = ?, post_action_agent = ?, post_action_model = ?,
+      post_action_variant = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -677,6 +705,11 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       serializeSandboxSettings(row.sandboxSettings),
       row.baseCommit ?? null,
       row.standbySessionId ?? null,
+      row.executionAgent ?? null,
+      row.auditorAgent ?? null,
+      row.postActionAgent ?? null,
+      row.postActionModel ?? null,
+      row.postActionVariant ?? null,
     ]
   }
 
@@ -865,6 +898,11 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         const setsExecutionModel = opts.executionModel !== undefined ? 1 : 0
         const setsExecutionVariant = opts.executionVariant !== undefined ? 1 : 0
         const setsSandboxSettings = opts.sandboxSettings !== undefined ? 1 : 0
+        const setsExecutionAgent = opts.executionAgent !== undefined ? 1 : 0
+        const setsAuditorAgent = opts.auditorAgent !== undefined ? 1 : 0
+        const setsPostActionAgent = opts.postActionAgent !== undefined ? 1 : 0
+        const setsPostActionModel = opts.postActionModel !== undefined ? 1 : 0
+        const setsPostActionVariant = opts.postActionVariant !== undefined ? 1 : 0
         restartStmt.run(
           opts.sessionId,
           opts.phase,
@@ -882,6 +920,16 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           setsExecutionVariant ? (opts.executionVariant ?? null) : null,
           setsSandboxSettings,
           setsSandboxSettings ? serializeSandboxSettings(opts.sandboxSettings) : null,
+          setsExecutionAgent,
+          setsExecutionAgent ? (opts.executionAgent ?? null) : null,
+          setsAuditorAgent,
+          setsAuditorAgent ? (opts.auditorAgent ?? null) : null,
+          setsPostActionAgent,
+          setsPostActionAgent ? (opts.postActionAgent ?? null) : null,
+          setsPostActionModel,
+          setsPostActionModel ? (opts.postActionModel ?? null) : null,
+          setsPostActionVariant,
+          setsPostActionVariant ? (opts.postActionVariant ?? null) : null,
           opts.startedAt,
           opts.currentSectionIndex,
           opts.totalSections,

@@ -1,7 +1,7 @@
 import type { ForgeExecutionMode, ForgeLoopDefaults, ForgeLoopRestartInput } from '../host/forge-rpc'
 import type { LoopSandboxSettings } from '../types'
 import type { ExecutionPreferences } from '../utils/tui-execution-preferences'
-import type { LoopInfo, ProviderInfo, SessionForRecents, WorkspaceForRecents } from '../utils/tui-models'
+import type { AgentOption, LoopInfo, ProviderInfo, SessionForRecents, WorkspaceForRecents } from '../utils/tui-models'
 
 export interface ExecutionContext {
   preferences: ExecutionPreferences | null
@@ -16,6 +16,7 @@ export interface ExecutionContext {
   openCodeFavorites: string[]
   openCodeDefault: string | undefined
   loopDefaults?: ForgeLoopDefaults
+  agents?: AgentOption[]
 }
 
 export interface ExecutePlanRequest {
@@ -27,6 +28,11 @@ export interface ExecutePlanRequest {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   targetSessionId?: string
   maxIterations?: number
   sandbox?: LoopSandboxSettings

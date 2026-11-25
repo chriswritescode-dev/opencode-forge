@@ -25,6 +25,7 @@ import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-pa
 import { isForgeWorktreeDir, forgeWorktreesRoot } from '../workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS, isCodeGraphEnabled } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
+import { normalizeAgentName, resolveLoopExecutionAgent, resolveLoopAuditorAgent, resolveLoopPostActionAgent } from '../utils/loop-helpers'
 import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } from '../utils/loop-permission-warnings'
 import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
@@ -394,7 +395,16 @@ export interface ForgeAgentConfig {
 
 export function createForgeAgentConfig(config: PluginConfig): ForgeAgentConfig {
   const promptsDir = resolvePromptsDir()
-  const agents = buildAgents(promptsDir, { model: config.executionModel, variant: config.executionVariant })
+  const minionOverride = config.agents?.minion
+  const minionModel = minionOverride?.model !== undefined
+    ? { model: minionOverride.model, variant: minionOverride.variant }
+    : {
+        model: config.executionModel,
+        variant: minionOverride?.variant !== undefined
+          ? minionOverride.variant || undefined
+          : config.executionVariant,
+      }
+  const agents = buildAgents(promptsDir, minionModel)
   return { agents, applyConfig: createConfigHandler(agents, config.agents, promptsDir) }
 }
 
@@ -905,6 +915,11 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
           auditorVariant: request.auditorVariant,
           executionModel: request.executionModel,
           executionVariant: request.executionVariant,
+          executionAgent: request.executionAgent,
+          auditorAgent: request.auditorAgent,
+          postActionAgent: request.postActionAgent,
+          postActionModel: request.postActionModel,
+          postActionVariant: request.postActionVariant,
           expectedStartedAt: request.expectedStartedAt,
           sandboxSecrets: request.sandbox,
         },
@@ -991,6 +1006,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     const source: PlanSource = { kind: 'inline', planText: input.plan }
     const executionModel = input.executionModel || undefined
     const executionVariant = input.executionVariant || undefined
+    const executionAgent = normalizeAgentName(input.executionAgent)
 
     if (input.sandbox?.secrets && input.sandbox.secrets.length > 0) {
       if (input.mode !== 'loop') return { error: 'Sandbox secrets are only supported for loop executions' }
@@ -1010,6 +1026,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         title: input.title,
         executionModel,
         executionVariant,
+        executionAgent,
       })
       return response.ok ? { sessionId: response.data.sessionId } : { error: response.error.message }
     }
@@ -1021,6 +1038,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         title: input.title,
         executionModel,
         executionVariant,
+        executionAgent,
         lifecycle: { deleteSessionOnPromptFailure: true },
       })
       return response.ok ? { sessionId: response.data.sessionId } : { error: response.error.message }
@@ -1037,6 +1055,11 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       auditorModel: input.auditorModel || undefined,
       executionVariant,
       auditorVariant: input.auditorVariant || undefined,
+      executionAgent,
+      auditorAgent: normalizeAgentName(input.auditorAgent),
+      postActionAgent: normalizeAgentName(input.postActionAgent),
+      postActionModel: input.postActionModel || undefined,
+      postActionVariant: input.postActionVariant || undefined,
       hostSessionId: input.sessionId || undefined,
       sandbox: readLoopSandboxSettings(input.sandbox),
       lifecycle: { startWatchdog: true },
@@ -1052,14 +1075,30 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     return launched
   }
 
-  const loopDefaults = (): ForgeLoopDefaults => ({
-    maxIterations: config.loop?.defaultMaxIterations ?? 0,
-    sandbox: {
-      available: isSandboxEnabled(config, sandboxManager),
-      resources: resolveSandboxResources(config.sandbox?.resources),
-      allowLan: resolveSandboxAllowLan(config.sandbox?.network?.allowLan),
-    },
-  })
+  const loopDefaults = (): ForgeLoopDefaults => {
+    const models: NonNullable<ForgeLoopDefaults['models']> = {}
+    if (config.executionModel) models.execution = config.executionModel
+    if (config.executionVariant) models.executionVariant = config.executionVariant
+    if (config.auditorModel) models.auditor = config.auditorModel
+    if (config.auditorVariant) models.auditorVariant = config.auditorVariant
+    if (config.loop?.postAction?.model) models.postAction = config.loop.postAction.model
+    if (config.loop?.postAction?.variant) models.postActionVariant = config.loop.postAction.variant
+    const defaults: ForgeLoopDefaults = {
+      maxIterations: config.loop?.defaultMaxIterations ?? 0,
+      sandbox: {
+        available: isSandboxEnabled(config, sandboxManager),
+        resources: resolveSandboxResources(config.sandbox?.resources),
+        allowLan: resolveSandboxAllowLan(config.sandbox?.network?.allowLan),
+      },
+      agents: {
+        execution: resolveLoopExecutionAgent(config),
+        auditor: resolveLoopAuditorAgent(config),
+        postAction: resolveLoopPostActionAgent(config),
+      },
+    }
+    if (Object.keys(models).length > 0) defaults.models = models
+    return defaults
+  }
 
   const sandboxTemplate = {
     start: (): ForgeSandboxTemplateBuildOutput => {

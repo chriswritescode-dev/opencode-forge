@@ -44,6 +44,66 @@ describe('createConfigHandler', () => {
       expect(agentConfig.ghost).toBeUndefined()
     })
 
+    test('agent overrides apply model, variant, temperature, steps, hidden, and prompt', async () => {
+      const configHandler = createConfigHandler(agents, {
+        auditor: {
+          model: 'anthropic/claude-sonnet-4-5',
+          variant: 'fast',
+          temperature: 0.4,
+          steps: 9,
+          hidden: true,
+          prompt: 'override prompt',
+        },
+      })
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const agentConfig = config.agent as Record<string, Record<string, unknown>>
+      expect(agentConfig.auditor?.model).toBe('anthropic/claude-sonnet-4-5')
+      expect(agentConfig.auditor?.variant).toBe('fast')
+      expect(agentConfig.auditor?.temperature).toBe(0.4)
+      expect(agentConfig.auditor?.steps).toBe(9)
+      expect(agentConfig.auditor?.hidden).toBe(true)
+      expect(agentConfig.auditor?.prompt).toBe('override prompt')
+    })
+
+    test('overriding only the model clears an inherited variant', async () => {
+      const variantAgents = buildAgents(undefined, { model: 'p/m', variant: 'max' })
+      const configHandler = createConfigHandler(variantAgents, { minion: { model: 'q/n' } })
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const minion = (config.agent as Record<string, Record<string, unknown>>).minion
+      expect(minion?.model).toBe('q/n')
+      expect(minion?.variant).toBeUndefined()
+    })
+
+    test('overriding model and variant keeps the new variant', async () => {
+      const variantAgents = buildAgents(undefined, { model: 'p/m', variant: 'max' })
+      const configHandler = createConfigHandler(variantAgents, { minion: { model: 'q/n', variant: 'fast' } })
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const minion = (config.agent as Record<string, Record<string, unknown>>).minion
+      expect(minion?.model).toBe('q/n')
+      expect(minion?.variant).toBe('fast')
+    })
+
+    test('an empty variant override clears an inherited variant', async () => {
+      const variantAgents = buildAgents(undefined, { model: 'p/m', variant: 'max' })
+      const configHandler = createConfigHandler(variantAgents, { minion: { variant: '' } })
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const minion = (config.agent as Record<string, Record<string, unknown>>).minion
+      expect(minion?.model).toBe('p/m')
+      expect(minion?.variant).toBeUndefined()
+    })
+
     test('built-in agents without enhancement are hidden if in REPLACED_BUILTIN_AGENTS', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}

@@ -263,6 +263,11 @@ export interface ForgeLoopDetailRow {
   executionVariant?: string
   auditorModel?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   auditorFallbackIndex: number
   modelFailed: boolean
   sandbox: boolean
@@ -397,6 +402,11 @@ const LOOP_DETAIL_ROW_SCHEMA = {
     executionVariant: { type: 'string' },
     auditorModel: { type: 'string' },
     auditorVariant: { type: 'string' },
+    executionAgent: { type: 'string' },
+    auditorAgent: { type: 'string' },
+    postActionAgent: { type: 'string' },
+    postActionModel: { type: 'string' },
+    postActionVariant: { type: 'string' },
     auditorFallbackIndex: { type: 'integer' },
     modelFailed: { type: 'boolean' },
     sandbox: { type: 'boolean' },
@@ -733,6 +743,11 @@ const LOOP_DETAIL_ROW_READ_SCHEMA = z.looseObject({
   executionVariant: z.string().optional(),
   auditorModel: z.string().optional(),
   auditorVariant: z.string().optional(),
+  executionAgent: z.string().optional(),
+  auditorAgent: z.string().optional(),
+  postActionAgent: z.string().optional(),
+  postActionModel: z.string().optional(),
+  postActionVariant: z.string().optional(),
   auditorFallbackIndex: z.number().int(),
   modelFailed: z.boolean(),
   sandbox: z.boolean(),

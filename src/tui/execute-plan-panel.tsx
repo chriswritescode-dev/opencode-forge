@@ -5,8 +5,9 @@ import { claimFocusOnMount } from './focus'
 import type { ForgeTuiHost } from './host'
 import { PLAN_EXECUTION_LABELS, extractPlanExecutionMetadata, type PlanExecutionLabel } from '../utils/plan-execution'
 import { normalizePastedPlanText } from '../utils/marked-plan-parser'
-import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type LoopInfo, type ModelInfo } from '../utils/tui-models'
+import { buildAgentSelectOptions, buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type AgentOption, type LoopInfo, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
+import { DEFAULT_LOOP_AUDITOR_AGENT, DEFAULT_LOOP_EXECUTION_AGENT } from '../constants/loop'
 import type { ForgeExecutionMode, ForgeLoopDefaults, ForgeLoopRestartInput } from '../host/forge-rpc'
 import type { ExecutePlanRequest, ForgeProjectClient } from './project-client'
 import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
@@ -19,6 +20,8 @@ export interface ExecutionSelection {
   auditorModel: string
   executionVariant: string
   auditorVariant: string
+  executionAgent: string
+  auditorAgent: string
   loopName: string
   planContent: string
   loopSettings: LoopLaunchSettings
@@ -82,6 +85,9 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const [auditorModel, setAuditorModel] = createSignal(initial.auditorModel ?? initialDefaults.auditorModel)
   const [executionVariant, setExecutionVariant] = createSignal(initial.executionVariant ?? initialDefaults.executionVariant)
   const [auditorVariant, setAuditorVariant] = createSignal(initial.auditorVariant ?? initialDefaults.auditorVariant)
+  const [executionAgent, setExecutionAgent] = createSignal(initial.executionAgent ?? initialDefaults.executionAgent)
+  const [auditorAgent, setAuditorAgent] = createSignal(initial.auditorAgent ?? initialDefaults.auditorAgent)
+  const [agents, setAgents] = createSignal<AgentOption[]>(initialSnapshot?.agents ?? [])
   const [models, setModels] = createSignal<ModelInfo[]>(initialSnapshot?.models ?? [])
   const [recents, setRecents] = createSignal<string[]>(initialSnapshot?.recents ?? [])
   const [modelsError, setModelsError] = createSignal<string | undefined>(initialSnapshot?.modelsError)
@@ -89,7 +95,9 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const [loopDefaults, setLoopDefaults] = createSignal<ForgeLoopDefaults | null>(initialSnapshot?.loopDefaults ?? null)
   const [busy, setBusy] = createSignal(false)
   const loopName = initial.loopName ?? (planContent ? extractPlanExecutionMetadata(planContent).executionName : '')
-  const loopSettings = initial.loopSettings ?? {}
+  const [loopSettings, setLoopSettings] = createSignal<LoopLaunchSettings>(
+    initial.loopSettings ?? (initialDefaults.postActionAgent ? { postActionAgent: initialDefaults.postActionAgent } : {}),
+  )
   const isRestart = () => props.restart !== undefined
   const selectedLoop = () => props.restart?.loops.find(loop => loop.name === loopName)
 
@@ -98,9 +106,11 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     auditorModel: auditorModel(),
     executionVariant: executionVariant(),
     auditorVariant: auditorVariant(),
+    executionAgent: executionAgent(),
+    auditorAgent: auditorAgent(),
     loopName,
     planContent,
-    loopSettings,
+    loopSettings: loopSettings(),
     ...overrides,
   })
 
@@ -109,6 +119,8 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const modelOf = (role: ModelRole) => role === 'execution' ? executionModel() : auditorModel()
   const variantOf = (role: ModelRole) => role === 'execution' ? executionVariant() : auditorVariant()
   const modelInfoFor = (fullName: string) => models().find(m => m.fullName === (fullName || openCodeDefaultModel())) ?? null
+  const defaultExecutionAgent = () => loopDefaults()?.agents?.execution ?? pluginConfig.loop?.executionAgent ?? DEFAULT_LOOP_EXECUTION_AGENT
+  const defaultAuditorAgent = () => loopDefaults()?.agents?.auditor ?? pluginConfig.loop?.auditorAgent ?? DEFAULT_LOOP_AUDITOR_AGENT
 
   const hasInitialModels = initial.executionModel !== undefined || initial.auditorModel !== undefined
 
@@ -117,6 +129,12 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     if (!hasInitialModels && !auditorModel()) setAuditorModel(snap.defaults.auditorModel)
     if (initial.executionVariant === undefined && !executionVariant()) setExecutionVariant(snap.defaults.executionVariant ?? '')
     if (initial.auditorVariant === undefined && !auditorVariant()) setAuditorVariant(snap.defaults.auditorVariant ?? '')
+    if (initial.executionAgent === undefined && !executionAgent()) setExecutionAgent(snap.defaults.executionAgent ?? '')
+    if (initial.auditorAgent === undefined && !auditorAgent()) setAuditorAgent(snap.defaults.auditorAgent ?? '')
+    if (initial.loopSettings === undefined && loopSettings().postActionAgent === undefined && snap.defaults.postActionAgent) {
+      setLoopSettings(prev => ({ ...prev, postActionAgent: snap.defaults.postActionAgent }))
+    }
+    setAgents(snap.agents)
     setModels(snap.models)
     setRecents(snap.recents)
     setModelsError(snap.modelsError)
@@ -186,6 +204,34 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     reopenWith(role === 'execution' ? { executionVariant: selected } : { auditorVariant: selected })
   }
 
+  const openAgentDialog = async (role: 'execution' | 'auditor') => {
+    const defaultAgent = role === 'execution' ? defaultExecutionAgent() : defaultAuditorAgent()
+    const current = role === 'execution' ? executionAgent() : auditorAgent()
+    const ensured = [
+      DEFAULT_LOOP_EXECUTION_AGENT,
+      DEFAULT_LOOP_AUDITOR_AGENT,
+      'code',
+      defaultAgent,
+      current,
+    ]
+    const selected = await props.host.select({
+      title: role === 'execution' ? 'Execution Agent' : 'Auditor Agent',
+      options: [
+        {
+          title: `Use default (${defaultAgent})`,
+          value: '',
+          description: role === 'execution'
+            ? `Default: ${defaultAgent} for Loop, code for New session / Execute here`
+            : `Use configured/built-in auditor agent (${defaultAgent})`,
+        },
+        ...buildAgentSelectOptions(agents(), ensured),
+      ],
+      current,
+    })
+    if (selected === undefined) return reopenWith()
+    reopenWith(role === 'execution' ? { executionAgent: selected } : { auditorAgent: selected })
+  }
+
   const openRestartLoopPicker = async (loops: LoopInfo[]) => {
     const name = await props.host.select({
       title: 'Loop',
@@ -204,6 +250,9 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       executionVariant: selected.executionModel ? selected.executionVariant ?? '' : executionVariant(),
       auditorModel: selected.auditorModel ?? auditorModel(),
       auditorVariant: selected.auditorModel ? selected.auditorVariant ?? '' : auditorVariant(),
+      executionAgent: selected.executionAgent ?? '',
+      auditorAgent: selected.auditorAgent ?? '',
+      loopSettings: { ...loopSettings(), postActionAgent: selected.postActionAgent },
     })
   }
 
@@ -229,7 +278,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   }
 
   const openLoopSettingsDialog = async () => {
-    reopenWith({ loopSettings: await editLoopSettings(props.host, loopSettings, loopDefaults()) })
+    reopenWith({ loopSettings: await editLoopSettings(props.host, loopSettings(), loopDefaults(), agents()) })
   }
 
   async function runExecuteMode(label: PlanExecutionLabel): Promise<void> {
@@ -252,9 +301,13 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       auditorModel: auditModel,
       executionVariant: executionVariant(),
       auditorVariant: auditorVariant(),
+      executionAgent: executionAgent() || undefined,
       targetSessionId: props.sessionId,
     }
-    if (mode === 'loop') Object.assign(request, toLoopLaunchRequest(loopSettings, loopDefaults()))
+    if (mode === 'loop') {
+      request.auditorAgent = auditorAgent() || undefined
+      Object.assign(request, toLoopLaunchRequest(loopSettings(), loopDefaults()))
+    }
     const result = await props.client.plan.execute(props.sessionId, request)
     if (!result) {
       props.host.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
@@ -274,15 +327,25 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const runRestart = async () => {
     if (!props.restart || !loopName) return
     try {
-      await props.restart.onRestart({
+      const currentPostActionAgent = loopSettings().postActionAgent !== undefined
+        ? loopSettings().postActionAgent
+        : selectedLoop()?.postActionAgent
+          ? ''
+          : undefined
+      const request: Omit<ForgeLoopRestartInput, 'executionModel' | 'executionVariant' | 'force'>
+        & Required<Pick<ForgeLoopRestartInput, 'executionModel' | 'executionVariant' | 'force'>> = {
         loopName,
         auditorModel: auditorModel(),
         auditorVariant: auditorVariant(),
         executionModel: executionModel(),
         executionVariant: executionVariant(),
+        executionAgent: executionAgent(),
+        auditorAgent: auditorAgent(),
         force: !!selectedLoop()?.restartRequiresForce,
         expectedStartedAt: selectedLoop()?.startedAt,
-      })
+      }
+      if (currentPostActionAgent !== undefined) request.postActionAgent = currentPostActionAgent
+      await props.restart.onRestart(request)
       cache?.recordRecent(auditorModel())
       cache?.recordRecent(executionModel())
       props.host.toast({ message: `Loop restarted: ${loopName}`, variant: 'success', duration: 5000 })
@@ -308,8 +371,10 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
 
   const actions: DashboardActionMap = {
     'plan': () => { void openPastePlanDialog() },
+    'agent:execution': () => { void openAgentDialog('execution') },
     'model:execution': () => { void openModelDialog('execution') },
     'variant:execution': () => { void openVariantDialog('execution') },
+    'agent:auditor': () => { void openAgentDialog('auditor') },
     'model:auditor': () => { void openModelDialog('auditor') },
     'variant:auditor': () => { void openVariantDialog('auditor') },
     'loop-name': () => { void (props.restart ? openRestartLoopPicker(props.restart.loops) : openLoopNameDialog()) },
@@ -323,7 +388,10 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
 
   const modelRows = () => (['execution', 'auditor'] as const).flatMap(role => {
     const label = role === 'execution' ? 'Execution' : 'Auditor'
+    const agent = role === 'execution' ? executionAgent() : auditorAgent()
+    const defaultAgent = role === 'execution' ? defaultExecutionAgent() : defaultAuditorAgent()
     return [
+      { name: `${label} agent: ${agent || `${defaultAgent} (default)`}`, description: 'Press enter to change', value: `agent:${role}` },
       { name: `${label} model: ${getModelDisplayLabel(modelOf(role), models(), openCodeDefaultModel())}`, description: 'Press enter to change', value: `model:${role}` },
       { name: `${label} variant: ${getVariantDisplayLabel(variantOf(role), modelInfoFor(modelOf(role)))}`, description: 'Press enter to change', value: `variant:${role}` },
     ]
@@ -349,7 +417,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     },
     ...modelRows(),
     { name: `Loop name: ${loopName || '(from plan)'}`, description: 'Press enter to edit the loop name used when launching', value: 'loop-name' },
-    { name: `Loop settings: ${formatLoopSettingsSummary(loopSettings, loopDefaults())}`, description: 'Press enter to change iterations and sandbox settings for Loop mode', value: 'loop-settings' },
+    { name: `Loop settings: ${formatLoopSettingsSummary(loopSettings(), loopDefaults())}`, description: 'Press enter to change iterations, post-action agent, and sandbox settings for Loop mode', value: 'loop-settings' },
     ...PLAN_EXECUTION_LABELS.map(label => ({ name: label, description: MODE_DESCRIPTIONS[label], value: `mode:${label}` })),
     ...(props.onOpenRestart ? [{ name: 'Restart a loop…', description: 'Resume a stopped or running loop from persisted progress', value: 'action:open-restart' }] : []),
   ]
@@ -413,6 +481,9 @@ export function openExecutionDialog(options: ExecutionDialogOptions): void {
         auditorModel: selection.auditorModel,
         executionVariant: selection.executionVariant,
         auditorVariant: selection.auditorVariant,
+        executionAgent: selection.executionAgent,
+        auditorAgent: selection.auditorAgent,
+        postActionAgent: selection.loopSettings.postActionAgent ?? '',
       })
     }
     const { planContent, ...initial } = selection

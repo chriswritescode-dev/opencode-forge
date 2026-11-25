@@ -1,11 +1,14 @@
 import type { ForgeLoopDefaults } from '../host/forge-rpc'
+import { DEFAULT_LOOP_POST_ACTION_AGENT } from '../constants/loop'
 import type { LoopSandboxSettings, SandboxResources } from '../types'
 import { isSandboxCpuCount, isSandboxSize, readLoopSandboxSettings, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
+import { buildAgentSelectOptions, type AgentOption } from '../utils/tui-models'
 import type { ForgeTuiHost, ForgeTuiSelectOption } from './host'
 
 export interface LoopLaunchSettings {
   maxIterations?: number
   sandbox?: LoopSandboxSettings
+  postActionAgent?: string
 }
 
 export interface ResourceField {
@@ -79,12 +82,14 @@ export function formatLoopSettingsSummary(settings: LoopLaunchSettings, defaults
       parts.push('sandbox off')
     }
   }
+  if (settings.postActionAgent) parts.push(`post-action ${settings.postActionAgent}`)
   return parts.join(' · ')
 }
 
 export interface LoopLaunchRequest {
   maxIterations?: number
   sandbox?: LoopSandboxSettings
+  postActionAgent?: string
 }
 
 export function toLoopLaunchRequest(
@@ -99,14 +104,20 @@ export function toLoopLaunchRequest(
   const request: LoopLaunchRequest = {}
   if (settings.maxIterations !== undefined) request.maxIterations = settings.maxIterations
   if (sandbox) request.sandbox = sandbox
+  if (settings.postActionAgent) request.postActionAgent = settings.postActionAgent
   return request
 }
 
 export function buildLoopSettingsOptions(settings: LoopLaunchSettings, defaults: ForgeLoopDefaults | null): ForgeTuiSelectOption<string>[] {
+  const defaultPostActionAgent = defaults?.agents?.postAction ?? DEFAULT_LOOP_POST_ACTION_AGENT
   const options: ForgeTuiSelectOption<string>[] = [{
     title: `Max iterations: ${formatIterations(settings.maxIterations ?? defaults?.maxIterations)}${settings.maxIterations === undefined ? DEFAULT_SUFFIX : ''}`,
     value: 'maxIterations',
     description: 'Press enter to change; 0 runs until the plan completes',
+  }, {
+    title: `Post-action agent: ${settings.postActionAgent ?? defaultPostActionAgent}${settings.postActionAgent === undefined ? DEFAULT_SUFFIX : ''}`,
+    value: 'postActionAgent',
+    description: 'Press enter to change the agent used for the post-action phase',
   }]
   if (defaults?.sandbox.available) {
     const on = isSandboxOn(settings, defaults)
@@ -134,7 +145,7 @@ export function buildLoopSettingsOptions(settings: LoopLaunchSettings, defaults:
       })
     }
   }
-  if (settings.maxIterations !== undefined || settings.sandbox) {
+  if (settings.maxIterations !== undefined || settings.sandbox || settings.postActionAgent !== undefined) {
     options.push({ title: 'Reset to defaults', value: 'reset', description: 'Clear every loop setting override' })
   }
   options.push({ title: 'Done', value: 'done', description: 'Return to the execution dialog' })
@@ -168,6 +179,30 @@ async function promptResource(
   return withSandbox(settings, { ...settings.sandbox, resources })
 }
 
+async function promptPostActionAgent(
+  host: ForgeTuiHost,
+  settings: LoopLaunchSettings,
+  defaults: ForgeLoopDefaults | null,
+  agents: ReadonlyArray<AgentOption>,
+): Promise<LoopLaunchSettings> {
+  const defaultPostActionAgent = defaults?.agents?.postAction ?? DEFAULT_LOOP_POST_ACTION_AGENT
+  const selected = await host.select({
+    title: 'Post-action agent',
+    options: [
+      {
+        title: `Use default (${defaultPostActionAgent})`,
+        value: '',
+        description: 'Use the configured or built-in post-action agent',
+      },
+      ...buildAgentSelectOptions(agents, [DEFAULT_LOOP_POST_ACTION_AGENT, 'code', defaultPostActionAgent, settings.postActionAgent ?? '']),
+    ],
+    current: settings.postActionAgent ?? '',
+  })
+  if (selected === undefined) return settings
+  const { postActionAgent: _previous, ...rest } = settings
+  return selected ? { ...rest, postActionAgent: selected } : rest
+}
+
 function effectiveAllowLan(settings: LoopLaunchSettings, defaults: ForgeLoopDefaults | null): boolean {
   return resolveSandboxAllowLan(defaults?.sandbox.allowLan, settings.sandbox)
 }
@@ -183,8 +218,10 @@ async function applyLoopSettingsChoice(
   settings: LoopLaunchSettings,
   defaults: ForgeLoopDefaults | null,
   choice: string,
+  agents: ReadonlyArray<AgentOption>,
 ): Promise<LoopLaunchSettings> {
   if (choice === 'maxIterations') return promptMaxIterations(host, settings)
+  if (choice === 'postActionAgent') return promptPostActionAgent(host, settings, defaults, agents)
   if (choice === 'reset') return {}
   if (choice === 'allowLan') return toggleLoopAllowLan(settings, defaults)
   if (choice === 'sandbox') {
@@ -199,6 +236,7 @@ export async function editLoopSettings(
   host: ForgeTuiHost,
   initial: LoopLaunchSettings,
   defaults: ForgeLoopDefaults | null,
+  agents: ReadonlyArray<AgentOption> = [],
 ): Promise<LoopLaunchSettings> {
   let settings = initial
   let current: string | undefined
@@ -206,6 +244,6 @@ export async function editLoopSettings(
     const choice = await host.select({ title: 'Loop settings', options: buildLoopSettingsOptions(settings, defaults), current })
     if (choice === undefined || choice === 'done') return settings
     current = choice
-    settings = await applyLoopSettingsChoice(host, settings, defaults, choice)
+    settings = await applyLoopSettingsChoice(host, settings, defaults, choice, agents)
   }
 }

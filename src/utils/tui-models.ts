@@ -30,6 +30,11 @@ const forgeLoopExtraSchema = z.looseObject({
   auditorModel: z.string().optional().catch(undefined),
   executionVariant: z.string().optional().catch(undefined),
   auditorVariant: z.string().optional().catch(undefined),
+  executionAgent: z.string().optional().catch(undefined),
+  auditorAgent: z.string().optional().catch(undefined),
+  postActionAgent: z.string().optional().catch(undefined),
+  postActionModel: z.string().optional().catch(undefined),
+  postActionVariant: z.string().optional().catch(undefined),
 })
 
 const workspaceExtraSchema = z.looseObject({
@@ -54,6 +59,14 @@ export interface ModelInfo {
     output?: number
   }
   variants?: Record<string, ModelVariantConfig>
+}
+
+export interface AgentOption {
+  id: string
+  name: string
+  description?: string
+  mode?: 'primary' | 'subagent' | 'all'
+  hidden?: boolean
 }
 
 export interface ProviderInfo {
@@ -88,6 +101,11 @@ export type LoopInfo = {
   executionVariant?: string
   auditorModel?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   branch?: string
 }
 
@@ -407,4 +425,22 @@ export function normalizeVariantForModel(
 
   const available = getAvailableModelVariants(model)
   return available.some(v => v.id === variant) ? variant : ''
+}
+
+export function buildAgentSelectOptions(
+  agents: ReadonlyArray<AgentOption>,
+  ensuredIds: ReadonlyArray<string>,
+): Array<{ title: string; value: string; description?: string }> {
+  const byId = new Map(agents.map(agent => [agent.id, agent]))
+  const options: Array<{ title: string; value: string; description?: string }> = []
+  const seen = new Set<string>()
+  const push = (id: string) => {
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    const agent = byId.get(id)
+    options.push({ title: agent?.name ?? id, value: id, description: agent?.description })
+  }
+  for (const id of ensuredIds) push(id)
+  for (const agent of agents) push(agent.id)
+  return options
 }

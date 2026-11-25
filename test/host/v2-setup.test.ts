@@ -476,6 +476,39 @@ describe('V2 server setup', () => {
     })).resolves.toEqual({ sessionId: 'ses_fake_1' })
   })
 
+  test('the executePlan and loopRestart RPCs accept loop agent and post-action overrides', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      executePlan: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+      loopRestart: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+
+    await expect(handlers.executePlan({
+      sessionId: 'ses_host',
+      mode: 'new-session',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      executionAgent: 'my-coder',
+    })).resolves.toEqual({ sessionId: 'ses_fake_1' })
+
+    expect(fake.calls).toContainEqual({
+      method: 'session.switchAgent',
+      args: [{ sessionID: 'ses_fake_1', agent: 'my-coder' }],
+    })
+
+    await expect(handlers.loopRestart({
+      loopName: 'missing-loop',
+      auditorModel: 'anthropic/claude',
+      auditorVariant: '',
+      executionAgent: 'my-coder',
+      auditorAgent: 'my-auditor',
+      postActionAgent: 'my-post',
+      postActionModel: 'prov/post',
+      postActionVariant: 'fast',
+    })).resolves.toMatchObject({ error: expect.stringContaining('missing-loop') })
+  })
+
   test('the executePlan RPC reports execute-here without a session as an error', async () => {
     const fake = createFakeV2Context()
     cleanups.push(await pluginModule.setup(fake.ctx))

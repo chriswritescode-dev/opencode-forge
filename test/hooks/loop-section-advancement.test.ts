@@ -420,7 +420,7 @@ describe('Loop Section Advancement', () => {
 
       // A capped dirty audit sends no coder retry prompt and keeps the finding.
       const retryPrompts = calls.filter(
-        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop',
       )
       expect(retryPrompts.length).toBe(0)
       const retained = reviewFindingsRepo.listByLoopName(projectId, 'test-loop')

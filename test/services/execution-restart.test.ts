@@ -19,6 +19,7 @@ import type { LoopTransitionsRepo } from '../../src/storage/repos/loop-transitio
 import type { LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import type { LoopService } from '../../src/loop/service'
 import type { Database } from 'bun:sqlite'
+import type { PluginConfig } from '../../src/types'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { buildExecutionDeps } from '../helpers/loop-fixtures'
@@ -114,6 +115,11 @@ describe('handleLoopRestart from stall_timeout', () => {
     auditorVariant: string | null
     executionModel: string | null
     executionVariant: string | null
+    executionAgent: string | null
+    auditorAgent: string | null
+    postActionAgent: string | null
+    postActionModel: string | null
+    postActionVariant: string | null
     startedAt: number
     baseCommit: string | null
     standbySessionId: string | null
@@ -134,6 +140,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       auditorVariant: null as string | null,
       executionModel: null as string | null,
       executionVariant: null as string | null,
+      executionAgent: null as string | null,
+      auditorAgent: null as string | null,
+      postActionAgent: null as string | null,
+      postActionModel: null as string | null,
+      postActionVariant: null as string | null,
       startedAt: Date.now(),
       baseCommit: null as string | null,
       standbySessionId: null as string | null,
@@ -157,6 +168,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       auditorModel: opts.auditorModel,
       executionVariant: opts.executionVariant,
       auditorVariant: opts.auditorVariant,
+      executionAgent: opts.executionAgent,
+      auditorAgent: opts.auditorAgent,
+      postActionAgent: opts.postActionAgent,
+      postActionModel: opts.postActionModel,
+      postActionVariant: opts.postActionVariant,
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
@@ -642,7 +658,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(result.data.iteration).toBe(1)
 
     const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
-    expect(promptCall.agent).toBe('code')
+    expect(promptCall.agent).toBe('code-loop')
     const promptText = promptCall.parts[0].text as string
 
     expect(promptText).toContain(currentSectionDescription)
@@ -1326,7 +1342,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect((client.session.promptAsync as any).mock.calls).toHaveLength(1)
 
     // Prompt sent with code agent to new session
-    expect((client.session.promptAsync as any).mock.calls[0][0].agent).toBe('code')
+    expect((client.session.promptAsync as any).mock.calls[0][0].agent).toBe('code-loop')
     expect((client.session.promptAsync as any).mock.calls[0][0].sessionID).toBe('new-code-session')
 
     // At the moment runExclusive released, new session is registered and old is gone
@@ -1427,7 +1443,11 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(rows[0].iteration).toBe(2)
   })
 
-  async function createRestartOverrideService(promptImpl?: () => Promise<void>, abortImpl?: () => Promise<void>) {
+  async function createRestartOverrideService(
+    promptImpl?: () => Promise<void>,
+    abortImpl?: () => Promise<void>,
+    configOverride?: Partial<PluginConfig>,
+  ) {
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
       buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
@@ -1472,6 +1492,7 @@ describe('handleLoopRestart from stall_timeout', () => {
           loop: { enabled: true, postAction: { enabled: true, skill: 'pr-review' } },
           executionModel: 'prov/exec',
           auditorModel: 'prov/aud',
+          ...configOverride,
         },
       }).deps,
     )
@@ -1506,7 +1527,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     if (!result.ok) return
 
     const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
-    expect(promptCall.agent).toBe('code')
+    expect(promptCall.agent).toBe('code-loop')
     expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'newaud' })
     expect(promptCall.variant).toBe('max')
 
@@ -1546,7 +1567,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     if (!result.ok) return
 
     const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
-    expect(promptCall.agent).toBe('code')
+    expect(promptCall.agent).toBe('code-loop')
     expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'exec' })
     expect(promptCall.variant).toBeUndefined()
 
@@ -1715,7 +1736,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     if (!result.ok) return
 
     const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
-    expect(promptCall.agent).toBe('code')
+    expect(promptCall.agent).toBe('code-loop')
     expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'newexec' })
     expect(promptCall.variant).toBe('max')
 
@@ -1757,6 +1778,222 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(result.ok).toBe(true)
     expect((client.session.promptAsync as any).mock.calls[0][0].variant).toBeUndefined()
     expect(loopsRepo.get(PROJECT_ID, 'clear-exec-variant-loop')!.executionVariant).toBeNull()
+  })
+
+  test('restart preserves persisted loop agent and post-action overrides', async () => {
+    insertLoop({
+      loopName: 'preserve-agents-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      totalSections: 0,
+      executionAgent: 'loop-coder',
+      auditorAgent: 'loop-auditor',
+      postActionAgent: 'loop-post',
+      postActionModel: 'prov/post',
+      postActionVariant: 'fast',
+    })
+
+    const { service, client } = await createRestartOverrideService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'preserve-agents-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect((client.session.promptAsync as any).mock.calls[0][0].agent).toBe('loop-coder')
+
+    const row = loopsRepo.get(PROJECT_ID, 'preserve-agents-loop')!
+    expect(row.executionAgent).toBe('loop-coder')
+    expect(row.auditorAgent).toBe('loop-auditor')
+    expect(row.postActionAgent).toBe('loop-post')
+    expect(row.postActionModel).toBe('prov/post')
+    expect(row.postActionVariant).toBe('fast')
+
+    const activeState = loopService.getActiveState('preserve-agents-loop')!
+    expect(activeState.executionAgent).toBe('loop-coder')
+    expect(activeState.auditorAgent).toBe('loop-auditor')
+    expect(activeState.postActionAgent).toBe('loop-post')
+    expect(activeState.postActionModel).toBe('prov/post')
+    expect(activeState.postActionVariant).toBe('fast')
+  })
+
+  test('restart applies loop agent and post-action overrides', async () => {
+    insertLoop({
+      loopName: 'override-agents-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      totalSections: 0,
+      executionAgent: 'old-coder',
+      auditorAgent: 'old-auditor',
+      postActionAgent: 'old-post',
+      postActionModel: 'prov/oldpost',
+      postActionVariant: 'slow',
+    })
+
+    const { service, client } = await createRestartOverrideService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'override-agents-loop' },
+        executionAgent: 'new-coder',
+        auditorAgent: 'new-auditor',
+        postActionAgent: 'new-post',
+        postActionModel: 'prov/newpost',
+        postActionVariant: 'newvar',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect((client.session.promptAsync as any).mock.calls[0][0].agent).toBe('new-coder')
+
+    const row = loopsRepo.get(PROJECT_ID, 'override-agents-loop')!
+    expect(row.executionAgent).toBe('new-coder')
+    expect(row.auditorAgent).toBe('new-auditor')
+    expect(row.postActionAgent).toBe('new-post')
+    expect(row.postActionModel).toBe('prov/newpost')
+    expect(row.postActionVariant).toBe('newvar')
+
+    const activeState = loopService.getActiveState('override-agents-loop')!
+    expect(activeState.executionAgent).toBe('new-coder')
+    expect(activeState.auditorAgent).toBe('new-auditor')
+    expect(activeState.postActionAgent).toBe('new-post')
+    expect(activeState.postActionModel).toBe('prov/newpost')
+    expect(activeState.postActionVariant).toBe('newvar')
+  })
+
+  test('restart with a replaced post-action model does not inherit the persisted variant', async () => {
+    insertLoop({
+      loopName: 'replace-post-model-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      totalSections: 0,
+      postActionModel: 'prov/oldpost',
+      postActionVariant: 'slow',
+    })
+
+    const { service } = await createRestartOverrideService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'replace-post-model-loop' },
+        postActionModel: 'prov/newpost',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const row = loopsRepo.get(PROJECT_ID, 'replace-post-model-loop')!
+    expect(row.postActionModel).toBe('prov/newpost')
+    expect(row.postActionVariant).toBeNull()
+
+    const activeState = loopService.getActiveState('replace-post-model-loop')!
+    expect(activeState.postActionModel).toBe('prov/newpost')
+    expect(activeState.postActionVariant).toBeUndefined()
+  })
+
+  test('restart with empty agent overrides clears the persisted agents and post-action fields', async () => {
+    insertLoop({
+      loopName: 'clear-agents-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      totalSections: 0,
+      executionAgent: 'old-coder',
+      auditorAgent: 'old-auditor',
+      postActionAgent: 'old-post',
+      postActionModel: 'prov/oldpost',
+      postActionVariant: 'slow',
+    })
+
+    const { service, client } = await createRestartOverrideService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'clear-agents-loop' },
+        executionAgent: '',
+        auditorAgent: '',
+        postActionAgent: '',
+        postActionModel: '',
+        postActionVariant: '',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect((client.session.promptAsync as any).mock.calls[0][0].agent).toBe('code-loop')
+
+    const row = loopsRepo.get(PROJECT_ID, 'clear-agents-loop')!
+    expect(row.executionAgent).toBeNull()
+    expect(row.auditorAgent).toBeNull()
+    expect(row.postActionAgent).toBeNull()
+    expect(row.postActionModel).toBeNull()
+    expect(row.postActionVariant).toBeNull()
+
+    const activeState = loopService.getActiveState('clear-agents-loop')!
+    expect(activeState.executionAgent).toBeUndefined()
+    expect(activeState.auditorAgent).toBeUndefined()
+    expect(activeState.postActionAgent).toBeUndefined()
+    expect(activeState.postActionModel).toBeUndefined()
+    expect(activeState.postActionVariant).toBeUndefined()
+  })
+
+  test('post_action restart uses the configured post-action agent, model, and variant', async () => {
+    insertLoop({
+      loopName: 'post-action-agent-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'post_action',
+      totalSections: 0,
+      auditorVariant: 'audit-high',
+    })
+
+    const { service, client } = await createRestartOverrideService(undefined, undefined, {
+      loop: {
+        enabled: true,
+        postAction: {
+          enabled: true,
+          skill: 'pr-review',
+          agent: 'pa-agent',
+          model: 'prov/pa',
+          variant: 'pa-var',
+        },
+      },
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'post-action-agent-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('pa-agent')
+    expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'pa' })
+    expect(promptCall.variant).toBe('pa-var')
   })
 
   test('force restart stops when the active session cannot be aborted', async () => {

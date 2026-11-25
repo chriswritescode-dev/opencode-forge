@@ -35,6 +35,10 @@ describe('formatLoopSettingsSummary', () => {
     expect(formatLoopSettingsSummary({ sandbox: { resources: { cpus: '8', memory: '32g' } } }, defaults)).toBe('50 iterations · sandbox 8 CPU, 32g')
   })
 
+  test('shows a post-action agent override', () => {
+    expect(formatLoopSettingsSummary({ postActionAgent: 'custom-agent' }, noSandbox)).toBe('50 iterations · post-action custom-agent')
+  })
+
   test('omits the sandbox when the server has none and tolerates missing defaults', () => {
     expect(formatLoopSettingsSummary({ maxIterations: 5 }, noSandbox)).toBe('5 iterations')
     expect(formatLoopSettingsSummary({}, null)).toBe('default iterations')
@@ -59,15 +63,19 @@ describe('toLoopLaunchRequest', () => {
     expect(toLoopLaunchRequest({ sandbox: { enabled: false } }, noSandbox)).toEqual({})
     expect(toLoopLaunchRequest({ sandbox: { enabled: false } }, null)).toEqual({})
   })
+
+  test('sends a post-action agent override', () => {
+    expect(toLoopLaunchRequest({ postActionAgent: 'custom-agent' }, defaults)).toEqual({ postActionAgent: 'custom-agent' })
+  })
 })
 
 describe('buildLoopSettingsOptions', () => {
   test('lists resource rows only while the sandbox is on', () => {
     expect(buildLoopSettingsOptions({}, defaults).map((o) => o.value))
-      .toEqual(['maxIterations', 'sandbox', 'resource:cpus', 'resource:memory', 'resource:dockerDisk', 'resource:cacheDisk', 'allowLan', 'done'])
+      .toEqual(['maxIterations', 'postActionAgent', 'sandbox', 'resource:cpus', 'resource:memory', 'resource:dockerDisk', 'resource:cacheDisk', 'allowLan', 'done'])
     expect(buildLoopSettingsOptions({ sandbox: { enabled: false } }, defaults).map((o) => o.value))
-      .toEqual(['maxIterations', 'sandbox', 'reset', 'done'])
-    expect(buildLoopSettingsOptions({}, noSandbox).map((o) => o.value)).toEqual(['maxIterations', 'done'])
+      .toEqual(['maxIterations', 'postActionAgent', 'sandbox', 'reset', 'done'])
+    expect(buildLoopSettingsOptions({}, noSandbox).map((o) => o.value)).toEqual(['maxIterations', 'postActionAgent', 'done'])
   })
 
   test('marks values that come from the defaults', () => {
@@ -75,6 +83,15 @@ describe('buildLoopSettingsOptions', () => {
     expect(titles).toContain('CPUs: 8')
     expect(titles).toContain('Memory: 8g (default)')
     expect(titles).toContain('Max iterations: 50 (default)')
+    expect(titles).toContain('Post-action agent: code-loop (default)')
+  })
+
+  test('shows the post-action agent override and offers a reset row', () => {
+    const titles = buildLoopSettingsOptions({ postActionAgent: 'custom-agent' }, noSandbox).map((o) => o.title)
+    expect(titles).toContain('Post-action agent: custom-agent')
+
+    const reset = buildLoopSettingsOptions({ postActionAgent: 'custom-agent' }, noSandbox)
+    expect(reset.map((o) => o.value)).toContain('reset')
   })
 })
 
@@ -119,6 +136,36 @@ describe('editLoopSettings', () => {
     const lanDefault = { ...defaults, sandbox: { ...defaults.sandbox, allowLan: true } }
     expect(buildLoopSettingsOptions({}, lanDefault).map((o) => o.title)).toContain('LAN access: allowed (default)')
     expect(await editLoopSettings(scriptedHost(['allowLan', 'done']).host, {}, lanDefault)).toEqual({ sandbox: { allowLan: false } })
+  })
+
+  test('selects and clears a post-action agent override', async () => {
+    const chosen = await editLoopSettings(
+      scriptedHost(['postActionAgent', 'custom-agent', 'done']).host,
+      {},
+      defaults,
+      [{ id: 'custom-agent', name: 'Custom Agent' }],
+    )
+    expect(chosen).toEqual({ postActionAgent: 'custom-agent' })
+
+    const cleared = await editLoopSettings(
+      scriptedHost(['postActionAgent', '', 'done']).host,
+      { postActionAgent: 'custom-agent' },
+      defaults,
+    )
+    expect(cleared).toEqual({})
+  })
+
+  test('the post-action agent dialog offers the default and dedupes built-in agents', async () => {
+    const { host } = scriptedHost(['postActionAgent', '', 'done'])
+
+    await editLoopSettings(host, {}, defaults, [
+      { id: 'code-loop', name: 'Code Loop' },
+      { id: 'custom', name: 'Custom' },
+    ])
+
+    const dialog = vi.mocked(host.select).mock.calls[1][0]
+    expect(dialog.title).toBe('Post-action agent')
+    expect(dialog.options.map((option) => option.title)).toEqual(['Use default (code-loop)', 'Code Loop', 'code', 'Custom'])
   })
 
   test('a cancelled prompt leaves the settings unchanged', async () => {

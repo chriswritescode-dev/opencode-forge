@@ -36,6 +36,11 @@ interface LoopStateBase {
   sandboxSettings?: LoopSandboxSettings
   baseCommit?: string
   standbySessionId?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
 }
 
 export interface CodingState extends LoopStateBase {
@@ -91,6 +96,11 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     sandboxSettings: row.sandboxSettings ?? undefined,
     baseCommit: row.baseCommit ?? undefined,
     standbySessionId: row.standbySessionId ?? undefined,
+    executionAgent: row.executionAgent ?? undefined,
+    auditorAgent: row.auditorAgent ?? undefined,
+    postActionAgent: row.postActionAgent ?? undefined,
+    postActionModel: row.postActionModel ?? undefined,
+    postActionVariant: row.postActionVariant ?? undefined,
   }
 
   switch (row.phase) {
@@ -141,5 +151,10 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     sandboxSettings: state.sandboxSettings ?? null,
     baseCommit: state.baseCommit ?? null,
     standbySessionId: state.standbySessionId ?? null,
+    executionAgent: state.executionAgent ?? null,
+    auditorAgent: state.auditorAgent ?? null,
+    postActionAgent: state.postActionAgent ?? null,
+    postActionModel: state.postActionModel ?? null,
+    postActionVariant: state.postActionVariant ?? null,
   }
 }

@@ -5,6 +5,7 @@ import { sendLoopPrompt } from './send-loop-prompt'
 import { resolveLoopModel } from '../utils/loop-helpers'
 import { markPromptSent } from './idle-gate'
 import { promptAuditSession } from '../utils/audit-session'
+import { DEFAULT_LOOP_AUDITOR_AGENT } from '../constants/loop'
 
 interface AuditPromptInput {
   sessionId: string
@@ -13,6 +14,7 @@ interface AuditPromptInput {
   prompt: string
   auditorModel?: { providerID: string; modelID: string }
   auditorVariant?: string
+  agent?: string
 }
 
 export interface PromptDispatchDeps {
@@ -27,7 +29,8 @@ export interface SendPromptInput {
   loopName: string
   sessionId: string
   promptText: string
-  agent: 'code' | 'auditor-loop'
+  agent: string
+  role?: 'code' | 'auditor'
   model?: { providerID: string; modelID: string } | null
   fallbackModel?: { providerID: string; modelID: string } | null
   variant?: string
@@ -45,11 +48,12 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
 
   async function sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }> {
     const { loopName, sessionId, promptText, agent } = input
+    const isAuditor = input.role === 'auditor' || (input.role === undefined && agent === DEFAULT_LOOP_AUDITOR_AGENT)
 
-    if (agent === 'auditor-loop') {
+    if (isAuditor) {
       const auditorModel = input.model != null ? input.model : undefined
       const { result, usedModel } = await sendLoopPrompt({
-        projectId, loopName, sessionId, agent: 'auditor-loop', logger,
+        projectId, loopName, sessionId, agent, logger,
         primaryModel: auditorModel,
         performPrompt: async (model) => {
           const freshState = loopService.getActiveState(loopName)
@@ -60,6 +64,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
             worktreeDir: freshState.worktreeDir,
             workspaceId: freshState.workspaceId,
             prompt: promptText,
+            agent,
           }
           if (model) {
             auditParams.auditorModel = model
@@ -74,7 +79,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
 
     const effectiveModel = input.model != null ? input.model : resolveLoopModel(getConfig(), loopService, loopName)
     const { result, usedModel } = await sendLoopPrompt({
-      projectId, loopName, sessionId, agent: 'code', logger,
+      projectId, loopName, sessionId, agent, logger,
       primaryModel: effectiveModel,
       fallbackModel: input.fallbackModel,
       performPrompt: async (model) => {
@@ -87,7 +92,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
           const promptParams: SessionPromptAsyncParams = {
             sessionID: sessionId,
             directory: freshState.worktreeDir,
-            agent: 'code',
+            agent,
             parts: [{ type: 'text', text: promptText }],
           }
           if (freshState.workspaceId) promptParams.workspace = freshState.workspaceId

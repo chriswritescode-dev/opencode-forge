@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
-import { createForgeCore, type ForgeCore } from '../../src/host/forge-core'
+import { createForgeAgentConfig, createForgeCore, type ForgeCore } from '../../src/host/forge-core'
+import type { HostConfig } from '../../src/config'
 import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
 import {
   closeDatabase,
@@ -609,6 +610,33 @@ describe('createForgeCore', () => {
         resources: { memory: '2g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
         allowLan: true,
       },
+      agents: { execution: 'code-loop', auditor: 'auditor-loop', postAction: 'code-loop' },
+    })
+  })
+
+  test('loopDefaults reports resolved loop agents and configured models', async () => {
+    const built = await buildCore({
+      executionModel: 'prov/exec',
+      executionVariant: 'high',
+      auditorModel: 'prov/aud',
+      auditorVariant: 'max',
+      loop: {
+        executionAgent: 'custom-coder',
+        auditorAgent: 'custom-auditor',
+        postAction: { agent: 'custom-post', model: 'prov/post', variant: 'fast' },
+      },
+    })
+
+    expect(built.core.loopDefaults()).toMatchObject({
+      agents: { execution: 'custom-coder', auditor: 'custom-auditor', postAction: 'custom-post' },
+      models: {
+        execution: 'prov/exec',
+        executionVariant: 'high',
+        auditor: 'prov/aud',
+        auditorVariant: 'max',
+        postAction: 'prov/post',
+        postActionVariant: 'fast',
+      },
     })
   })
 
@@ -622,7 +650,70 @@ describe('createForgeCore', () => {
         resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
         allowLan: false,
       },
+      agents: { execution: 'code-loop', auditor: 'auditor-loop', postAction: 'code-loop' },
     })
+  })
+})
+
+describe('createForgeAgentConfig minion model', () => {
+  type MinionAgentConfig = { model?: string; variant?: string }
+
+  async function minionHostConfig(config: Parameters<typeof createForgeAgentConfig>[0]): Promise<MinionAgentConfig> {
+    const { applyConfig } = createForgeAgentConfig(config)
+    const hostConfig: HostConfig = {}
+    await applyConfig(hostConfig)
+    return (hostConfig.agent as Record<string, MinionAgentConfig>).minion
+  }
+
+  test('inherits the execution model and variant when no minion model is configured', async () => {
+    const { agents } = createForgeAgentConfig({ executionModel: 'prov/exec', executionVariant: 'high' })
+
+    expect(agents.minion.defaultModel).toBe('prov/exec')
+    expect(agents.minion.variant).toBe('high')
+    await expect(minionHostConfig({ executionModel: 'prov/exec', executionVariant: 'high' })).resolves.toMatchObject({
+      model: 'prov/exec',
+      variant: 'high',
+    })
+  })
+
+  test('decouples the minion from the execution model without inheriting the execution variant', async () => {
+    const config = {
+      executionModel: 'prov/exec',
+      executionVariant: 'high',
+      agents: { minion: { model: 'prov/minion' } },
+    }
+    const { agents } = createForgeAgentConfig(config)
+
+    expect(agents.minion.defaultModel).toBe('prov/minion')
+    expect(agents.minion.variant).toBeUndefined()
+    await expect(minionHostConfig(config)).resolves.toMatchObject({ model: 'prov/minion' })
+    await expect(minionHostConfig(config)).resolves.not.toHaveProperty('variant')
+  })
+
+  test('clears the inherited execution variant with an empty minion variant', async () => {
+    const config = {
+      executionModel: 'prov/exec',
+      executionVariant: 'high',
+      agents: { minion: { variant: '' } },
+    }
+    const { agents } = createForgeAgentConfig(config)
+
+    expect(agents.minion.defaultModel).toBe('prov/exec')
+    expect(agents.minion.variant).toBeUndefined()
+    await expect(minionHostConfig(config)).resolves.not.toHaveProperty('variant')
+  })
+
+  test('clears the inherited model with an empty minion model', async () => {
+    const config = {
+      executionModel: 'prov/exec',
+      executionVariant: 'high',
+      agents: { minion: { model: '' } },
+    }
+    const { agents } = createForgeAgentConfig(config)
+
+    expect(agents.minion.defaultModel).toBeUndefined()
+    expect(agents.minion.variant).toBeUndefined()
+    await expect(minionHostConfig(config)).resolves.toMatchObject({ model: '' })
   })
 })
 

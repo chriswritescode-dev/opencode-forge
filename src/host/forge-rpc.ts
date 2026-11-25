@@ -84,6 +84,11 @@ export interface ForgeExecutePlanInput {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   maxIterations?: number
   sandbox?: LoopSandboxSettings
 }
@@ -104,6 +109,19 @@ export interface ForgeLoopDefaults {
     available: boolean
     resources: Required<SandboxResources>
     allowLan: boolean
+  }
+  agents?: {
+    execution: string
+    auditor: string
+    postAction: string
+  }
+  models?: {
+    execution?: string
+    executionVariant?: string
+    auditor?: string
+    auditorVariant?: string
+    postAction?: string
+    postActionVariant?: string
   }
 }
 
@@ -144,6 +162,11 @@ export interface ForgeLoopRestartInput {
   auditorVariant: string
   executionModel?: string
   executionVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   force?: boolean
   expectedStartedAt?: string
   sandbox?: { secrets: SandboxSecretConfig[]; secretProvider?: string }
@@ -258,6 +281,11 @@ const LOOP_INFO_SCHEMA = {
     executionVariant: OPTIONAL_STRING,
     auditorModel: OPTIONAL_STRING,
     auditorVariant: OPTIONAL_STRING,
+    executionAgent: OPTIONAL_STRING,
+    auditorAgent: OPTIONAL_STRING,
+    postActionAgent: OPTIONAL_STRING,
+    postActionModel: OPTIONAL_STRING,
+    postActionVariant: OPTIONAL_STRING,
     branch: OPTIONAL_STRING,
   },
   required: ['name', 'status', 'phase', 'iteration', 'maxIterations', 'sessionId', 'restartable', 'restartRequiresForce', 'startedAt'],
@@ -303,6 +331,29 @@ const WORKTREES_OUTPUT = {
   additionalProperties: false,
 } as const
 
+const LOOP_DEFAULT_AGENTS_SCHEMA = {
+  type: 'object',
+  properties: {
+    execution: { type: 'string' },
+    auditor: { type: 'string' },
+    postAction: { type: 'string' },
+  },
+  additionalProperties: false,
+} as const
+
+const LOOP_DEFAULT_MODELS_SCHEMA = {
+  type: 'object',
+  properties: {
+    execution: OPTIONAL_STRING,
+    executionVariant: OPTIONAL_STRING,
+    auditor: OPTIONAL_STRING,
+    auditorVariant: OPTIONAL_STRING,
+    postAction: OPTIONAL_STRING,
+    postActionVariant: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
+
 const LOOP_DEFAULTS_OUTPUT = {
   type: 'object',
   properties: {
@@ -316,6 +367,8 @@ const LOOP_DEFAULTS_OUTPUT = {
       },
       additionalProperties: false,
     },
+    agents: LOOP_DEFAULT_AGENTS_SCHEMA,
+    models: LOOP_DEFAULT_MODELS_SCHEMA,
     error: OPTIONAL_STRING,
   },
   additionalProperties: false,
@@ -378,6 +431,11 @@ export const FORGE_RPC = {
           auditorModel: OPTIONAL_STRING,
           executionVariant: OPTIONAL_STRING,
           auditorVariant: OPTIONAL_STRING,
+          executionAgent: OPTIONAL_STRING,
+          auditorAgent: OPTIONAL_STRING,
+          postActionAgent: OPTIONAL_STRING,
+          postActionModel: OPTIONAL_STRING,
+          postActionVariant: OPTIONAL_STRING,
           maxIterations: { type: 'integer', minimum: 0 },
           sandbox: SANDBOX_SETTINGS_SCHEMA,
         },
@@ -475,6 +533,11 @@ export const FORGE_RPC = {
           auditorVariant: { type: 'string' },
           executionModel: OPTIONAL_STRING,
           executionVariant: OPTIONAL_STRING,
+          executionAgent: OPTIONAL_STRING,
+          auditorAgent: OPTIONAL_STRING,
+          postActionAgent: OPTIONAL_STRING,
+          postActionModel: OPTIONAL_STRING,
+          postActionVariant: OPTIONAL_STRING,
           force: { type: 'boolean' },
           expectedStartedAt: OPTIONAL_STRING,
           sandbox: {
@@ -647,6 +710,11 @@ const loopInfoSchema = z.looseObject({
   executionVariant: optionalStringFieldSchema,
   auditorModel: optionalStringFieldSchema,
   auditorVariant: optionalStringFieldSchema,
+  executionAgent: optionalStringFieldSchema,
+  auditorAgent: optionalStringFieldSchema,
+  postActionAgent: optionalStringFieldSchema,
+  postActionModel: optionalStringFieldSchema,
+  postActionVariant: optionalStringFieldSchema,
   branch: optionalStringFieldSchema,
 })
 
@@ -689,6 +757,21 @@ const sandboxResourcesSchema = z.object({
   cacheDisk: z.string(),
 })
 
+const loopDefaultAgentsSchema = z.object({
+  execution: z.string(),
+  auditor: z.string(),
+  postAction: z.string(),
+}).optional().catch(undefined)
+
+const loopDefaultModelsSchema = z.object({
+  execution: optionalStringFieldSchema,
+  executionVariant: optionalStringFieldSchema,
+  auditor: optionalStringFieldSchema,
+  auditorVariant: optionalStringFieldSchema,
+  postAction: optionalStringFieldSchema,
+  postActionVariant: optionalStringFieldSchema,
+}).optional().catch(undefined)
+
 const loopDefaultsSchema = z.object({
   maxIterations: z.number().int(),
   sandbox: z.object({
@@ -696,6 +779,8 @@ const loopDefaultsSchema = z.object({
     resources: sandboxResourcesSchema,
     allowLan: z.boolean().optional().catch(undefined),
   }),
+  agents: loopDefaultAgentsSchema,
+  models: loopDefaultModelsSchema,
 })
 
 export function readForgeLoopDefaults<P>(payload: P): ForgeLoopDefaultsOutput {
@@ -715,6 +800,23 @@ export function readForgeLoopDefaults<P>(payload: P): ForgeLoopDefaultsOutput {
         },
         allowLan: data.sandbox.allowLan === true,
       },
+    }
+    if (data.agents !== undefined) {
+      defaults.agents = {
+        execution: data.agents.execution,
+        auditor: data.agents.auditor,
+        postAction: data.agents.postAction,
+      }
+    }
+    if (data.models !== undefined) {
+      const models: NonNullable<ForgeLoopDefaults['models']> = {}
+      if (data.models.execution !== undefined) models.execution = data.models.execution
+      if (data.models.executionVariant !== undefined) models.executionVariant = data.models.executionVariant
+      if (data.models.auditor !== undefined) models.auditor = data.models.auditor
+      if (data.models.auditorVariant !== undefined) models.auditorVariant = data.models.auditorVariant
+      if (data.models.postAction !== undefined) models.postAction = data.models.postAction
+      if (data.models.postActionVariant !== undefined) models.postActionVariant = data.models.postActionVariant
+      if (Object.keys(models).length > 0) defaults.models = models
     }
     return defaults
   })

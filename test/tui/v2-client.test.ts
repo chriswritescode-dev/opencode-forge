@@ -22,7 +22,10 @@ function loop(overrides: Partial<LoopInfo>): LoopInfo {
 
 type RpcMethod = (...args: unknown[]) => Promise<unknown>
 
-function createClient(overrides: Record<string, RpcMethod> = {}, options: { directory?: string } = {}) {
+function createClient(
+  overrides: Record<string, RpcMethod> = {},
+  options: { directory?: string; agentList?: RpcMethod } = {},
+) {
   const methods = {
     executePlan: vi.fn(async () => ({ sessionId: 'ses_loop', loopName: 'loop-a' })),
     sessionPlan: vi.fn(async () => ({ plan: '# Plan' })),
@@ -32,15 +35,17 @@ function createClient(overrides: Record<string, RpcMethod> = {}, options: { dire
   }
   const rpc = vi.fn(() => methods)
   const navigate = vi.fn()
-  const context = {
-    client: {
-      rpc,
-      provider: { list: vi.fn(async () => ({ data: [] })) },
-      model: {
-        list: vi.fn(async () => ({ data: [] })),
-        default: vi.fn(async () => { throw new Error('no default model') }),
-      },
+  const clientApi: Record<string, unknown> = {
+    rpc,
+    provider: { list: vi.fn(async () => ({ data: [] })) },
+    model: {
+      list: vi.fn(async () => ({ data: [] })),
+      default: vi.fn(async () => { throw new Error('no default model') }),
     },
+  }
+  if (options.agentList !== undefined) clientApi.agent = { list: options.agentList }
+  const context = {
+    client: clientApi,
     data: { session: { list: () => [] } },
     ui: { router: { navigate } },
   } as unknown as Plugin.Context
@@ -70,6 +75,37 @@ describe('createV2ForgeProjectClient', () => {
     expect(rpc).toHaveBeenCalledWith(FORGE_RPC)
     expect(methods.executePlan).toHaveBeenCalledWith(
       { sessionId: 'ses_host', mode: 'loop', title: 'Ship it', plan: '# Plan', loopName: 'loop-a', executionModel: 'anthropic/claude' },
+      { location: { directory: '/work/project' } },
+    )
+  })
+
+  test('plan.execute forwards agent selections and post-action settings', async () => {
+    const executePlan = vi.fn(async () => ({ sessionId: 'ses_loop', loopName: 'loop-a' }))
+    const { client, methods } = createClient({ executePlan })
+
+    await client.plan.execute('ses_host', {
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan',
+      executionAgent: 'exec-agent',
+      auditorAgent: 'audit-agent',
+      postActionAgent: 'post-agent',
+      postActionModel: 'p/post',
+      postActionVariant: 'high',
+    })
+
+    expect(methods.executePlan).toHaveBeenCalledWith(
+      {
+        sessionId: 'ses_host',
+        mode: 'loop',
+        title: 'Ship it',
+        plan: '# Plan',
+        executionAgent: 'exec-agent',
+        auditorAgent: 'audit-agent',
+        postActionAgent: 'post-agent',
+        postActionModel: 'p/post',
+        postActionVariant: 'high',
+      },
       { location: { directory: '/work/project' } },
     )
   })
@@ -155,6 +191,81 @@ describe('createV2ForgeProjectClient', () => {
     )
   })
 
+  test('restartLoop forwards agent fields and preserves empty-string clears', async () => {
+    const loopRestart = vi.fn(async () => ({ sessionId: 'ses_restart' }))
+    const { client, methods } = createClient({ loopRestart })
+
+    await client.restartLoop({
+      loopName: 'loop-a',
+      auditorModel: 'b/audit',
+      auditorVariant: '',
+      executionModel: 'b/exec',
+      executionVariant: '',
+      executionAgent: '',
+      auditorAgent: '',
+      postActionAgent: 'post-agent',
+      postActionModel: '',
+      postActionVariant: 'high',
+    })
+
+    expect(methods.loopRestart).toHaveBeenCalledWith(
+      {
+        loopName: 'loop-a',
+        auditorModel: 'b/audit',
+        auditorVariant: '',
+        executionModel: 'b/exec',
+        executionVariant: '',
+        executionAgent: '',
+        auditorAgent: '',
+        postActionAgent: 'post-agent',
+        postActionModel: '',
+        postActionVariant: 'high',
+      },
+      { location: { directory: '/work/project' } },
+    )
+  })
+
+  test('loadExecutionContext loads agents, filtering subagents and replaced built-ins', async () => {
+    const agentList = vi.fn(async () => ({
+      location: {},
+      data: [
+        { id: 'code-loop', name: 'Code Loop', mode: 'primary', hidden: false },
+        { id: 'auditor-loop', name: 'Auditor Loop', description: 'Audits plans', mode: 'primary', hidden: false },
+        { id: 'helper', name: 'Helper', mode: 'subagent', hidden: false },
+        { id: 'build', name: 'Build', mode: 'primary', hidden: false },
+        { id: 'plan', name: 'Plan', mode: 'primary', hidden: false },
+      ],
+    }))
+    const { client } = createClient({}, { agentList })
+
+    const context = await client.loadExecutionContext()
+
+    expect(context.agents).toEqual([
+      { id: 'code-loop', name: 'Code Loop', description: undefined, mode: 'primary', hidden: false },
+      { id: 'auditor-loop', name: 'Auditor Loop', description: 'Audits plans', mode: 'primary', hidden: false },
+    ])
+    expect(agentList).toHaveBeenCalledWith({ location: { directory: '/work/project' } })
+  })
+
+  test('loadExecutionContext returns no agents when the agent API is absent or fails', async () => {
+    const absent = await createClient().client.loadExecutionContext()
+    expect(absent.agents).toEqual([])
+
+    const failing = await createClient({}, {
+      agentList: async () => { throw new Error('agents unavailable') },
+    }).client.loadExecutionContext()
+    expect(failing.agents).toEqual([])
+  })
+
+  test('loadExecutionContext reads agents at the client directory', async () => {
+    const agentList = vi.fn(async () => ({ data: [] }))
+    const { client } = createClient({}, { directory: '/work/other', agentList })
+
+    await client.loadExecutionContext()
+
+    expect(agentList).toHaveBeenCalledWith({ location: { directory: '/work/other' } })
+  })
+
   test('loadExecutionContext derives workspaces from the loops RPC', async () => {
     const loops = [loop({ name: 'loop-a', startedAt: '2026-09-01T00:00:00.000Z' })]
     const { client, methods } = createClient({ loops: vi.fn(async () => ({ loops })) })
@@ -233,7 +344,16 @@ describe('loopsToWorkspacesForRecents', () => {
   test('the most recently started loop supplies the dialog defaults', () => {
     const workspaces = loopsToWorkspacesForRecents('proj-1', [
       loop({ name: 'old', startedAt: '2026-09-01T00:00:00.000Z', executionModel: 'a/old', auditorModel: 'b/old' }),
-      loop({ name: 'new', startedAt: '2026-09-20T00:00:00.000Z', executionModel: 'a/new', auditorModel: 'b/new', auditorVariant: 'high' }),
+      loop({
+        name: 'new',
+        startedAt: '2026-09-20T00:00:00.000Z',
+        executionModel: 'a/new',
+        auditorModel: 'b/new',
+        auditorVariant: 'high',
+        executionAgent: 'exec-agent',
+        auditorAgent: 'audit-agent',
+        postActionAgent: 'post-agent',
+      }),
     ])
 
     expect(deriveExecutionPreferencesFromWorkspaces('proj-1', workspaces)).toEqual({
@@ -242,6 +362,9 @@ describe('loopsToWorkspacesForRecents', () => {
       auditorModel: 'b/new',
       executionVariant: undefined,
       auditorVariant: 'high',
+      executionAgent: 'exec-agent',
+      auditorAgent: 'audit-agent',
+      postActionAgent: 'post-agent',
     })
   })
 })

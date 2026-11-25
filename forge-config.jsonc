@@ -49,6 +49,10 @@
     "stallTimeoutMs": 60000,
     "maxConsecutiveStalls": 5,  // 0 = disabled; default 5
     "busyStallTimeoutMs": 900000,  // busy with no tool activity or streamed content → abort + continue; 0 = disabled
+    // Agents used for loop turns. "code-loop" is a hidden primary agent that implements directly
+    // instead of delegating to minion subagents; set "code" to use the interactive orchestrator.
+    // "executionAgent": "code-loop",
+    // "auditorAgent": "auditor-loop",
     // Retain and resume the coder/audit session on a same-section retry. When a reused
     // session's last turn reached this percent of the model's context window, it is compacted
     // before its next turn. 0 disables reuse for that role.
@@ -67,7 +71,9 @@
     //   "enabled": false,
     //   "skill": "pr-review",
     //   "prompt": "Auto-defer anything needing clarification; do not use the question tool.",
-    //   "model": "provider/model"  // optional: override model (defaults to auditor model chain)
+    //   "model": "provider/model",  // optional: override model (defaults to auditor model chain)
+    //   "variant": "high",         // optional: variant for postAction.model only; never inherited across models
+    //   "agent": "code-loop"       // optional: agent for the post-action turn (default "code-loop")
     // },
     // "allowExternalDirectories": ["/abs/host/path/to/vault"]
     //
@@ -224,11 +230,19 @@
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
   "completedLoopTtlMs": 604800000
 
-  // Per-agent overrides (temperature range: 0.0 - 2.0)
-  // Keys are agent display names (e.g., "code", "architect", "auditor")
+  // Per-agent overrides for Forge's bundled agents. Keys are agent display names:
+  // "code", "code-loop", "architect", "auditor", "auditor-loop", "minion".
+  // Unknown names are ignored. Supported fields: model, variant, temperature
+  // (0.0 - 2.0), steps, hidden, description, prompt, mode ("primary" | "subagent" | "all"),
+  // color. Overriding "model" without "variant" clears an inherited variant; "variant": ""
+  // clears it explicitly. "agents.minion.model" / "agents.minion.variant" take precedence over
+  // "executionModel" / "executionVariant", and setting "agents.minion.model" never inherits
+  // "executionVariant". An empty minion model ("") leaves minion unpinned, so OpenCode's
+  // default model is used.
   // "agents": {
+  //   "code": { "model": "anthropic/claude-sonnet-4-5", "variant": "high" },
+  //   "minion": { "model": "anthropic/claude-haiku-4-5" },
   //   "architect": { "temperature": 0.0 },
-  //   "auditor": { "temperature": 0.0 },
-  //   "code": { "temperature": 0.7 }
+  //   "auditor": { "temperature": 0.0 }
   // }
 }

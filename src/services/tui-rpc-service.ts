@@ -71,6 +71,11 @@ function rowToLoopInfo(row: LoopRow): LoopInfo {
     executionVariant: row.executionVariant ?? undefined,
     auditorModel: row.auditorModel ?? undefined,
     auditorVariant: row.auditorVariant ?? undefined,
+    executionAgent: row.executionAgent ?? undefined,
+    auditorAgent: row.auditorAgent ?? undefined,
+    postActionAgent: row.postActionAgent ?? undefined,
+    postActionModel: row.postActionModel ?? undefined,
+    postActionVariant: row.postActionVariant ?? undefined,
     branch: row.worktreeBranch ?? undefined,
   }
 }

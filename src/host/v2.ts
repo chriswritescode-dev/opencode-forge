@@ -115,6 +115,11 @@ const executePlanRpcInputSchema = z.object({
   auditorModel: z.string().optional(),
   executionVariant: z.string().optional(),
   auditorVariant: z.string().optional(),
+  executionAgent: z.string().optional(),
+  auditorAgent: z.string().optional(),
+  postActionAgent: z.string().optional(),
+  postActionModel: z.string().optional(),
+  postActionVariant: z.string().optional(),
   maxIterations: z.number().int().min(0).optional(),
   sandbox: sandboxSettingsRpcSchema.optional(),
 })
@@ -133,6 +138,11 @@ const loopRestartRpcInputSchema = z.object({
   auditorVariant: z.string(),
   executionModel: z.string().optional(),
   executionVariant: z.string().optional(),
+  executionAgent: z.string().optional(),
+  auditorAgent: z.string().optional(),
+  postActionAgent: z.string().optional(),
+  postActionModel: z.string().optional(),
+  postActionVariant: z.string().optional(),
   force: z.boolean().optional(),
   expectedStartedAt: z.string().optional(),
   sandbox: z.object({

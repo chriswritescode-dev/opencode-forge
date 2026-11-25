@@ -10,14 +10,43 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 |---|---:|---|
 | `dataDir` | `""` | Data directory for `forge.db` and worktrees. Empty resolves to the platform data dir. It does not relocate the default log path, which is always derived from the platform data dir; set `logging.file` to move logs. |
 | `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops before the cleanup sweep. |
-| `executionModel` | `""` | Fallback model override for plan execution sessions, and the model of the bundled `minion` subagent (OpenCode's default model when unset). Format: `provider/model`. |
+| `executionModel` | `""` | Fallback model override for plan execution sessions, and the default model of the bundled `minion` subagent when `agents.minion.model` is unset (OpenCode's default model when both are unset). Format: `provider/model`. |
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |
 | `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
 | `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries are either a `provider/model` string or `{ "model": "provider/model", "variant": "high" }` to pin a variant to that fallback; the primary `auditorVariant` is never inherited, so a string entry runs with no variant. Applies only to `auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
-| `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
+| `agents` | unset | Per-agent overrides keyed by Forge agent display name. See [Agents](#agents). |
 | `autoApprove` | unset | Deny rules applied while per-session auto-approve is on. See [Auto-Approve](#auto-approve). |
 | `codeGraph` | unset | `codegraph` installation in the sandbox template and its loop integration. See [Code Graph](#code-graph). |
+
+## Agents
+
+`agents.<name>` overrides a Forge-built agent when plugin config is applied. Keys are Forge agent display names — `code`, `code-loop`, `architect`, `auditor`, `auditor-loop`, and `minion`. Unknown names are ignored, and invalid field values are dropped.
+
+| Field | Description |
+|---|---|
+| `model` | Model as `provider/model`. `""` clears the model, leaving the agent on OpenCode's default model. |
+| `variant` | Reasoning/thinking variant (for example `high` or `max`). `""` clears an inherited variant. |
+| `temperature` | Temperature, `0.0` – `2.0`. |
+| `steps` | Maximum agentic steps per turn. |
+| `hidden` | Hide the agent from OpenCode's agent selection. |
+| `description` | Agent description shown by OpenCode. |
+| `prompt` | Replacement system prompt. |
+| `mode` | `"primary"`, `"subagent"`, or `"all"`. |
+| `color` | Agent color. |
+
+Overriding `model` without `variant` clears any variant the agent inherited from its default model; set `variant` alongside `model` to pin one, or `variant: ""` to clear it explicitly. `variant: ""` with no `model` keeps the default model and removes its variant.
+
+`agents.minion.model` and `agents.minion.variant` take precedence over `executionModel` and `executionVariant`. Setting `agents.minion.model` never inherits `executionVariant` unless you also set `agents.minion.variant`, and `agents.minion.model: ""` leaves `minion` unpinned. When `agents.minion.model` is omitted, `minion` falls back to `executionModel` / `executionVariant`, or OpenCode's default model when `executionModel` is unset.
+
+```jsonc
+"agents": {
+  "code": { "model": "anthropic/claude-sonnet-4-5", "variant": "high" },
+  "minion": { "model": "anthropic/claude-haiku-4-5" },
+  "architect": { "temperature": 0.0 },
+  "auditor": { "temperature": 0.0 }
+}
+```
 
 ## Logging
 
@@ -73,11 +102,15 @@ Loop, audit, and post-action sessions also deny every `codegraph_*` tool, which 
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
 | `loop.busyStallTimeoutMs` | `900000` | How long a session may stay busy with no sign of progress before the watchdog aborts the wedged message and sends a continue prompt. Both tool activity and streamed content (including reasoning/thinking deltas) count as progress, in the loop session or any of its subagent sessions, so a long thinking stretch is not mistaken for a wedged stream. `0` disables nudging. |
+| `loop.executionAgent` | `"code-loop"` | Agent used for loop coding turns. `code-loop` is hidden and implements directly; set `"code"` to use the interactive orchestrator that delegates to `minion` subagents. Any Forge or user-defined agent name works. |
+| `loop.auditorAgent` | `"auditor-loop"` | Agent used for loop audit turns. Any Forge or user-defined agent name works. |
 | `loop.sessionReuse.coderContextPercent` | `50` | Compact the retained coder session before its next turn on a same-section retry once its last assistant turn reached this percentage of the model's context window. `0` disables coder reuse. |
 | `loop.sessionReuse.auditorContextPercent` | `50` | Same for the retained audit session. `0` disables auditor reuse. |
 | `loop.allowExternalDirectories` | unset | Absolute host directories bind-mounted read-only into sandboxed loops, so in-container `bash`/`glob`/`grep` and host `read` see the same tree. In a sandbox the mounts are the file-tool boundary, so these are the external directories a loop can read; loops without a sandbox already have host access. |
 | `loop.permissions` | unset | Per-tool `deny` overrides for loop, audit, and post-action sessions. See [Loop Permissions](#loop-permissions). |
 | `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
+
+The TUI execution and restart dialogs override `loop.executionAgent` and `loop.auditorAgent` per run (`Execution agent`, `Auditor agent`), and `FORGE_RPC` carries the same values through `executePlan`, `loopRestart`, `loopDefaults`, `loops`, and `loopDetail`. A per-run value is stored on the loop and takes precedence over the configured one.
 
 ### Loop Session Reuse
 
@@ -140,7 +173,9 @@ The phase is enabled only when `enabled === true` and at least one of `skill` or
 | `loop.postAction.enabled` | `false` | Enable the post-action phase. |
 | `loop.postAction.skill` | unset | Skill name to load with the Skill tool. |
 | `loop.postAction.prompt` | unset | Extra instruction text, or standalone prompt when no skill is set. |
-| `loop.postAction.model` | unset | Optional model override, sent without a variant. Defaults to the auditor model chain, which carries the auditor's variant. |
+| `loop.postAction.model` | unset | Optional model override. Defaults to the auditor model chain, which carries the auditor's variant. |
+| `loop.postAction.variant` | unset | Reasoning/thinking variant for `loop.postAction.model`. It is used only with an explicitly configured post-action model and is never inherited across different models; when the phase falls back to the auditor model chain, that chain uses the auditor's own variant and this value is ignored. |
+| `loop.postAction.agent` | `"code-loop"` | Agent used for the post-action turn. Any Forge or user-defined agent name works. |
 
 Example:
 
@@ -151,11 +186,15 @@ Example:
       "enabled": true,
       "skill": "pr-review",
       "prompt": "Auto-defer anything needing clarification; do not use the question tool.",
-      "model": "provider/model"
+      "model": "provider/model",
+      "variant": "high",
+      "agent": "code-loop"
     }
   }
 }
 ```
+
+The TUI's `Loop settings → Post-action agent` field overrides the agent per run, and `FORGE_RPC` (`executePlan`, `loopRestart`, `loopDefaults`, `loops`, `loopDetail`) carries `postActionAgent`, `postActionModel`, and `postActionVariant` per loop.
 
 ### Worktree Opencode Config
 

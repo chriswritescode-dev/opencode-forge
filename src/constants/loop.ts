@@ -10,6 +10,14 @@ export type LoopSessionReuseRole = 'code' | 'auditor'
 
 export const CODE_GRAPH_LINK_NAME = '.codegraph'
 
+export const DEFAULT_LOOP_EXECUTION_AGENT = 'code-loop'
+
+export const DEFAULT_LOOP_AUDITOR_AGENT = 'auditor-loop'
+
+export const DEFAULT_LOOP_POST_ACTION_AGENT = 'code-loop'
+
+export const REPLACED_BUILTIN_AGENTS: readonly string[] = ['build', 'plan']
+
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 export const MAX_TOTAL_SECTIONS = 24

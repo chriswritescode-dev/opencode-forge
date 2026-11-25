@@ -858,7 +858,7 @@ describe('Runtime transition logging', () => {
               },
             ],
             promptAsync: async (params: any) => {
-              if (params?.agent === 'code') {
+              if (params?.agent === 'code-loop') {
                 codePromptAttempts++
                 // getConfig returns {} (no loop model configured), so
                 // retryWithModelFallback takes the `!model` fast-path and

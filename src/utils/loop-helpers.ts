@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { PluginConfig, Logger } from '../types'
 import type { LoopService, LoopState } from '../loop'
 import { parseModelString } from './model-fallback'
+import { DEFAULT_LOOP_AUDITOR_AGENT, DEFAULT_LOOP_EXECUTION_AGENT, DEFAULT_LOOP_POST_ACTION_AGENT } from '../constants/loop'
 
 const fallbackModelRefSchema = z.looseObject({
   model: z.string(),
@@ -20,6 +21,38 @@ export interface AuditorModelChoice {
   model: ModelRef | undefined
   variant: string | undefined
   source: string
+}
+
+export function normalizeAgentName(value?: string | null): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : undefined
+}
+
+export function resolveLoopExecutionAgent(
+  config: PluginConfig,
+  state?: Pick<LoopState, 'executionAgent'> | null,
+): string {
+  return normalizeAgentName(state?.executionAgent)
+    ?? normalizeAgentName(config.loop?.executionAgent)
+    ?? DEFAULT_LOOP_EXECUTION_AGENT
+}
+
+export function resolveLoopAuditorAgent(
+  config: PluginConfig,
+  state?: Pick<LoopState, 'auditorAgent'> | null,
+): string {
+  return normalizeAgentName(state?.auditorAgent)
+    ?? normalizeAgentName(config.loop?.auditorAgent)
+    ?? DEFAULT_LOOP_AUDITOR_AGENT
+}
+
+export function resolveLoopPostActionAgent(
+  config: PluginConfig,
+  state?: Pick<LoopState, 'postActionAgent'> | null,
+): string {
+  return normalizeAgentName(state?.postActionAgent)
+    ?? normalizeAgentName(config.loop?.postAction?.agent)
+    ?? DEFAULT_LOOP_POST_ACTION_AGENT
 }
 
 export function buildAuditorModelChain(

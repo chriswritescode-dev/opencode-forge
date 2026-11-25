@@ -162,6 +162,11 @@ function loopDetailRow(loop: LoopRow): ForgeLoopDetailRow {
   if (loop.executionVariant != null) row.executionVariant = loop.executionVariant
   if (loop.auditorModel != null) row.auditorModel = loop.auditorModel
   if (loop.auditorVariant != null) row.auditorVariant = loop.auditorVariant
+  if (loop.executionAgent != null) row.executionAgent = loop.executionAgent
+  if (loop.auditorAgent != null) row.auditorAgent = loop.auditorAgent
+  if (loop.postActionAgent != null) row.postActionAgent = loop.postActionAgent
+  if (loop.postActionModel != null) row.postActionModel = loop.postActionModel
+  if (loop.postActionVariant != null) row.postActionVariant = loop.postActionVariant
   if (loop.completedAt != null) row.completedAt = loop.completedAt
   if (loop.terminationReason != null) row.terminationReason = loop.terminationReason
   if (loop.baseCommit != null) row.baseCommit = loop.baseCommit

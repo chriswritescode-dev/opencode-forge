@@ -1,7 +1,7 @@
 import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 import { createLoopSessionWithWorkspace } from './loop-session'
-import { buildAuditSessionPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
+import { buildAuditSessionPermissionRuleset, type LoopPermissionRulesetOptions, DEFAULT_LOOP_AUDITOR_AGENT } from '../constants/loop'
 import { formatAuditSessionTitle } from './session-titles'
 
 interface RunAuditSessionInput {
@@ -62,6 +62,7 @@ export async function promptAuditSession(
     prompt: string
     auditorModel?: { providerID: string; modelID: string }
     auditorVariant?: string
+    agent?: string
   },
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   const parts = [{ type: 'text' as const, text: input.prompt }]
@@ -69,7 +70,7 @@ export async function promptAuditSession(
     const params: Parameters<typeof client.session.promptAsync>[0] = {
       sessionID: input.sessionId,
       directory: input.worktreeDir,
-      agent: 'auditor-loop',
+      agent: input.agent ?? DEFAULT_LOOP_AUDITOR_AGENT,
       parts,
     }
     if (input.workspaceId) params.workspace = input.workspaceId

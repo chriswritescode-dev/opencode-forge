@@ -1,7 +1,11 @@
 import { z } from 'zod'
 import type { AgentRole, AgentDefinition, AgentConfig } from './agents'
 import type { AgentPermissionMap } from './agents/types'
+import type { AgentOverrideConfig } from './types'
 import { loadPrompt } from './prompts/loader'
+import { REPLACED_BUILTIN_AGENTS } from './constants/loop'
+
+export { REPLACED_BUILTIN_AGENTS }
 
 export interface PluginCommand { template: string; description: string; agent: string; subtask: boolean }
 
@@ -34,8 +38,6 @@ export interface HostConfig {
   default_agent?: unknown
 }
 
-export const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
-
 export const USER_REPLACEABLE_AGENTS = ['minion']
 
 export const DEFAULT_MODEL_SUBAGENTS = ['minion']
@@ -56,6 +58,18 @@ const agentConfigOverridesSchema = z.looseObject({
   hidden: z.boolean().optional().catch(undefined),
   color: z.string().optional().catch(undefined),
   permission: agentPermissionSchema.optional().catch(undefined),
+})
+
+const agentOverrideConfigSchema = z.looseObject({
+  model: z.string().optional().catch(undefined),
+  variant: z.string().optional().catch(undefined),
+  temperature: z.number().optional().catch(undefined),
+  steps: z.number().optional().catch(undefined),
+  hidden: z.boolean().optional().catch(undefined),
+  description: z.string().optional().catch(undefined),
+  prompt: z.string().optional().catch(undefined),
+  mode: z.enum(['primary', 'subagent', 'all']).optional().catch(undefined),
+  color: z.string().optional().catch(undefined),
 })
 
 const userCommandSchema = z.looseObject({
@@ -94,7 +108,7 @@ function buildPluginCommands(promptsDir?: string): PluginCommandIndex {
 
 export function createConfigHandler(
   agents: Record<AgentRole, AgentDefinition>,
-  agentOverrides?: Record<string, { temperature?: number }>,
+  agentOverrides?: Record<string, AgentOverrideConfig>,
   promptsDir?: string
 ) {
   const pluginCommands = buildPluginCommands(promptsDir)
@@ -105,7 +119,23 @@ export function createConfigHandler(
       for (const [name, overrides] of Object.entries(agentOverrides)) {
         const existing = effectiveAgents[name]
         if (existing === undefined) continue
-        effectiveAgents[name] = { ...existing, ...overrides }
+        const parsed = agentOverrideConfigSchema.safeParse(overrides)
+        if (!parsed.success) continue
+        const override = parsed.data
+        const merged: AgentConfig = { ...existing }
+        if (override.model !== undefined) merged.model = override.model
+        if (override.description !== undefined) merged.description = override.description
+        if (override.prompt !== undefined) merged.prompt = override.prompt
+        if (override.mode !== undefined) merged.mode = override.mode
+        if (override.variant !== undefined && override.variant !== '') merged.variant = override.variant
+        if (override.temperature !== undefined) merged.temperature = override.temperature
+        if (override.steps !== undefined) merged.steps = override.steps
+        if (override.hidden !== undefined) merged.hidden = override.hidden
+        if (override.color !== undefined) merged.color = override.color
+        if (override.variant === '' || (override.model !== undefined && override.variant === undefined)) {
+          delete merged.variant
+        }
+        effectiveAgents[name] = merged
       }
     }
 

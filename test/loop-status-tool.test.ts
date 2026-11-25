@@ -1748,4 +1748,82 @@ describe('loop-status restartability display', () => {
     
     expect(result).toContain('Restart: available with force=true')
   })
+
+  test('detailed loop status shows custom agents only when they differ from the defaults', async () => {
+    const { client: forgeClient } = createFakeForgeClient()
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const worktreeDir = `${TEST_DIR}/worktree-custom-agents`
+    mkdirSync(worktreeDir, { recursive: true })
+
+    loopService.setState(
+      loopName,
+      makeLoopState({
+        active: true,
+        sessionId: 'session-custom-agents',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-custom-agents',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        executionAgent: 'custom-coder',
+        auditorAgent: 'custom-auditor',
+        workspaceId: 'ws-custom',
+        hostSessionId: 'host-custom',
+      }),
+    )
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      client: forgeClient,
+      pendingTeardowns: createPendingTeardownRegistry(),
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+
+    const activeResult = await tools['loop-status'].execute({ name: loopName }, { sessionID: 'test-session' } as any)
+    expect(activeResult).toContain('Agent: custom-coder')
+    expect(activeResult).toContain('Auditor agent: custom-auditor')
+    expect(activeResult).not.toContain('Agent: code-loop')
+
+    loopService.setState(
+      'inactive-custom-agents-loop',
+      makeLoopState({
+        active: false,
+        sessionId: 'session-custom-agents-inactive',
+        loopName: 'inactive-custom-agents-loop',
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/inactive-custom-agents-loop',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        executionAgent: 'custom-coder',
+        auditorAgent: 'custom-auditor',
+        workspaceId: 'ws-custom',
+        hostSessionId: 'host-custom',
+        status: 'completed',
+        terminationReason: 'completed',
+        completedAt: new Date().toISOString(),
+      }),
+    )
+
+    const inactiveResult = await tools['loop-status'].execute({ name: 'inactive-custom-agents-loop' }, { sessionID: 'test-session' } as any)
+    expect(inactiveResult).toContain('Agent: custom-coder')
+    expect(inactiveResult).toContain('Auditor agent: custom-auditor')
+    expect(inactiveResult).not.toContain('Agent: code-loop')
+  })
 })

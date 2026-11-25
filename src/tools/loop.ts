@@ -4,7 +4,8 @@ import type { ToolContext } from './types'
 import { slugify } from '../utils/logger'
 import { formatSessionOutput, formatAuditResult, formatCompletionSummary, formatPostActionReportLines } from '../utils/loop-format'
 import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES, type LoopState } from '../loop'
-import { formatDuration, computeElapsedSeconds, resolveUsageFallbackModelLabel, buildAuditorModelChain, auditorModelChoiceAt, usageRoleForPhase } from '../utils/loop-helpers'
+import { formatDuration, computeElapsedSeconds, resolveUsageFallbackModelLabel, buildAuditorModelChain, auditorModelChoiceAt, usageRoleForPhase, resolveLoopExecutionAgent, resolveLoopAuditorAgent } from '../utils/loop-helpers'
+import { DEFAULT_LOOP_AUDITOR_AGENT, DEFAULT_LOOP_EXECUTION_AGENT } from '../constants/loop'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -376,6 +377,14 @@ export function createLoopTools(ctx: ToolContext) {
             `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
             `Auditor model: ${auditorModelStatusLabel(state)}`,
           )
+          const executionAgent = resolveLoopExecutionAgent(ctx.config, state)
+          const auditorAgent = resolveLoopAuditorAgent(ctx.config, state)
+          if (executionAgent !== DEFAULT_LOOP_EXECUTION_AGENT) {
+            statusLines.push(`Agent: ${executionAgent}`)
+          }
+          if (auditorAgent !== DEFAULT_LOOP_AUDITOR_AGENT) {
+            statusLines.push(`Auditor agent: ${auditorAgent}`)
+          }
 
           if (state.postActionReport) {
             statusLines.push(...formatPostActionReportLines(state.postActionReport))
@@ -535,6 +544,12 @@ export function createLoopTools(ctx: ToolContext) {
           `Audit count: ${state.auditCount ?? 0}`,
           `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
           `Auditor model: ${auditorModelStatusLabel(state)}`,
+          ...(resolveLoopExecutionAgent(ctx.config, state) !== DEFAULT_LOOP_EXECUTION_AGENT
+            ? [`Agent: ${resolveLoopExecutionAgent(ctx.config, state)}`]
+            : []),
+          ...(resolveLoopAuditorAgent(ctx.config, state) !== DEFAULT_LOOP_AUDITOR_AGENT
+            ? [`Auditor agent: ${resolveLoopAuditorAgent(ctx.config, state)}`]
+            : []),
           ...(stallCount > 0 ? [`Stalls: ${stallCount}`] : []),
           ...(stallReason ? [`Last stall reason: ${stallReason}`] : []),
           ...(stallStatus ? [`Last stall status: ${stallStatus}`] : []),
