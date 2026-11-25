@@ -70,6 +70,8 @@ export type ForgeTuiEvent =
 
 export const FORGE_EXECUTION_MODES = ['new-session', 'execute-here', 'loop'] as const
 
+export const FORGE_RPC_CAPABILITIES = ['loopPause'] as const
+
 export type ForgeExecutionMode = (typeof FORGE_EXECUTION_MODES)[number]
 
 export interface ForgeExecutePlanInput {
@@ -174,6 +176,12 @@ export interface ForgeLoopRestartInput {
 
 export type ForgeLoopRestartOutput = { sessionId: string } | ForgeRpcError
 
+export type ForgeLoopRefInput = { loopName: string }
+
+export type ForgeLoopPauseOutput = { loopName: string; status: 'paused'; changed: boolean } | ForgeRpcError
+
+export type ForgeLoopResumeOutput = { loopName: string; status: 'running'; sessionId: string; changed: boolean } | ForgeRpcError
+
 export interface ForgeHostSandboxState {
   configEnabled: boolean
   hostSessionsDefault: boolean
@@ -252,6 +260,38 @@ const SANDBOX_SETTINGS_SCHEMA = {
 } as const
 
 const EMPTY_INPUT = { type: 'object', properties: {}, additionalProperties: false } as const
+
+const LOOP_REF_INPUT = {
+  type: 'object',
+  properties: {
+    loopName: { type: 'string', minLength: 1 },
+  },
+  required: ['loopName'],
+  additionalProperties: false,
+} as const
+
+const LOOP_PAUSE_OUTPUT = {
+  type: 'object',
+  properties: {
+    loopName: OPTIONAL_STRING,
+    status: { type: 'string' },
+    changed: { type: 'boolean' },
+    error: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
+
+const LOOP_RESUME_OUTPUT = {
+  type: 'object',
+  properties: {
+    loopName: OPTIONAL_STRING,
+    status: { type: 'string' },
+    sessionId: OPTIONAL_STRING,
+    changed: { type: 'boolean' },
+    error: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
 
 const OBJECT = { type: 'object' } as const
 
@@ -562,6 +602,14 @@ export const FORGE_RPC = {
         additionalProperties: false,
       },
     },
+    loopPause: {
+      input: LOOP_REF_INPUT,
+      output: LOOP_PAUSE_OUTPUT,
+    },
+    loopResume: {
+      input: LOOP_REF_INPUT,
+      output: LOOP_RESUME_OUTPUT,
+    },
     hostSandboxState: {
       input: EMPTY_INPUT,
       output: {
@@ -608,6 +656,7 @@ export const FORGE_RPC = {
         type: 'object',
         properties: {
           version: OPTIONAL_STRING,
+          capabilities: { type: 'array', items: { type: 'string' } },
           error: OPTIONAL_STRING,
         },
         additionalProperties: false,

@@ -928,6 +928,33 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         ? { sessionId: response.data.sessionId }
         : { error: response.error.message }
     },
+    async pauseLoop(request) {
+      const response = await executionService.dispatch(
+        { surface: 'api', projectId, directory: projectRoot },
+        { type: 'loop.pause', loopName: request.loopName },
+      )
+      return response.ok
+        ? {
+            loopName: response.data.loopName,
+            status: response.data.status,
+            changed: response.data.changed,
+          }
+        : { error: response.error.message }
+    },
+    async resumeLoop(request) {
+      const response = await executionService.dispatch(
+        { surface: 'api', projectId, directory: projectRoot },
+        { type: 'loop.resume', loopName: request.loopName },
+      )
+      return response.ok
+        ? {
+            loopName: response.data.loopName,
+            status: response.data.status,
+            sessionId: response.data.sessionId,
+            changed: response.data.changed,
+          }
+        : { error: response.error.message }
+    },
     onHostSandboxChanged: () => emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId }),
     logger,
   })

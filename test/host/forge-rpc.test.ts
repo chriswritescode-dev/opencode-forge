@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   FORGE_EXECUTION_MODES,
   FORGE_RPC,
+  FORGE_RPC_CAPABILITIES,
   readForgeAutoApproveChangedEvent,
   readForgeAutoApproveState,
   readForgeExecutePlanOutput,
@@ -62,6 +63,8 @@ describe('FORGE_RPC', () => {
       'loopSidebar',
       'sessionPlan',
       'loopRestart',
+      'loopPause',
+      'loopResume',
       'hostSandboxState',
       'hostSandboxSet',
       'worktrees',
@@ -167,6 +170,45 @@ describe('FORGE_RPC', () => {
     expect('required' in sandboxSettings).toBe(false)
     expect(sandboxSettings.properties.secrets).toEqual({ type: 'array', items: SANDBOX_SECRET_SCHEMA })
     expect(sandboxSettings.properties.secretProvider).toEqual({ type: 'string', minLength: 1 })
+  })
+
+  test('loopPause and loopResume accept only a loop name and declare their outputs', () => {
+    const expectedInput = {
+      type: 'object',
+      properties: { loopName: { type: 'string', minLength: 1 } },
+      required: ['loopName'],
+      additionalProperties: false,
+    }
+    expect(FORGE_RPC.methods.loopPause.input).toEqual(expectedInput)
+    expect(FORGE_RPC.methods.loopResume.input).toEqual(expectedInput)
+
+    expect(FORGE_RPC.methods.loopPause.output).toEqual({
+      type: 'object',
+      properties: {
+        loopName: { type: 'string' },
+        status: { type: 'string' },
+        changed: { type: 'boolean' },
+        error: { type: 'string' },
+      },
+      additionalProperties: false,
+    })
+    expect(FORGE_RPC.methods.loopResume.output).toEqual({
+      type: 'object',
+      properties: {
+        loopName: { type: 'string' },
+        status: { type: 'string' },
+        sessionId: { type: 'string' },
+        changed: { type: 'boolean' },
+        error: { type: 'string' },
+      },
+      additionalProperties: false,
+    })
+
+    expect(FORGE_RPC.methods.version.output.properties.capabilities).toEqual({
+      type: 'array',
+      items: { type: 'string' },
+    })
+    expect(FORGE_RPC_CAPABILITIES).toEqual(['loopPause'])
   })
 
   test('hostSandboxSet overrides cannot carry secret definitions or a provider', () => {

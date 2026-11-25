@@ -260,6 +260,16 @@ export interface GetLoopStatusCommand {
   limit?: number
 }
 
+export interface PauseLoopCommand {
+  type: 'loop.pause'
+  loopName: string
+}
+
+export interface ResumeLoopCommand {
+  type: 'loop.resume'
+  loopName: string
+}
+
 export type ForgeExecutionCommand =
   | ExecutePlanNewSessionCommand
   | ExecutePlanHereCommand
@@ -267,6 +277,8 @@ export type ForgeExecutionCommand =
   | RestartLoopCommand
   | CancelLoopCommand
   | GetLoopStatusCommand
+  | PauseLoopCommand
+  | ResumeLoopCommand
 
 export interface ForgeExecutionError {
   code: 'bad_request' | 'not_found' | 'conflict' | 'disabled' | 'prompt_failed' | 'lifecycle_failed' | 'internal_error' | 'provider_limit'
@@ -379,6 +391,21 @@ export interface LoopStatusResult {
   recent: LoopStatusView[]
 }
 
+export interface LoopPausedResult {
+  operation: 'loop.pause'
+  loopName: string
+  status: 'paused'
+  changed: boolean
+}
+
+export interface LoopResumedResult {
+  operation: 'loop.resume'
+  loopName: string
+  status: 'running'
+  sessionId: string
+  changed: boolean
+}
+
 export type ForgeExecutionResult<C extends ForgeExecutionCommand> =
   C extends ExecutePlanNewSessionCommand ? PlanExecutionStartedResult :
   C extends ExecutePlanHereCommand ? PlanExecutionStartedResult :
@@ -386,6 +413,8 @@ export type ForgeExecutionResult<C extends ForgeExecutionCommand> =
   C extends RestartLoopCommand ? LoopRestartedResult :
   C extends CancelLoopCommand ? LoopCancelledResult :
   C extends GetLoopStatusCommand ? LoopStatusResult :
+  C extends PauseLoopCommand ? LoopPausedResult :
+  C extends ResumeLoopCommand ? LoopResumedResult :
   never
 
 export interface ForgeExecutionService {
@@ -395,6 +424,8 @@ export interface ForgeExecutionService {
   dispatch(ctx: ForgeExecutionRequestContext, command: RestartLoopCommand): Promise<ForgeExecutionResponse<LoopRestartedResult>>
   dispatch(ctx: ForgeExecutionRequestContext, command: CancelLoopCommand): Promise<ForgeExecutionResponse<LoopCancelledResult>>
   dispatch(ctx: ForgeExecutionRequestContext, command: GetLoopStatusCommand): Promise<ForgeExecutionResponse<LoopStatusResult>>
+  dispatch(ctx: ForgeExecutionRequestContext, command: PauseLoopCommand): Promise<ForgeExecutionResponse<LoopPausedResult>>
+  dispatch(ctx: ForgeExecutionRequestContext, command: ResumeLoopCommand): Promise<ForgeExecutionResponse<LoopResumedResult>>
 }
 
 export interface ForgeExecutionServiceDeps {
@@ -1366,13 +1397,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return fail('not_found', 404, `No active loop found for loop "${name}".`)
       }
       state = match
-      if (!state.active) {
+      if (!state.active && state.status !== 'paused') {
         return fail('conflict', 409, `Loop "${state.loopName}" has already completed.`)
       }
     }
 
-    await deps.loopHandler.cancelBySessionId(state.sessionId)
-    deps.logger.log(`loop-cancel: cancelled loop for session=${state.sessionId} at iteration ${state.iteration}`)
+    await deps.loop.cancel(state.loopName)
+    deps.logger.log(`loop-cancel: cancelled loop=${state.loopName} for session=${state.sessionId} at iteration ${state.iteration}`)
 
     let worktreeRemoved = false
     const cleanupRequested = command.cleanupWorktree ?? deps.config.loop?.cleanupWorktree
@@ -1398,6 +1429,46 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     })
   }
   
+  async function handleLoopPause(
+    _ctx: ForgeExecutionRequestContext,
+    command: PauseLoopCommand,
+  ): Promise<ForgeExecutionResponse<LoopPausedResult>> {
+    const outcome = await deps.loop.pause(command.loopName)
+    switch (outcome.kind) {
+      case 'paused':
+        return ok({ operation: 'loop.pause', loopName: command.loopName, status: 'paused', changed: true })
+      case 'unchanged':
+        return ok({ operation: 'loop.pause', loopName: command.loopName, status: 'paused', changed: false })
+      case 'not_found':
+        return fail('not_found', 404, `No loop named "${command.loopName}".`)
+      case 'ended':
+        return fail('conflict', 409, `Loop "${command.loopName}" has already ended (${outcome.status}); only a running loop can be paused.`)
+      case 'in_transition':
+        return fail('conflict', 409, `Loop "${command.loopName}" is between phases; try pausing again shortly.`)
+      case 'failed':
+        return fail('internal_error', 500, outcome.message)
+    }
+  }
+
+  async function handleLoopResume(
+    _ctx: ForgeExecutionRequestContext,
+    command: ResumeLoopCommand,
+  ): Promise<ForgeExecutionResponse<LoopResumedResult>> {
+    const outcome = await deps.loop.resume(command.loopName)
+    switch (outcome.kind) {
+      case 'resumed':
+        return ok({ operation: 'loop.resume', loopName: command.loopName, status: 'running', sessionId: outcome.sessionId, changed: true })
+      case 'unchanged':
+        return ok({ operation: 'loop.resume', loopName: command.loopName, status: 'running', sessionId: outcome.sessionId, changed: false })
+      case 'not_found':
+        return fail('not_found', 404, `No loop named "${command.loopName}".`)
+      case 'ended':
+        return fail('conflict', 409, `Loop "${command.loopName}" has already ended (${outcome.status}); only a paused loop can be resumed.`)
+      case 'failed':
+        return fail('internal_error', 500, outcome.message)
+    }
+  }
+
   async function handleLoopRestart(
     ctx: ForgeExecutionRequestContext,
     command: RestartLoopCommand,
@@ -1960,6 +2031,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
   async function dispatch(ctx: ForgeExecutionRequestContext, command: RestartLoopCommand): Promise<ForgeExecutionResponse<LoopRestartedResult>>
   async function dispatch(ctx: ForgeExecutionRequestContext, command: CancelLoopCommand): Promise<ForgeExecutionResponse<LoopCancelledResult>>
   async function dispatch(ctx: ForgeExecutionRequestContext, command: GetLoopStatusCommand): Promise<ForgeExecutionResponse<LoopStatusResult>>
+  async function dispatch(ctx: ForgeExecutionRequestContext, command: PauseLoopCommand): Promise<ForgeExecutionResponse<LoopPausedResult>>
+  async function dispatch(ctx: ForgeExecutionRequestContext, command: ResumeLoopCommand): Promise<ForgeExecutionResponse<LoopResumedResult>>
   async function dispatch(
     ctx: ForgeExecutionRequestContext,
     command: ForgeExecutionCommand,
@@ -1975,6 +2048,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return handleLoopStatus(ctx, command)
       case 'loop.cancel':
         return handleLoopCancel(ctx, command)
+      case 'loop.pause':
+        return handleLoopPause(ctx, command)
+      case 'loop.resume':
+        return handleLoopResume(ctx, command)
       case 'loop.restart':
         return handleLoopRestart(ctx, command)
       default:

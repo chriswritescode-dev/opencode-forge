@@ -46,6 +46,8 @@ describe('createTuiRpcService', () => {
       plansRepo,
       sandboxPreferences,
       restartLoop: async () => ({ sessionId: 'ses-default' }),
+      pauseLoop: async (request) => ({ loopName: request.loopName, status: 'paused', changed: true }),
+      resumeLoop: async (request) => ({ loopName: request.loopName, status: 'running', sessionId: 'ses-default', changed: true }),
       logger,
       ...overrides,
     })
@@ -241,6 +243,40 @@ describe('createTuiRpcService', () => {
       const service = createService({ restartLoop: restart })
 
       await expect(service.restartLoop(request)).resolves.toEqual({ error: 'dispatch failed' })
+    })
+  })
+
+  describe('pauseLoop and resumeLoop', () => {
+    test('forward the loop name to their dependencies', async () => {
+      const pause = vi.fn(async () => ({ loopName: 'loop-1', status: 'paused' as const, changed: true }))
+      const resume = vi.fn(async () => ({ loopName: 'loop-1', status: 'running' as const, sessionId: 'ses_1', changed: true }))
+      const service = createService({ pauseLoop: pause, resumeLoop: resume })
+
+      await expect(service.pauseLoop({ loopName: 'loop-1' }))
+        .resolves.toEqual({ loopName: 'loop-1', status: 'paused', changed: true })
+      await expect(service.resumeLoop({ loopName: 'loop-1' }))
+        .resolves.toEqual({ loopName: 'loop-1', status: 'running', sessionId: 'ses_1', changed: true })
+      expect(pause).toHaveBeenCalledWith({ loopName: 'loop-1' })
+      expect(resume).toHaveBeenCalledWith({ loopName: 'loop-1' })
+    })
+
+    test('map thrown pause and resume failures into error results', async () => {
+      const service = createService({
+        pauseLoop: async () => { throw new Error('pause failed') },
+        resumeLoop: async () => { throw new Error('resume failed') },
+      })
+
+      await expect(service.pauseLoop({ loopName: 'loop-1' })).resolves.toEqual({ error: 'pause failed' })
+      await expect(service.resumeLoop({ loopName: 'loop-1' })).resolves.toEqual({ error: 'resume failed' })
+    })
+
+    test('listLoops reports a paused loop with paused status', () => {
+      loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-paused', status: 'paused' }), { lastAuditResult: null })
+
+      const result = createService().listLoops()
+      if ('error' in result) throw new Error(result.error)
+      expect(result.loops).toHaveLength(1)
+      expect(result.loops[0]!.status).toBe('paused')
     })
   })
 
