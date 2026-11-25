@@ -277,6 +277,28 @@ describe('loop pause and resume', () => {
       expect(params.parts[0]!.text).toBe(loopService.buildAuditPrompt(state))
     })
 
+    test('returns failed when the resume prompt fails and the loop ends', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [] },
+          ],
+          promptAsync: async () => {
+            throw new Error('prompt failed')
+          },
+        },
+      })
+      const { loop, loopService } = buildRuntime({ client })
+      const state = makeLoopState({ loopName: nextLoopName('resume-ends'), phase: 'coding', totalSections: 0, errorCount: 2, worktree: false })
+      loop.start({ state })
+      await loop.pause(state.loopName)
+
+      const outcome = await loop.resume(state.loopName)
+
+      expect(outcome.kind).toBe('failed')
+      expect(loopService.getActiveState(state.loopName)).toBeNull()
+    })
+
     test('returns unchanged for a running loop without sending a prompt', async () => {
       const { client, calls } = createFakeForgeClient()
       const { loop } = buildRuntime({ client })

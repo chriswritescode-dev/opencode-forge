@@ -3023,6 +3023,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         ? buildPhasePromptForCurrentState(running)
         : buildLoopResumePrompt(role)
       await sendLoopTurnPrompt(name, running, role, promptText, 'resume prompt')
+      if (!loopService.getActiveState(name)) {
+        const ended = loopService.getAnyState(name)
+        return { kind: 'failed', message: `Loop "${name}" ended while resuming (${ended?.status ?? 'removed'}).` }
+      }
       startWatchdog(name)
       logger.log(`Loop: resumed loop=${name} session=${running.sessionId}`)
       return { kind: 'resumed', sessionId: running.sessionId }
