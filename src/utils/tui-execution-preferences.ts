@@ -8,6 +8,9 @@ export interface ExecutionPreferences {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
 }
 
 export type ExecutionSelectionOverride = Partial<Omit<ExecutionPreferences, 'mode'>>
@@ -18,6 +21,9 @@ export interface ExecutionDialogDefaults {
   auditorModel: string
   executionVariant: string
   auditorVariant: string
+  executionAgent: string
+  auditorAgent: string
+  postActionAgent: string
 }
 
 const executionForgeLoopSchema = z.looseObject({
@@ -25,6 +31,9 @@ const executionForgeLoopSchema = z.looseObject({
   auditorModel: z.string().optional().catch(undefined),
   executionVariant: z.string().optional().catch(undefined),
   auditorVariant: z.string().optional().catch(undefined),
+  executionAgent: z.string().optional().catch(undefined),
+  auditorAgent: z.string().optional().catch(undefined),
+  postActionAgent: z.string().optional().catch(undefined),
 })
 
 const workspaceExtraSchema = z.looseObject({
@@ -73,6 +82,9 @@ export function deriveExecutionPreferencesFromWorkspaces(
     auditorModel: nonEmpty(forgeLoop.auditorModel),
     executionVariant: nonEmpty(forgeLoop.executionVariant),
     auditorVariant: nonEmpty(forgeLoop.auditorVariant),
+    executionAgent: nonEmpty(forgeLoop.executionAgent),
+    auditorAgent: nonEmpty(forgeLoop.auditorAgent),
+    postActionAgent: nonEmpty(forgeLoop.postActionAgent),
   }
 }
 
@@ -94,5 +106,21 @@ export function resolveExecutionDialogDefaults(
   const executionVariant = pick(overrides?.executionVariant, config.executionVariant, storedPrefs?.executionVariant)
   const auditorVariant = pick(overrides?.auditorVariant, config.auditorVariant, storedPrefs?.auditorVariant)
 
-  return { mode, executionModel, auditorModel, executionVariant, auditorVariant }
+  const executionAgent = overrides?.executionAgent !== undefined
+    ? overrides.executionAgent
+    : config.loop?.executionAgent
+      ? ''
+      : (storedPrefs?.executionAgent ?? '')
+  const auditorAgent = overrides?.auditorAgent !== undefined
+    ? overrides.auditorAgent
+    : config.loop?.auditorAgent
+      ? ''
+      : (storedPrefs?.auditorAgent ?? '')
+  const postActionAgent = overrides?.postActionAgent !== undefined
+    ? overrides.postActionAgent
+    : config.loop?.postAction?.agent
+      ? ''
+      : (storedPrefs?.postActionAgent ?? '')
+
+  return { mode, executionModel, auditorModel, executionVariant, auditorVariant, executionAgent, auditorAgent, postActionAgent }
 }

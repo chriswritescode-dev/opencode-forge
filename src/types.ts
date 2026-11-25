@@ -21,6 +21,8 @@ export interface PostActionConfig {
   skill?: string
   prompt?: string
   model?: string
+  variant?: string
+  agent?: string
 }
 
 export interface CodeGraphConfig {
@@ -52,6 +54,8 @@ export interface LoopConfig {
   allowExternalDirectories?: string[]
   worktreeOpencodeConfig?: JsonObject
   permissions?: LoopPermissionsConfig
+  executionAgent?: string
+  auditorAgent?: string
 }
 
 export type SandboxSecretViolationAction = 'block' | 'block-and-log' | 'block-and-terminate'
@@ -154,7 +158,15 @@ export interface TuiConfig {
 }
 
 export interface AgentOverrideConfig {
+  model?: string
+  variant?: string
   temperature?: number
+  steps?: number
+  hidden?: boolean
+  description?: string
+  prompt?: string
+  mode?: 'primary' | 'subagent' | 'all'
+  color?: string
 }
 
 export interface AuditorFallbackModel {

@@ -265,6 +265,11 @@ describe('DashboardService', () => {
         executionVariant: 'high',
         auditorModel: 'claude-opus-4-20250514',
         auditorVariant: 'low',
+        executionAgent: 'code-loop',
+        auditorAgent: 'auditor-loop',
+        postActionAgent: 'code-loop',
+        postActionModel: 'claude-opus-4-20250514',
+        postActionVariant: 'high',
         completionSummary: 'all done',
         baseCommit: 'abc123',
         currentSectionIndex: 1,
@@ -319,6 +324,11 @@ describe('DashboardService', () => {
         executionVariant: 'high',
         auditorModel: 'claude-opus-4-20250514',
         auditorVariant: 'low',
+        executionAgent: 'code-loop',
+        auditorAgent: 'auditor-loop',
+        postActionAgent: 'code-loop',
+        postActionModel: 'claude-opus-4-20250514',
+        postActionVariant: 'high',
         auditorFallbackIndex: 0,
         baseCommit: 'abc123',
         currentSectionIndex: 1,
@@ -421,7 +431,7 @@ describe('DashboardService', () => {
       expect(result).not.toHaveProperty('completionSummary')
       expect(result).not.toHaveProperty('plan')
       expect(result).not.toHaveProperty('usage')
-      for (const key of ['worktreeBranch', 'executionVariant', 'auditorModel', 'auditorVariant', 'terminationReason', 'baseCommit']) {
+      for (const key of ['worktreeBranch', 'executionVariant', 'auditorModel', 'auditorVariant', 'executionAgent', 'auditorAgent', 'postActionAgent', 'postActionModel', 'postActionVariant', 'terminationReason', 'baseCommit']) {
         expect(result.loop).not.toHaveProperty(key)
       }
       expect(JSON.stringify(result)).not.toContain('null')

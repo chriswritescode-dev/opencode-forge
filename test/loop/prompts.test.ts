@@ -404,8 +404,8 @@ describe('prompt builders (src/loop/prompts)', () => {
       'Read every finding',
       'shared root causes',
       'dependency order',
-      'through one owner',
-      'one implementation owner',
+      'address related findings together instead of independent per-file patches',
+      'fix independent findings directly in dependency order',
       'failing test or reproducer through the affected public interface',
       'smallest complete fix',
       'ordering, competing operations, or repeated delivery',
@@ -420,6 +420,7 @@ describe('prompt builders (src/loop/prompts)', () => {
       for (const fragment of POLICY_ASSERTIONS) {
         expect(prompt).toContain(fragment)
       }
+      expect(prompt).not.toContain('delegated to code subagents')
     }
 
     test('section continuation renders the shared policy and every blocking finding', () => {

@@ -75,7 +75,7 @@ async function busyTick(loop: Loop, sessionId: string): Promise<void> {
   await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: sessionId } })
 }
 
-function promptsTo(calls: RecordedCall[], sessionId: string, agent?: 'code' | 'auditor-loop'): string[] {
+function promptsTo(calls: RecordedCall[], sessionId: string, agent?: 'code-loop' | 'auditor-loop'): string[] {
   return calls
     .filter(c => c.method === 'session.promptAsync'
       && (c.params as { sessionID?: string })?.sessionID === sessionId
@@ -294,7 +294,7 @@ describe('durable attempt handoff', () => {
       expect(coderBId).toBe('coder-a')
       expect(afterAudit.standbySessionId).toBe(auditSessionId)
 
-      const continuationPrompt = promptsTo(harness.calls, coderBId, 'code').at(-1)!
+      const continuationPrompt = promptsTo(harness.calls, coderBId, 'code-loop').at(-1)!
       expect(continuationPrompt).toContain('(follow-up)')
       expect(continuationPrompt).toContain('Retry handler drops the second event')
       expect(continuationPrompt).not.toContain('Coder decisions from latest attempt 1')
@@ -594,7 +594,7 @@ describe('durable attempt handoff', () => {
       expect(harness.service.getAttemptHistory(loopName)).toHaveLength(0)
       expect(auditorPrompts(harness.calls)).toHaveLength(0)
 
-      const codePrompts = promptsTo(harness.calls, 'nudge-coder', 'code')
+      const codePrompts = promptsTo(harness.calls, 'nudge-coder', 'code-loop')
       expect(codePrompts).toHaveLength(1)
       expect(codePrompts[0]).toContain('You ended your turn without calling `loop-handoff`.')
     })
@@ -610,7 +610,7 @@ describe('durable attempt handoff', () => {
 
       for (let attempt = 1; attempt <= 3; attempt++) {
         await idleTick(harness.loop, 'exhausted-coder')
-        expect(promptsTo(harness.calls, 'exhausted-coder', 'code')).toHaveLength(attempt)
+        expect(promptsTo(harness.calls, 'exhausted-coder', 'code-loop')).toHaveLength(attempt)
         await busyTick(harness.loop, 'exhausted-coder')
       }
 
@@ -620,7 +620,7 @@ describe('durable attempt handoff', () => {
       expect(finished.active).toBe(false)
       expect(finished.status).toBe('errored')
       expect(finished.terminationReason).toBe('handoff_missing')
-      expect(promptsTo(harness.calls, 'exhausted-coder', 'code')).toHaveLength(3)
+      expect(promptsTo(harness.calls, 'exhausted-coder', 'code-loop')).toHaveLength(3)
     })
 
     test('a detected assistant error rotates to audit without a handoff nudge', async () => {
@@ -644,7 +644,7 @@ describe('durable attempt handoff', () => {
       expect(rows).toHaveLength(1)
       expect(rows[0].coderDecisions).toBeNull()
 
-      expect(promptsTo(harness.calls, 'error-coder', 'code').some(prompt => prompt.includes('loop-handoff'))).toBe(false)
+      expect(promptsTo(harness.calls, 'error-coder', 'code-loop').some(prompt => prompt.includes('loop-handoff'))).toBe(false)
     })
 
     test('a second idle after an applied coder handoff does not run the audit again', async () => {

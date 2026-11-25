@@ -9,12 +9,29 @@ See also: [Tools](tools.md), [Configuration](configuration.md), [Loop System](lo
 | Agent | Mode | Description |
 |---|---|---|
 | `code` | `all` | Primary implementation agent. Orchestrates `minion` subagents for implementation, reviews and fixes their output, and edits directly only when needed. |
+| `code-loop` | `primary`, hidden | Coding agent used by default for loop coding and post-action sessions. It shares `code`'s coding discipline and exact tool exclusions, but its prompt has no orchestration or `minion` delegation, so fast/cheap loop models implement directly instead of spawning subagent batches. Prompt-only separation: permissions are unchanged. |
 | `architect` | `primary` | Read-only planning agent. Researches the goal, settles the implementation route with grouped `question` rounds, then authors and validates the stored plan with `plan-write`/`plan-edit` before approval. |
 | `auditor` | `subagent` | Read-only code review agent for convention-aware reviews. |
 | `auditor-loop` | `primary`, hidden | Internal auditor used by loop audit sessions. |
-| `minion` | `subagent` | Fast implementation subagent for exactly one explicitly scoped change with detailed instructions. Runs on `executionModel` and `executionVariant`, or OpenCode's default model when `executionModel` is unset, never the caller's model. A user-defined `minion` agent overrides its prompt, model, and description; the tool restrictions below still apply. |
+| `minion` | `subagent` | Fast implementation subagent for exactly one explicitly scoped change with detailed instructions. Runs on `agents.minion.model` / `agents.minion.variant` when set, otherwise on `executionModel` / `executionVariant`, or OpenCode's default model when neither is set — never the caller's model. A user-defined `minion` agent overrides its prompt, model, and description; the tool restrictions below still apply. |
 
-Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/architect.ts`](../src/agents/architect.ts), [`src/agents/auditor.ts`](../src/agents/auditor.ts), [`src/agents/minion.ts`](../src/agents/minion.ts).
+`code` and `code-loop` both load their system addendum from `~/.config/opencode/forge/prompts/agents/` (`code.md` and `code-loop.md`). The prompts sync automatically through the prompts manifest, and user edits are preserved. The separation lives entirely in the prompt: `code-loop.md` omits the `# Orchestration` section that tells `code` to delegate implementation to `minion`.
+
+Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/code.ts`](../src/agents/code.ts), [`src/agents/architect.ts`](../src/agents/architect.ts), [`src/agents/auditor.ts`](../src/agents/auditor.ts), [`src/agents/minion.ts`](../src/agents/minion.ts).
+
+### Loop role agents
+
+Loop sessions choose their agents independently of the interactive `code` agent:
+
+| Setting | Default | Role |
+|---|---|---|
+| `loop.executionAgent` | `"code-loop"` | Loop coding turns. |
+| `loop.auditorAgent` | `"auditor-loop"` | Loop audit turns. |
+| `loop.postAction.agent` | `"code-loop"` | Post-completion action turn. |
+
+Each accepts any Forge or user-defined agent name, so a custom agent can replace a role. Configure defaults in `forge-config.jsonc`; the TUI execution and restart dialogs override them per run (`Execution agent`, `Auditor agent`, and `Loop settings → Post-action agent`), and `FORGE_RPC` carries the same per-run values through `executePlan`, `loopRestart`, `loopDefaults`, `loops`, and `loopDetail`. See [Configuration → Loop](configuration.md#loop) and [Configuration → Post-Action](configuration.md#post-action).
+
+The post-action phase also has its own optional `loop.postAction.model` and `loop.postAction.variant`. Its variant is independent and never inherited across models: it applies only with an explicitly configured post-action model, and the auditor model chain keeps the auditor's own variant.
 
 ## Architect restrictions
 

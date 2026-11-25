@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest'
 import { buildArchitectAgent } from '../src/agents/architect'
-import { buildCodeAgent } from '../src/agents/code'
+import { buildCodeAgent, buildCodeLoopAgent } from '../src/agents/code'
 import { buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
 import { buildMinionAgent } from '../src/agents/minion'
 import { buildAgents } from '../src/agents'
@@ -8,6 +8,7 @@ import { buildAgents } from '../src/agents'
 describe('Agent definitions', () => {
   const architectAgent = buildArchitectAgent()
   const codeAgent = buildCodeAgent()
+  const codeLoopAgent = buildCodeLoopAgent()
   const auditorAgent = buildAuditorAgent()
   const auditorLoopAgent = buildAuditorLoopAgent()
   const minionAgent = buildMinionAgent()
@@ -35,6 +36,38 @@ describe('Agent definitions', () => {
       expect(codeAgent.id).toBe('opencode-code')
       expect(codeAgent.displayName).toBe('code')
       expect(codeAgent.mode).toBe('all')
+    })
+
+    test('code-loop agent has stable metadata', () => {
+      expect(codeLoopAgent.role).toBe('code-loop')
+      expect(codeLoopAgent.id).toBe('opencode-code-loop')
+      expect(codeLoopAgent.displayName).toBe('code-loop')
+      expect(codeLoopAgent.mode).toBe('primary')
+      expect(codeLoopAgent.hidden).toBe(true)
+    })
+
+    test('code-loop agent keeps the code tool exclusions and delegation tools', () => {
+      expect(codeLoopAgent.tools?.exclude).toEqual(codeAgent.tools?.exclude)
+      expect(codeLoopAgent.tools?.exclude).not.toContain('task')
+      expect(codeLoopAgent.tools?.exclude).not.toContain('minion')
+    })
+
+    test('code-loop agent appends a direct-implementation prompt instead of replacing it', () => {
+      expect(codeLoopAgent.systemPrompt).toBeUndefined()
+      expect(codeLoopAgent.systemAddendum).toBeDefined()
+      const addendum = codeLoopAgent.systemAddendum ?? ''
+      expect(addendum).toContain('# Direct implementation')
+      expect(addendum).toContain('Implement the work yourself')
+      expect(addendum).toContain('instead of delegating coding work to `minion` subagents')
+      expect(addendum).not.toContain('# Orchestration')
+      expect(addendum).not.toContain('You are an orchestrator')
+      expect(addendum).not.toContain('## Briefing')
+      expect(addendum).not.toContain('## Reviewing')
+      expect(addendum).not.toContain('## Fixing')
+      expect(addendum).not.toContain('up to four minions concurrently')
+      expect(addendum).not.toContain('Minions write the code')
+      expect(addendum).toContain('# Project Plan and Review Tools')
+      expect(addendum).toContain('Never attempt to remove, delete, or clear review findings')
     })
 
     test('auditor agent has stable metadata', () => {
@@ -279,11 +312,12 @@ describe('Agent definitions', () => {
       expect(variantOnly.variant).toBeUndefined()
     })
 
-    test('buildAgents returns all 5 agent roles', () => {
+    test('buildAgents returns all 6 agent roles', () => {
       const agents = buildAgents()
       const roles = Object.keys(agents)
-      expect(roles).toHaveLength(5)
+      expect(roles).toHaveLength(6)
       expect(roles).toContain('code')
+      expect(roles).toContain('code-loop')
       expect(roles).toContain('architect')
       expect(roles).toContain('auditor')
       expect(roles).toContain('auditor-loop')

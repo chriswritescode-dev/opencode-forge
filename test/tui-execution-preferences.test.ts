@@ -18,6 +18,9 @@ function forgeWs(input: {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
   extraOverride?: unknown
 }): WorkspaceForRecents {
   const forgeLoop: Record<string, unknown> = {}
@@ -25,6 +28,9 @@ function forgeWs(input: {
   if (input.auditorModel !== undefined) forgeLoop.auditorModel = input.auditorModel
   if (input.executionVariant !== undefined) forgeLoop.executionVariant = input.executionVariant
   if (input.auditorVariant !== undefined) forgeLoop.auditorVariant = input.auditorVariant
+  if (input.executionAgent !== undefined) forgeLoop.executionAgent = input.executionAgent
+  if (input.auditorAgent !== undefined) forgeLoop.auditorAgent = input.auditorAgent
+  if (input.postActionAgent !== undefined) forgeLoop.postActionAgent = input.postActionAgent
   return {
     type: 'forge',
     ...(input.projectID !== undefined ? { projectID: input.projectID } : {}),
@@ -72,6 +78,23 @@ describe('deriveExecutionPreferencesFromWorkspaces', () => {
       auditorModel: 'openai/gpt-5',
       executionVariant: 'thinking-max',
       auditorVariant: 'reasoning-high',
+    })
+  })
+
+  test('derives agent selections from the most recent workspace', () => {
+    const workspaces = [
+      forgeWs({
+        projectID: PROJECT_A,
+        timeUsed: 200,
+        executionAgent: 'custom-exec',
+        auditorAgent: 'custom-audit',
+        postActionAgent: 'custom-post',
+      }),
+    ]
+    expect(deriveExecutionPreferencesFromWorkspaces(PROJECT_A, workspaces)).toMatchObject({
+      executionAgent: 'custom-exec',
+      auditorAgent: 'custom-audit',
+      postActionAgent: 'custom-post',
     })
   })
 
@@ -377,6 +400,72 @@ describe('resolveExecutionDialogDefaults', () => {
     const result = resolveExecutionDialogDefaults(config, null, overrides)
     expect(result.executionModel).toBe('')
     expect(result.executionVariant).toBe('')
+  })
+
+  test('agent fields default to empty strings without config or stored prefs', () => {
+    const result = resolveExecutionDialogDefaults({} as PluginConfig, null)
+    expect(result.executionAgent).toBe('')
+    expect(result.auditorAgent).toBe('')
+    expect(result.postActionAgent).toBe('')
+  })
+
+  test('config loop agents beat stored prefs and resolve to an empty override', () => {
+    const config: PluginConfig = {
+      loop: { executionAgent: 'cfg-exec', auditorAgent: 'cfg-audit', postAction: { agent: 'cfg-post' } },
+    }
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionAgent: 'stored-exec',
+      auditorAgent: 'stored-audit',
+      postActionAgent: 'stored-post',
+    }
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.executionAgent).toBe('')
+    expect(result.auditorAgent).toBe('')
+    expect(result.postActionAgent).toBe('')
+  })
+
+  test('stored agent prefs are remembered when config has no loop agent', () => {
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionAgent: 'stored-exec',
+      auditorAgent: 'stored-audit',
+      postActionAgent: 'stored-post',
+    }
+    const result = resolveExecutionDialogDefaults({} as PluginConfig, storedPrefs)
+    expect(result.executionAgent).toBe('stored-exec')
+    expect(result.auditorAgent).toBe('stored-audit')
+    expect(result.postActionAgent).toBe('stored-post')
+  })
+
+  test('agent overrides beat config and stored prefs, including explicit clears', () => {
+    const config: PluginConfig = {
+      loop: { executionAgent: 'cfg-exec', auditorAgent: 'cfg-audit', postAction: { agent: 'cfg-post' } },
+    }
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionAgent: 'stored-exec',
+      auditorAgent: 'stored-audit',
+      postActionAgent: 'stored-post',
+    }
+
+    const overridden = resolveExecutionDialogDefaults(config, storedPrefs, {
+      executionAgent: 'ov-exec',
+      auditorAgent: 'ov-audit',
+      postActionAgent: 'ov-post',
+    })
+    expect(overridden.executionAgent).toBe('ov-exec')
+    expect(overridden.auditorAgent).toBe('ov-audit')
+    expect(overridden.postActionAgent).toBe('ov-post')
+
+    const cleared = resolveExecutionDialogDefaults(config, storedPrefs, {
+      executionAgent: '',
+      auditorAgent: '',
+      postActionAgent: '',
+    })
+    expect(cleared.executionAgent).toBe('')
+    expect(cleared.auditorAgent).toBe('')
+    expect(cleared.postActionAgent).toBe('')
   })
 })
 

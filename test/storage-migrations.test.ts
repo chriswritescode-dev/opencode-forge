@@ -2176,3 +2176,51 @@ test('deleting a loop cascades its section_dependencies rows away', () => {
 
   db.close()
 })
+
+test('migration 161 adds nullable agent and post-action override columns to loops', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
+  for (const name of ['execution_agent', 'auditor_agent', 'post_action_agent', 'post_action_model', 'post_action_variant']) {
+    const col = cols.find((c) => c.name === name)
+    expect(col, name).toBeDefined()
+    expect(col!.notnull, name).toBe(0)
+  }
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-agents', 'running', 'sess-agents', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  const row = db.prepare(
+    "SELECT execution_agent, auditor_agent, post_action_agent, post_action_model, post_action_variant FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-agents'",
+  ).get() as Record<string, string | null>
+  expect(row).toEqual({
+    execution_agent: null,
+    auditor_agent: null,
+    post_action_agent: null,
+    post_action_model: null,
+    post_action_variant: null,
+  })
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('161') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 161 is a no-op when applied twice', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '160')
+
+  applySingleMigration(db, '161')
+  expect(() => applySingleMigration(db, '161')).not.toThrow()
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  for (const name of ['execution_agent', 'auditor_agent', 'post_action_agent', 'post_action_model', 'post_action_variant']) {
+    expect(cols.filter((c) => c.name === name).length, name).toBe(1)
+  }
+
+  db.close()
+})

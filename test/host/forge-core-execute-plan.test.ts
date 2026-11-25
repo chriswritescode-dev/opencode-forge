@@ -219,6 +219,52 @@ describe('createForgeCore executeTuiPlan loop settings', () => {
     expect(result).toMatchObject({ branch: 'pm-61-export' })
   })
 
+  test('forwards every loop agent and post-action field into the start-loop command', async () => {
+    const built = await buildCore()
+
+    await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      executionAgent: '  my-coder  ',
+      auditorAgent: ' my-auditor ',
+      postActionAgent: '  my-post ',
+      postActionModel: 'prov/post',
+      postActionVariant: 'fast',
+    })
+
+    const command = dispatched.at(-1) as Record<string, unknown>
+    expect(command.type).toBe('loop.start')
+    expect(command.executionAgent).toBe('my-coder')
+    expect(command.auditorAgent).toBe('my-auditor')
+    expect(command.postActionAgent).toBe('my-post')
+    expect(command.postActionModel).toBe('prov/post')
+    expect(command.postActionVariant).toBe('fast')
+  })
+
+  test('forwards executionAgent into new-session and execute-here commands', async () => {
+    const built = await buildCore()
+
+    await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'new-session',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      executionAgent: '  my-coder  ',
+    })
+    expect((dispatched.at(-1) as Record<string, unknown>).executionAgent).toBe('my-coder')
+
+    await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'execute-here',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      executionAgent: 'other-coder',
+    })
+    expect((dispatched.at(-1) as Record<string, unknown>).executionAgent).toBe('other-coder')
+  })
+
   test('ignores branch and baseRef outside loop mode', async () => {
     const built = await buildCore()
 

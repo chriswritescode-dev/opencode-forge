@@ -62,6 +62,11 @@ describe('createTuiRpcService', () => {
         executionVariant: 'high',
         auditorModel: 'openai/gpt',
         auditorVariant: 'low',
+        executionAgent: 'code-loop',
+        auditorAgent: 'auditor-loop',
+        postActionAgent: 'code-loop',
+        postActionModel: 'anthropic/claude',
+        postActionVariant: 'high',
         startedAt: 1_700_000_000_000,
       }), { lastAuditResult: null })
       loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-running', status: 'running', currentSessionId: 'session-running' }), { lastAuditResult: null })
@@ -83,6 +88,11 @@ describe('createTuiRpcService', () => {
         executionVariant: 'high',
         auditorModel: 'openai/gpt',
         auditorVariant: 'low',
+        executionAgent: 'code-loop',
+        auditorAgent: 'auditor-loop',
+        postActionAgent: 'code-loop',
+        postActionModel: 'anthropic/claude',
+        postActionVariant: 'high',
       })
       expect(done?.startedAt).toBe(new Date(1_700_000_000_000).toISOString())
       expect(done).not.toHaveProperty('active')
@@ -99,6 +109,11 @@ describe('createTuiRpcService', () => {
         loopName: 'loop-sparse',
         auditorVariant: null,
         executionVariant: null,
+        executionAgent: null,
+        auditorAgent: null,
+        postActionAgent: null,
+        postActionModel: null,
+        postActionVariant: null,
         completedAt: null,
       }), { lastAuditResult: null })
 

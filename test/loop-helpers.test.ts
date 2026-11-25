@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, auditorModelChoiceAt, nextAuditorFallbackIndex, resolveUsageFallbackModelLabel, formatDuration, computeElapsedSeconds } from '../src/utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, auditorModelChoiceAt, nextAuditorFallbackIndex, resolveUsageFallbackModelLabel, formatDuration, computeElapsedSeconds, normalizeAgentName, resolveLoopExecutionAgent, resolveLoopAuditorAgent, resolveLoopPostActionAgent } from '../src/utils/loop-helpers'
 import type { PluginConfig } from '../src/types'
 
 describe('resolveLoopModel', () => {
@@ -430,5 +430,78 @@ describe('computeElapsedSeconds', () => {
     const elapsed = computeElapsedSeconds(start, undefined)
     expect(elapsed).toBeGreaterThanOrEqual(4)
     expect(elapsed).toBeLessThanOrEqual(6)
+  })
+})
+
+describe('normalizeAgentName', () => {
+  it('returns a trimmed non-empty name', () => {
+    expect(normalizeAgentName('  code-loop  ')).toBe('code-loop')
+  })
+
+  it('returns undefined for blank, empty, null and undefined inputs', () => {
+    expect(normalizeAgentName('   ')).toBeUndefined()
+    expect(normalizeAgentName('')).toBeUndefined()
+    expect(normalizeAgentName(null)).toBeUndefined()
+    expect(normalizeAgentName(undefined)).toBeUndefined()
+  })
+})
+
+describe('resolveLoopExecutionAgent', () => {
+  it('defaults to code-loop', () => {
+    expect(resolveLoopExecutionAgent({})).toBe('code-loop')
+  })
+
+  it('uses loop.executionAgent when configured', () => {
+    expect(resolveLoopExecutionAgent({ loop: { executionAgent: 'custom-code' } })).toBe('custom-code')
+  })
+
+  it('prefers a per-loop executionAgent over the configured agent', () => {
+    const config: PluginConfig = { loop: { executionAgent: 'custom-code' } }
+    expect(resolveLoopExecutionAgent(config, { executionAgent: 'loop-code' })).toBe('loop-code')
+  })
+
+  it('falls back to config and then the default for blank overrides', () => {
+    const config: PluginConfig = { loop: { executionAgent: '  ' } }
+    expect(resolveLoopExecutionAgent(config, { executionAgent: '   ' })).toBe('code-loop')
+  })
+})
+
+describe('resolveLoopAuditorAgent', () => {
+  it('defaults to auditor-loop', () => {
+    expect(resolveLoopAuditorAgent({})).toBe('auditor-loop')
+  })
+
+  it('uses loop.auditorAgent when configured', () => {
+    expect(resolveLoopAuditorAgent({ loop: { auditorAgent: 'custom-auditor' } })).toBe('custom-auditor')
+  })
+
+  it('prefers a per-loop auditorAgent over the configured agent', () => {
+    const config: PluginConfig = { loop: { auditorAgent: 'custom-auditor' } }
+    expect(resolveLoopAuditorAgent(config, { auditorAgent: 'loop-auditor' })).toBe('loop-auditor')
+  })
+
+  it('falls back to config and then the default for blank overrides', () => {
+    const config: PluginConfig = { loop: { auditorAgent: '  ' } }
+    expect(resolveLoopAuditorAgent(config, { auditorAgent: '' })).toBe('auditor-loop')
+  })
+})
+
+describe('resolveLoopPostActionAgent', () => {
+  it('defaults to code-loop', () => {
+    expect(resolveLoopPostActionAgent({})).toBe('code-loop')
+  })
+
+  it('uses loop.postAction.agent when configured', () => {
+    expect(resolveLoopPostActionAgent({ loop: { postAction: { agent: 'custom-post-action' } } })).toBe('custom-post-action')
+  })
+
+  it('prefers a per-loop postActionAgent over the configured agent', () => {
+    const config: PluginConfig = { loop: { postAction: { agent: 'custom-post-action' } } }
+    expect(resolveLoopPostActionAgent(config, { postActionAgent: 'loop-post-action' })).toBe('loop-post-action')
+  })
+
+  it('falls back to config and then the default for blank overrides', () => {
+    const config: PluginConfig = { loop: { postAction: { agent: '  ' } } }
+    expect(resolveLoopPostActionAgent(config, { postActionAgent: '   ' })).toBe('code-loop')
   })
 })

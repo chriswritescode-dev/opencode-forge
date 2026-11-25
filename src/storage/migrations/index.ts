@@ -600,4 +600,22 @@ export const migrations: Migration[] = [
       if (!hasDependencies) db.run(loadSql('160_create_section_dependencies.sql'))
     },
   },
+  {
+    id: '161',
+    description: 'Add execution_agent, auditor_agent, post_action_agent, post_action_model, and post_action_variant to loops',
+    apply: (db: Database) => {
+      const cols = tableInfo(db, 'loops')
+      const columns = [
+        'execution_agent',
+        'auditor_agent',
+        'post_action_agent',
+        'post_action_model',
+        'post_action_variant',
+      ]
+      for (const column of columns) {
+        if (cols.some((c) => c.name === column)) continue
+        db.run(`ALTER TABLE loops ADD COLUMN ${column} TEXT`)
+      }
+    },
+  },
 ]

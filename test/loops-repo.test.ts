@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createLoopsRepo, type LoopRow, type LoopLargeFields } from '../src/storage/repos/loops-repo'
+import { loopRowToState, loopStateToRow } from '../src/loop/state'
 import type { LoopHandoffWriteInputFor } from '../src/loop/handoff'
 import { createTestDb, type TestDb } from './helpers/test-db'
 
@@ -842,6 +843,122 @@ describe('LoopsRepo', () => {
       })
 
       expect(repo.get(testRow.projectId, testRow.loopName)!.baseCommit).toBe(SHA)
+    })
+  })
+
+  describe('agent and post-action overrides', () => {
+    const overrides = {
+      executionAgent: 'forge-coder',
+      auditorAgent: 'forge-auditor',
+      postActionAgent: 'forge-reviewer',
+      postActionModel: 'vendor/post-action',
+      postActionVariant: 'fast',
+    }
+
+    const cleared = {
+      executionAgent: null,
+      auditorAgent: null,
+      postActionAgent: null,
+      postActionModel: null,
+      postActionVariant: null,
+    }
+
+    const restartOpts = (extra: Partial<Parameters<typeof repo.restart>[2]> = {}) => ({
+      sessionId: 'restart-session',
+      phase: 'coding' as const,
+      iteration: 1,
+      auditCount: 0,
+      sandbox: false,
+      sandboxContainer: null,
+      workspaceId: null,
+      auditorModel: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      startedAt: Date.now(),
+      ...extra,
+    })
+
+    const persisted = (loopName = testRow.loopName) => {
+      const row = repo.get(testRow.projectId, loopName)!
+      return {
+        executionAgent: row.executionAgent,
+        auditorAgent: row.auditorAgent,
+        postActionAgent: row.postActionAgent,
+        postActionModel: row.postActionModel,
+        postActionVariant: row.postActionVariant,
+      }
+    }
+
+    test('insert + get round-trips every override', () => {
+      repo.insert({ ...testRow, ...overrides }, testLarge)
+      expect(persisted()).toEqual(overrides)
+    })
+
+    test('omitted overrides read back null', () => {
+      repo.insert(testRow, testLarge)
+      expect(persisted()).toEqual(cleared)
+    })
+
+    test('restore writes every override', () => {
+      repo.insert(testRow, testLarge)
+      repo.restore({ ...testRow, ...overrides }, testLarge)
+      expect(persisted()).toEqual(overrides)
+    })
+
+    test('restart preserves the persisted overrides when they are omitted', () => {
+      repo.insert({ ...testRow, ...overrides }, testLarge)
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts())
+
+      expect(persisted()).toEqual(overrides)
+    })
+
+    test('restart replaces the overrides when they are supplied as strings', () => {
+      repo.insert(testRow, testLarge)
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts({
+        executionAgent: 'next-coder',
+        auditorAgent: 'next-auditor',
+        postActionAgent: 'next-reviewer',
+        postActionModel: 'next/model',
+        postActionVariant: 'high',
+      }))
+
+      expect(persisted()).toEqual({
+        executionAgent: 'next-coder',
+        auditorAgent: 'next-auditor',
+        postActionAgent: 'next-reviewer',
+        postActionModel: 'next/model',
+        postActionVariant: 'high',
+      })
+    })
+
+    test('restart clears the overrides when they are supplied as null', () => {
+      repo.insert({ ...testRow, ...overrides }, testLarge)
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts(cleared))
+
+      expect(persisted()).toEqual(cleared)
+    })
+
+    test('loopRowToState and loopStateToRow round-trip the overrides', () => {
+      const state = loopRowToState({ ...testRow, ...overrides })
+      expect(state).toMatchObject(overrides)
+
+      const row = loopStateToRow(state, testRow.projectId)
+      expect(row).toMatchObject(overrides)
+    })
+
+    test('null overrides map to undefined state fields and back to null row values', () => {
+      const state = loopRowToState(testRow)
+      expect(state.executionAgent).toBeUndefined()
+      expect(state.auditorAgent).toBeUndefined()
+      expect(state.postActionAgent).toBeUndefined()
+      expect(state.postActionModel).toBeUndefined()
+      expect(state.postActionVariant).toBeUndefined()
+
+      const row = loopStateToRow(state, testRow.projectId)
+      expect(row).toMatchObject(cleared)
     })
   })
 

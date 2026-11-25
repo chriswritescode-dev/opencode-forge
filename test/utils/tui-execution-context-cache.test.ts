@@ -3,6 +3,7 @@ import { createExecutionContextCache, type ExecutionContextSnapshot } from '../.
 import type { ExecutionPreferences } from '../../src/utils/tui-execution-preferences'
 import type { PluginConfig } from '../../src/types'
 import type {
+  AgentOption,
   ProviderInfo,
   SessionForRecents,
   WorkspaceForRecents,
@@ -49,6 +50,7 @@ interface LoadResult {
   workspaces: WorkspaceForRecents[]
   openCodeFavorites: string[]
   openCodeDefault: string | undefined
+  agents?: AgentOption[]
 }
 
 function makeLoadResult(overrides: Partial<LoadResult> = {}): LoadResult {
@@ -79,6 +81,15 @@ describe('createExecutionContextCache', () => {
       const snap = cache.snapshot()
       expect(snap).not.toBeNull()
       expect(snap!.models).toHaveLength(2)
+    })
+
+    it('passes through the loaded agents and defaults them to an empty list', async () => {
+      const agents: AgentOption[] = [{ id: 'custom', name: 'Custom Agent' }]
+      const withAgents = createExecutionContextCache(mockProjectId, mockPluginConfig, vi.fn(async () => makeLoadResult({ agents })))
+      expect((await withAgents.ensureLoaded()).agents).toEqual(agents)
+
+      const withoutAgents = createExecutionContextCache(mockProjectId, mockPluginConfig, vi.fn(async () => makeLoadResult()))
+      expect((await withoutAgents.ensureLoaded()).agents).toEqual([])
     })
   })
 
@@ -391,6 +402,49 @@ describe('createExecutionContextCache', () => {
 
       expect(snap.defaults.executionModel).toBe('config/model')
       expect(snap.defaults.auditorModel).toBe('config/auditor')
+    })
+
+    it('config loop agents win over stored agent prefs and leave an empty override', async () => {
+      const config: PluginConfig = {
+        loop: { executionAgent: 'cfg-exec', auditorAgent: 'cfg-audit', postAction: { agent: 'cfg-post' } },
+      }
+      const loadFn = vi.fn(async () =>
+        makeLoadResult({
+          preferences: {
+            mode: 'Loop',
+            executionAgent: 'stored-exec',
+            auditorAgent: 'stored-audit',
+            postActionAgent: 'stored-post',
+          },
+        }),
+      )
+
+      const cache = createExecutionContextCache(mockProjectId, config, loadFn)
+      const snap = await cache.ensureLoaded()
+
+      expect(snap.defaults.executionAgent).toBe('')
+      expect(snap.defaults.auditorAgent).toBe('')
+      expect(snap.defaults.postActionAgent).toBe('')
+    })
+
+    it('stored agent prefs surface when config has no loop agents', async () => {
+      const loadFn = vi.fn(async () =>
+        makeLoadResult({
+          preferences: {
+            mode: 'Loop',
+            executionAgent: 'stored-exec',
+            auditorAgent: 'stored-audit',
+            postActionAgent: 'stored-post',
+          },
+        }),
+      )
+
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
+      const snap = await cache.ensureLoaded()
+
+      expect(snap.defaults.executionAgent).toBe('stored-exec')
+      expect(snap.defaults.auditorAgent).toBe('stored-audit')
+      expect(snap.defaults.postActionAgent).toBe('stored-post')
     })
   })
 })

@@ -1,6 +1,6 @@
 import type { ExecutionPreferences, ExecutionSelectionOverride } from './tui-execution-preferences'
 import type { PluginConfig } from '../types'
-import type { ModelInfo } from './tui-models'
+import type { AgentOption, ModelInfo } from './tui-models'
 import { deriveRecentModels, flattenProviders, sortModelsByPriority } from './tui-models'
 import { resolveExecutionDialogDefaults } from './tui-execution-preferences'
 import type { ExecutionContext } from '../tui/project-client'
@@ -15,12 +15,16 @@ export interface ExecutionContextSnapshot {
   recents: string[]
   openCodeDefault: string
   loopDefaults: ForgeLoopDefaults | null
+  agents: AgentOption[]
   defaults: {
     executionModel: string
     auditorModel: string
     mode: string
     executionVariant: string
     auditorVariant: string
+    executionAgent: string
+    auditorAgent: string
+    postActionAgent: string
   }
 }
 
@@ -53,6 +57,7 @@ export function buildExecutionContextSnapshot(
     recents,
     openCodeDefault: result.openCodeDefault ?? '',
     loopDefaults: result.loopDefaults ?? null,
+    agents: result.agents ?? [],
     defaults,
   }
 }

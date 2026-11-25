@@ -8,7 +8,7 @@ import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanExecutionMetadata, createPlanExecutionSession } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
-import { auditorModelChoiceAt, buildAuditorModelChain, usageRoleForPhase, standbyPhaseFor } from '../utils/loop-helpers'
+import { auditorModelChoiceAt, buildAuditorModelChain, usageRoleForPhase, standbyPhaseFor, normalizeAgentName, resolveLoopExecutionAgent, resolveLoopPostActionAgent } from '../utils/loop-helpers'
 import { createUsageCapture } from '../loop/runtime-usage'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
@@ -75,6 +75,11 @@ export interface ForgeLoopExtra {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   planSource: 'stored' | 'inline'
   planText?: string
   initialPromptOwner?: 'server' | 'tui'
@@ -96,6 +101,11 @@ export interface AttachLoopInput {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   maxIterations: number
   sandboxEnabled: boolean
   sandboxContainer?: string
@@ -125,6 +135,7 @@ export interface ExecutePlanNewSessionCommand {
   title?: string
   executionModel?: string
   executionVariant?: string
+  executionAgent?: string
   lifecycle?: {
     abortSourceSession?: boolean
     deleteSessionOnPromptFailure?: boolean
@@ -138,6 +149,7 @@ export interface ExecutePlanHereCommand {
   title?: string
   executionModel?: string
   executionVariant?: string
+  executionAgent?: string
 }
 
 export interface StartLoopCommand {
@@ -150,6 +162,11 @@ export interface StartLoopCommand {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   hostSessionId?: string
   sandbox?: LoopSandboxSettings
   baseRef?: string
@@ -176,6 +193,11 @@ export interface BuildStartLoopCommandInput {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   hostSessionId?: string
   sandbox?: LoopSandboxSettings
   baseRef?: string
@@ -194,6 +216,11 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     auditorModel: input.auditorModel,
     executionVariant: input.executionVariant,
     auditorVariant: input.auditorVariant,
+    executionAgent: input.executionAgent,
+    auditorAgent: input.auditorAgent,
+    postActionAgent: input.postActionAgent,
+    postActionModel: input.postActionModel,
+    postActionVariant: input.postActionVariant,
     hostSessionId: input.hostSessionId,
     sandbox: input.sandbox,
     baseRef: input.baseRef,
@@ -210,6 +237,11 @@ export interface RestartLoopCommand {
   auditorVariant?: string
   executionModel?: string
   executionVariant?: string
+  executionAgent?: string
+  auditorAgent?: string
+  postActionAgent?: string
+  postActionModel?: string
+  postActionVariant?: string
   expectedStartedAt?: string
   sandboxSecrets?: { secrets: SandboxSecretConfig[]; secretProvider?: string }
 }
@@ -486,6 +518,11 @@ export async function attachLoopToSession(
     auditorModel,
     executionVariant,
     auditorVariant,
+    executionAgent,
+    auditorAgent,
+    postActionAgent,
+    postActionModel,
+    postActionVariant,
     maxIterations,
     sandboxEnabled,
     sandboxContainer,
@@ -552,11 +589,18 @@ export async function attachLoopToSession(
       auditorModel,
       executionVariant,
       auditorVariant,
+      executionAgent,
+      auditorAgent,
+      postActionAgent,
+      postActionModel,
+      postActionVariant,
       workspaceId,
       hostSessionId: input.hostSessionId,
       currentSectionIndex: 0,
       totalSections: 0,
     }
+
+    const executionAgentName = resolveLoopExecutionAgent(deps.config, state)
 
     deps.loop.service.setState(loopName, state)
     deps.loop.service.registerLoopSession(sessionId, loopName)
@@ -640,7 +684,7 @@ export async function attachLoopToSession(
       projectId: ctx.projectId,
       loopName,
       sessionId,
-      agent: 'code',
+      agent: executionAgentName,
       logger: deps.logger,
       primaryModel: loopModel,
       useInFlightGuard: false,
@@ -652,10 +696,11 @@ export async function attachLoopToSession(
             sessionID: sessionId,
             directory: sessionDir,
             parts: promptParts,
-            agent: 'code',
+            agent: executionAgentName,
           }
           if (workspaceId) promptParams.workspace = workspaceId
           if (model) promptParams.model = model
+          if (model && executionVariant) promptParams.variant = executionVariant
           await deps.client.session.promptAsync(promptParams)
           return {}
         } catch (err) {
@@ -756,7 +801,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sessionID: sessionId,
         directory: ctx.directory,
         parts: [{ type: 'text', text: planText }],
-        agent: 'code',
+        agent: normalizeAgentName(command.executionAgent) ?? 'code',
       }
       if (parsedModel) promptParams.model = parsedModel
       if (executionVariant) promptParams.variant = executionVariant
@@ -825,7 +870,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sessionID: command.targetSessionId,
         directory: ctx.directory,
         parts: [{ type: 'text', text: executeHerePrompt }],
-        agent: 'code',
+        agent: normalizeAgentName(command.executionAgent) ?? 'code',
       }
       if (parsedModel) promptParams.model = parsedModel
       if (executionVariant) promptParams.variant = executionVariant
@@ -928,6 +973,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     const resolvedExecutionVariant = command.executionVariant ?? deps.config.executionVariant
     const resolvedAuditorVariant = command.auditorVariant ?? deps.config.auditorVariant
+    const resolvedExecutionAgent = normalizeAgentName(command.executionAgent) ?? normalizeAgentName(deps.config.loop?.executionAgent)
+    const resolvedAuditorAgent = normalizeAgentName(command.auditorAgent) ?? normalizeAgentName(deps.config.loop?.auditorAgent)
+    const resolvedPostActionAgent = normalizeAgentName(command.postActionAgent) ?? normalizeAgentName(deps.config.loop?.postAction?.agent)
+    const resolvedPostActionModel = normalizeModelString(command.postActionModel) ?? normalizeModelString(deps.config.loop?.postAction?.model)
+    const resolvedPostActionVariant = command.postActionModel !== undefined
+      ? normalizeModelString(command.postActionVariant)
+      : (normalizeModelString(command.postActionVariant) ?? normalizeModelString(deps.config.loop?.postAction?.variant))
     
     const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
     
@@ -1091,6 +1143,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         auditorModel: resolvedAuditorModel,
         executionVariant: resolvedExecutionVariant,
         auditorVariant: resolvedAuditorVariant,
+        executionAgent: resolvedExecutionAgent,
+        auditorAgent: resolvedAuditorAgent,
+        postActionAgent: resolvedPostActionAgent,
+        postActionModel: resolvedPostActionModel,
+        postActionVariant: resolvedPostActionVariant,
         maxIterations,
         sandboxEnabled: sandboxEnabledForLoop,
         sandboxContainer: sandboxContainer ?? undefined,
@@ -1472,6 +1529,29 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         stoppedState.executionVariant = overrideExecutionVariant
       }
 
+      const overrideExecutionAgent = normalizeAgentName(command.executionAgent)
+      if (command.executionAgent !== undefined) {
+        stoppedState.executionAgent = overrideExecutionAgent
+      }
+      const overrideAuditorAgent = normalizeAgentName(command.auditorAgent)
+      if (command.auditorAgent !== undefined) {
+        stoppedState.auditorAgent = overrideAuditorAgent
+      }
+      const overridePostActionAgent = normalizeAgentName(command.postActionAgent)
+      if (command.postActionAgent !== undefined) {
+        stoppedState.postActionAgent = overridePostActionAgent
+      }
+      const overridePostActionModel = normalizeModelString(command.postActionModel)
+      if (command.postActionModel !== undefined) {
+        stoppedState.postActionModel = overridePostActionModel
+      }
+      const overridePostActionVariant = normalizeModelString(command.postActionVariant)
+      if (command.postActionVariant !== undefined) {
+        stoppedState.postActionVariant = overridePostActionVariant
+      } else if (command.postActionModel !== undefined) {
+        stoppedState.postActionVariant = undefined
+      }
+
       if (stoppedState.standbySessionId && stoppedState.standbySessionId !== previousSessionId) {
         const standbyPhase = standbyPhaseFor(stoppedState.phase)
         const standbyUsage = createUsageCapture({
@@ -1618,6 +1698,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         auditorModel: stoppedState.auditorModel,
         executionVariant: stoppedState.executionVariant,
         auditorVariant: stoppedState.auditorVariant,
+        executionAgent: stoppedState.executionAgent,
+        auditorAgent: stoppedState.auditorAgent,
+        postActionAgent: stoppedState.postActionAgent,
+        postActionModel: stoppedState.postActionModel,
+        postActionVariant: stoppedState.postActionVariant,
         workspaceId: stoppedState.workspaceId,
         hostSessionId: stoppedState.hostSessionId,
         currentSectionIndex: stoppedState.currentSectionIndex,
@@ -1627,7 +1712,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       let postActionCfg: ResolvedPostActionConfig | undefined
 
       if (stoppedState.phase === 'post_action') {
-        postActionCfg = resolvePostActionConfig(deps.config)
+        postActionCfg = resolvePostActionConfig(deps.config, newState)
         promptText = deps.loop.service.buildPostActionPrompt(newState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
       } else if (stoppedState.totalSections > 0) {
         const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
@@ -1670,6 +1755,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         auditorVariant: command.auditorVariant === undefined ? undefined : overrideAuditorVariant ?? null,
         executionModel: overrideExecutionModel,
         executionVariant: command.executionVariant === undefined ? undefined : overrideExecutionVariant ?? null,
+        executionAgent: command.executionAgent === undefined ? undefined : overrideExecutionAgent ?? null,
+        auditorAgent: command.auditorAgent === undefined ? undefined : overrideAuditorAgent ?? null,
+        postActionAgent: command.postActionAgent === undefined ? undefined : overridePostActionAgent ?? null,
+        postActionModel: command.postActionModel === undefined ? undefined : overridePostActionModel ?? null,
+        postActionVariant: command.postActionVariant !== undefined
+          ? (overridePostActionVariant ?? null)
+          : (command.postActionModel !== undefined ? null : undefined),
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
         sandboxSettings: newState.sandboxSettings ?? null,
@@ -1691,17 +1783,21 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         })
       }
 
+      const restartAgent = stoppedState.phase === 'post_action'
+        ? resolveLoopPostActionAgent(deps.config, newState)
+        : resolveLoopExecutionAgent(deps.config, newState)
+
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
         markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)
         const variant = stoppedState.phase === 'post_action'
-          ? (postActionCfg?.model && model === loopModel ? undefined : restartAuditorChoice.variant)
+          ? (postActionCfg?.model && model === loopModel ? postActionCfg.variant : restartAuditorChoice.variant)
           : stoppedState.executionVariant
         try {
           const promptParams: SessionPromptAsyncParams = {
             sessionID: effectiveSessionId,
             directory: stoppedState.worktreeDir,
             parts: [{ type: 'text', text: promptText }],
-            agent: 'code',
+            agent: restartAgent,
           }
           if (model) promptParams.model = model
           if (variant) promptParams.variant = variant
@@ -1720,7 +1816,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           projectId: ctx.projectId,
           loopName: stoppedState.loopName,
           sessionId: effectiveSessionId,
-          agent: 'code',
+          agent: restartAgent,
           logger: deps.logger,
           primaryModel: loopModel,
           fallbackModel: loopFallbackModel,

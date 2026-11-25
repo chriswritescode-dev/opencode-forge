@@ -1,11 +1,12 @@
 import type { AgentDefinition } from './types'
-import { buildCodeAgent } from './code'
+import { buildCodeAgent, buildCodeLoopAgent } from './code'
 import { buildArchitectAgent } from './architect'
 import { buildAuditorAgent, buildAuditorLoopAgent } from './auditor'
 import { buildMinionAgent } from './minion'
 
 export interface AgentDefinitionsByRole {
   code: AgentDefinition
+  'code-loop': AgentDefinition
   architect: AgentDefinition
   auditor: AgentDefinition
   'auditor-loop': AgentDefinition
@@ -18,6 +19,7 @@ export function buildAgents(
 ): AgentDefinitionsByRole {
   return {
     code: buildCodeAgent(promptsDir),
+    'code-loop': buildCodeLoopAgent(promptsDir),
     architect: buildArchitectAgent(promptsDir),
     auditor: buildAuditorAgent(promptsDir),
     'auditor-loop': buildAuditorLoopAgent(promptsDir),

@@ -1,4 +1,4 @@
-export type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'minion'
+export type AgentRole = 'code' | 'code-loop' | 'architect' | 'auditor' | 'auditor-loop' | 'minion'
 
 export type PermissionEffect = 'allow' | 'deny' | 'ask'
 

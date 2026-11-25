@@ -13,7 +13,8 @@ import {
 } from '../host/forge-rpc'
 import type { ExecutionContext, ForgeProjectClient } from './project-client'
 import { deriveExecutionPreferencesFromWorkspaces } from '../utils/tui-execution-preferences'
-import { providersFromProviderList, type LoopInfo, type WorkspaceForRecents } from '../utils/tui-models'
+import { providersFromProviderList, type AgentOption, type LoopInfo, type WorkspaceForRecents } from '../utils/tui-models'
+import { REPLACED_BUILTIN_AGENTS } from '../constants/loop'
 
 export interface V2ForgeProjectClientOptions {
   projectId: string
@@ -31,6 +32,11 @@ export function loopsToWorkspacesForRecents(projectId: string, loops: ReadonlyAr
         auditorModel: loop.auditorModel,
         executionVariant: loop.executionVariant,
         auditorVariant: loop.auditorVariant,
+        executionAgent: loop.executionAgent,
+        auditorAgent: loop.auditorAgent,
+        postActionAgent: loop.postActionAgent,
+        postActionModel: loop.postActionModel,
+        postActionVariant: loop.postActionVariant,
       },
     },
   }))
@@ -156,6 +162,26 @@ async function loadModels(context: Plugin.Context, directory: string): Promise<E
   }
 }
 
+async function loadAgents(context: Plugin.Context, directory: string): Promise<AgentOption[]> {
+  const agentApi = context.client.agent
+  const list = agentApi?.list
+  if (!list) return []
+  try {
+    const result = await list.call(agentApi, { location: { directory } })
+    return result.data
+      .filter(agent => agent.mode !== 'subagent' && !REPLACED_BUILTIN_AGENTS.includes(agent.id))
+      .map(agent => ({
+        id: agent.id,
+        name: agent.name,
+        description: agent.description,
+        mode: agent.mode,
+        hidden: agent.hidden,
+      }))
+  } catch {
+    return []
+  }
+}
+
 export function createV2ForgeProjectClient(context: Plugin.Context, options: V2ForgeProjectClientOptions): ForgeProjectClient {
   const { projectId, directory } = options
   const call = createForgeRpcCaller(context, () => directory)
@@ -175,6 +201,11 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
         if (req.auditorModel) input.auditorModel = req.auditorModel
         if (req.executionVariant) input.executionVariant = req.executionVariant
         if (req.auditorVariant) input.auditorVariant = req.auditorVariant
+        if (req.executionAgent) input.executionAgent = req.executionAgent
+        if (req.auditorAgent) input.auditorAgent = req.auditorAgent
+        if (req.postActionAgent) input.postActionAgent = req.postActionAgent
+        if (req.postActionModel) input.postActionModel = req.postActionModel
+        if (req.postActionVariant) input.postActionVariant = req.postActionVariant
         if (req.maxIterations !== undefined) input.maxIterations = req.maxIterations
         if (req.sandbox) input.sandbox = req.sandbox
         return call(
@@ -204,9 +235,10 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
     },
     async loadExecutionContext() {
       const { defaultModel, ...models } = await loadModels(context, directory)
-      const [loopsResult, loopDefaults] = await Promise.all([
+      const [loopsResult, loopDefaults, agents] = await Promise.all([
         call(async (rpc, location) => await rpc.loops({}, location), readForgeLoops),
         call(async (rpc, location) => await rpc.loopDefaults({}, location), readForgeLoopDefaults),
+        loadAgents(context, directory),
       ])
       const loops = 'error' in loopsResult ? [] : loopsResult.loops
       const workspaces = loopsToWorkspacesForRecents(projectId, loops)
@@ -217,15 +249,32 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
         workspaces,
         openCodeFavorites: [],
         openCodeDefault: defaultModel || undefined,
+        agents,
       }
       if (!('error' in loopDefaults)) executionContext.loopDefaults = loopDefaults
       return executionContext
     },
     async restartLoop(request) {
-      const { executionModel, executionVariant, force, expectedStartedAt, ...required } = request
+      const {
+        executionModel,
+        executionVariant,
+        executionAgent,
+        auditorAgent,
+        postActionAgent,
+        postActionModel,
+        postActionVariant,
+        force,
+        expectedStartedAt,
+        ...required
+      } = request
       const input: ForgeLoopRestartInput = { ...required }
       if (executionModel) input.executionModel = executionModel
-      if (executionVariant) input.executionVariant = executionVariant
+      if (executionVariant !== undefined) input.executionVariant = executionVariant
+      if (executionAgent !== undefined) input.executionAgent = executionAgent
+      if (auditorAgent !== undefined) input.auditorAgent = auditorAgent
+      if (postActionAgent !== undefined) input.postActionAgent = postActionAgent
+      if (postActionModel !== undefined) input.postActionModel = postActionModel
+      if (postActionVariant !== undefined) input.postActionVariant = postActionVariant
       if (force !== undefined) input.force = force
       if (expectedStartedAt) input.expectedStartedAt = expectedStartedAt
       const result = await call(

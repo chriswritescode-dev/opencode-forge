@@ -462,7 +462,7 @@ describe('Loop Section Audit Retry', () => {
       expect(after.iteration).toBe(40)
 
       const retryPrompts = calls.filter(
-        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop',
       )
       expect(retryPrompts.length).toBeGreaterThan(0)
       const retryPromptText = (retryPrompts[retryPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
@@ -524,7 +524,7 @@ describe('Loop Section Audit Retry', () => {
       expect(after.iteration).toBe(5)
 
       const retryPrompts = calls.filter(
-        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop',
       )
       expect(retryPrompts.length).toBeGreaterThan(0)
       const retryPromptText = (retryPrompts[retryPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''

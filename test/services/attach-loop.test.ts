@@ -74,7 +74,7 @@ describe('attachLoopToSession', () => {
     // Verify code-agent prompt was sent
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
-    expect(promptCallArgs.agent).toBe('code')
+    expect(promptCallArgs.agent).toBe('code-loop')
     expect(promptCallArgs.sessionID).toBe('sess_abc')
 
     // Verify watchdog was started
@@ -338,7 +338,7 @@ describe('attachLoopToSession', () => {
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
-    expect(promptCallArgs.agent).toBe('code')
+    expect(promptCallArgs.agent).toBe('code-loop')
   })
 
   test('attach falls back to single-prompt mode when no forge-section markers present', async () => {
@@ -414,7 +414,7 @@ describe('attachLoopToSession', () => {
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
-    expect(promptCallArgs.agent).toBe('code')
+    expect(promptCallArgs.agent).toBe('code-loop')
     expect(promptCallArgs.parts[0].text).toContain(planText)
     expect((promptCallArgs.parts[0].text as string).match(/## Required: coder handoff/g)).toHaveLength(1)
   })
@@ -445,7 +445,7 @@ describe('attachLoopToSession', () => {
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
-    expect(promptCallArgs.agent).toBe('code')
+    expect(promptCallArgs.agent).toBe('code-loop')
     expect(promptCallArgs.sessionID).toBe('sess_nodecomp')
 
     const state = (deps.loop.service as any).getActiveState('nodecomp-loop')
@@ -523,6 +523,41 @@ describe('attachLoopToSession', () => {
     expect(row).not.toBeNull()
     expect(row!.executionVariant).toBe('thinking-max')
     expect(row!.auditorVariant).toBe('audit-high')
+  })
+
+  test('attachLoopToSession uses a custom execution agent and sends the initial execution variant', async () => {
+    const { deps, promptAsyncMock } = setupAttach()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_custom_agent',
+        workspaceId: 'ws_custom_agent',
+        worktreeDir: '/tmp/wt/custom-agent',
+        loopName: 'custom-agent-loop',
+        displayName: 'Custom Agent Loop',
+        executionName: 'custom-agent-loop',
+        executionModel: 'prov/exec',
+        executionVariant: 'high',
+        executionAgent: 'custom-coder',
+        maxIterations: 10,
+        sandboxEnabled: false,
+        planText: '# Custom Agent Plan\n\nDo things.',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    const state = (deps.loop.service as any).getActiveState('custom-agent-loop')
+    expect(state!.executionAgent).toBe('custom-coder')
+
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0] as Record<string, unknown>
+    expect(promptCallArgs.agent).toBe('custom-coder')
+    expect(promptCallArgs.model).toEqual({ providerID: 'prov', modelID: 'exec' })
+    expect(promptCallArgs.variant).toBe('high')
   })
 
   test('a loop cancelled during the code-graph snapshot sends no prompt and starts no watchdog', async () => {

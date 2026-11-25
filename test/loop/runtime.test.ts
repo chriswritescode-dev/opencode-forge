@@ -171,7 +171,7 @@ describe('Loop Runtime', () => {
       const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
       expect(auditorCalls.length).toBe(0)
 
-      const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
       expect(codeCalls.length).toBe(1)
       const nudgeText = ((codeCalls[0].params as any)?.parts as Array<{ text: string }>)
         .map(part => part.text)
@@ -421,7 +421,7 @@ describe('post-action phase', () => {
     expect(afterState!.sessionId).not.toBe(state.sessionId)
 
     // Assert a code prompt was sent containing the skill name
-    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
     expect(codeCalls.length).toBeGreaterThan(0)
     // The last code prompt should be the post-action prompt
     const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
@@ -560,7 +560,7 @@ describe('post-action phase', () => {
 
     function codePrompts(calls: RecordedCall[]): string[] {
       return calls
-        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
         .map(c => (c.params as any)?.parts?.[0]?.text ?? '')
     }
 
@@ -860,7 +860,7 @@ describe('post-action phase', () => {
     expect(afterState!.sessionId).not.toBe(state.sessionId)
 
     // Assert a code prompt was sent containing the configured prompt text
-    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
     expect(codeCalls.length).toBeGreaterThan(0)
     const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
     const promptText = lastCodePrompt?.parts?.[0]?.text ?? ''
@@ -1079,7 +1079,7 @@ describe('post-action phase', () => {
 
     expect(loopService.getActiveState(state.loopName)?.phase).toBe('coding')
     const codingNudges = calls.filter(c => c.method === 'session.promptAsync'
-      && (c.params as any)?.agent === 'code'
+      && (c.params as any)?.agent === 'code-loop'
       && (c.params as any)?.sessionID === coderSessionId
       && String((c.params as any)?.parts?.[0]?.text ?? '').includes('You ended your turn without calling `loop-handoff`'))
     expect(codingNudges).toHaveLength(3)
@@ -1333,7 +1333,7 @@ describe('post-action phase', () => {
     expect(afterState!.phase).toBe('post_action')
 
     // The post-action prompt should be sent with the configured model, not the auditor model.
-    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
     const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
     expect(lastCodePrompt?.model).toEqual({ providerID: 'custom', modelID: 'post-model' })
   })
@@ -1374,9 +1374,375 @@ describe('post-action phase', () => {
       properties: { status: { type: 'idle' }, sessionID: state.sessionId },
     })
 
-    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
     const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
     expect(lastCodePrompt?.model).toEqual({ providerID: 'state', modelID: 'auditor-model' })
+  })
+})
+
+describe('loop role agent dispatch', () => {
+  test('defaults coding nudges to code-loop', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'No handoff yet.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({ client })
+
+    const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop').length).toBeGreaterThan(0)
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')).toHaveLength(0)
+  })
+
+  test('defaults audit prompts to auditor-loop', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation complete.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({ client })
+
+    const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+    loopService.setState(state.loopName, state)
+
+    await recordCoderHandoff(loop, state.sessionId)
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop').length).toBeGreaterThan(0)
+  })
+
+  test('uses a configured executionAgent for coding nudges', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'No handoff yet.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          executionAgent: 'custom-code',
+          auditorAgent: 'custom-auditor',
+        },
+      },
+    })
+
+    const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'custom-code').length).toBeGreaterThan(0)
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')).toHaveLength(0)
+  })
+
+  test('uses a configured auditorAgent for audit prompts', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation complete.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          executionAgent: 'custom-code',
+          auditorAgent: 'custom-auditor',
+        },
+      },
+    })
+
+    const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+    loopService.setState(state.loopName, state)
+
+    await recordCoderHandoff(loop, state.sessionId)
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'custom-auditor').length).toBeGreaterThan(0)
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')).toHaveLength(0)
+  })
+
+  test('a per-loop executionAgent overrides the configured agent', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'No handoff yet.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          executionAgent: 'custom-code',
+          auditorAgent: 'custom-auditor',
+        },
+      },
+    })
+
+    const state = makeLoopState({
+      phase: 'coding',
+      totalSections: 0,
+      auditCount: 0,
+      executionAgent: 'state-code',
+      auditorAgent: 'state-auditor',
+    })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'state-code').length).toBeGreaterThan(0)
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'custom-code')).toHaveLength(0)
+  })
+
+  test('a per-loop auditorAgent overrides the configured agent', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation complete.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          executionAgent: 'custom-code',
+          auditorAgent: 'custom-auditor',
+        },
+      },
+    })
+
+    const state = makeLoopState({
+      phase: 'coding',
+      totalSections: 0,
+      auditCount: 0,
+      executionAgent: 'state-code',
+      auditorAgent: 'state-auditor',
+    })
+    loopService.setState(state.loopName, state)
+
+    await recordCoderHandoff(loop, state.sessionId)
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'state-auditor').length).toBeGreaterThan(0)
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'custom-auditor')).toHaveLength(0)
+  })
+
+  test('post-action sends with the configured agent, model and variant', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: {
+            enabled: true,
+            skill: 'pr-review',
+            agent: 'custom-post',
+            model: 'custom/post-model',
+            variant: 'post-variant',
+          },
+        },
+      },
+    })
+
+    const state = makeLoopState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+      auditorModel: 'state/auditor-model',
+      auditorVariant: 'auditor-variant',
+    })
+    loopService.setState(state.loopName, state)
+
+    await recordAuditorHandoff(loop, state.sessionId)
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    const postPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'custom-post')
+    expect(postPrompts.length).toBeGreaterThan(0)
+    const lastPost = postPrompts[postPrompts.length - 1]?.params as any
+    expect(lastPost.model).toEqual({ providerID: 'custom', modelID: 'post-model' })
+    expect(lastPost.variant).toBe('post-variant')
+  })
+
+  test('post-action without a configured model falls back to the auditor model and variant', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: { enabled: true, skill: 'pr-review' },
+        },
+      },
+    })
+
+    const state = makeLoopState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+      auditorModel: 'state/auditor-model',
+      auditorVariant: 'auditor-variant',
+    })
+    loopService.setState(state.loopName, state)
+
+    await recordAuditorHandoff(loop, state.sessionId)
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    const postPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
+    expect(postPrompts.length).toBeGreaterThan(0)
+    const lastPost = postPrompts[postPrompts.length - 1]?.params as any
+    expect(lastPost.model).toEqual({ providerID: 'state', modelID: 'auditor-model' })
+    expect(lastPost.variant).toBe('auditor-variant')
+  })
+
+  test('a per-loop post-action model overrides the configured model without inheriting its variant', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: {
+            enabled: true,
+            skill: 'pr-review',
+            model: 'config/post-model',
+            variant: 'config-variant',
+          },
+        },
+      },
+    })
+
+    const state = makeLoopState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+      postActionModel: 'loop/post-model',
+    })
+    loopService.setState(state.loopName, state)
+
+    await recordAuditorHandoff(loop, state.sessionId)
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    const postPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
+    expect(postPrompts.length).toBeGreaterThan(0)
+    const lastPost = postPrompts[postPrompts.length - 1]?.params as any
+    expect(lastPost.model).toEqual({ providerID: 'loop', modelID: 'post-model' })
+    expect(lastPost.variant).toBeUndefined()
+  })
+
+  test('a per-loop post-action agent overrides the configured agent', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = buildRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: { enabled: true, skill: 'pr-review', agent: 'custom-post' },
+        },
+      },
+    })
+
+    const state = makeLoopState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+      postActionAgent: 'loop-post',
+    })
+    loopService.setState(state.loopName, state)
+
+    await recordAuditorHandoff(loop, state.sessionId)
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'loop-post').length).toBeGreaterThan(0)
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'custom-post')).toHaveLength(0)
   })
 })
 
@@ -1537,7 +1903,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loop.startWatchdog(state.loopName)
       await vi.advanceTimersByTimeAsync(1500)
 
-      const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
       expect(codeCalls.length).toBeGreaterThanOrEqual(1)
       expect((codeCalls[0].params as any).parts?.[0]?.text).toBe('Continue where you left off.')
       expect((codeCalls[0].params as any).model).toEqual({ providerID: 'test', modelID: 'model' })
@@ -1607,7 +1973,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         vi.useRealTimers()
       }
 
-      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
       expect(codePrompts).toHaveLength(1)
       expect((codePrompts[0].params as any).parts?.[0]?.text).toBe(buildBackgroundStallPrompt('coder', jobs, 30))
       expect(calls.some(c => c.method === 'session.abort')).toBe(false)
@@ -1767,7 +2133,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation complete.' }] },
           ],
           promptAsync: async (params: any) => {
-            if (params?.agent === 'code' && params?.sessionID === 'loop-session-id') {
+            if (params?.agent === 'code-loop' && params?.sessionID === 'loop-session-id') {
               throw new Error('transient transport error')
             }
           },
@@ -2265,7 +2631,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       // After auditing phase processes dirty audit, it transitions to coding and sends code prompts
-      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
       expect(codePrompts.length).toBeGreaterThan(0)
       for (const call of codePrompts) {
         expect((call.params as any)?.variant).toBe('thinking-max')
@@ -2430,7 +2796,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       // Model-based attempts should have been made (and failed)
-      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
       expect(codePrompts.length).toBeGreaterThan(0)
       // After model fails, fallback without model should NOT send variant
       const fallbackPrompts = codePrompts.filter(c => !(c.params as any)?.variant)
@@ -4455,13 +4821,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
         vi.useRealTimers()
       }
 
-      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
       expect(codePrompts.length).toBe(1)
     })
   })
 
   describe('handoff turn-end gates', () => {
-    function promptTexts(calls: RecordedCall[], sessionID: string, agent?: 'code' | 'auditor-loop'): string[] {
+    function promptTexts(calls: RecordedCall[], sessionID: string, agent?: 'code-loop' | 'auditor-loop'): string[] {
       return calls
         .filter(c => c.method === 'session.promptAsync'
           && (c.params as any)?.sessionID === sessionID
@@ -4469,7 +4835,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         .map(c => ((c.params as any)?.parts as Array<{ text?: string }> | undefined)?.[0]?.text ?? '')
     }
 
-    function handoffNudgeTexts(calls: RecordedCall[], sessionID: string, agent?: 'code' | 'auditor-loop'): string[] {
+    function handoffNudgeTexts(calls: RecordedCall[], sessionID: string, agent?: 'code-loop' | 'auditor-loop'): string[] {
       return promptTexts(calls, sessionID, agent).filter(text => text.includes('You ended your turn without calling `loop-handoff`.'))
     }
 
@@ -4503,7 +4869,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
 
-      expect(handoffNudgeTexts(calls, state.sessionId, 'code')).toHaveLength(1)
+      expect(handoffNudgeTexts(calls, state.sessionId, 'code-loop')).toHaveLength(1)
       expect(loopService.getActiveState(state.loopName)!.active).toBe(true)
     })
 
@@ -4549,7 +4915,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       await runTurn('coder-1')
       await runTurn('coder-1')
-      expect(handoffNudgeTexts(calls, 'coder-1', 'code')).toHaveLength(2)
+      expect(handoffNudgeTexts(calls, 'coder-1', 'code-loop')).toHaveLength(2)
 
       // Rotate to the auditor at the same iteration and hand the coder back as the
       // standby, so the audit-failure recovery reuses that same session and iteration.
@@ -4569,7 +4935,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       for (let turn = 0; turn < 3; turn++) await runTurn('coder-1')
       expect(loopService.getActiveState(state.loopName)!.phase).toBe('coding')
-      expect(handoffNudgeTexts(calls, 'coder-1', 'code')).toHaveLength(5)
+      expect(handoffNudgeTexts(calls, 'coder-1', 'code-loop')).toHaveLength(5)
 
       await runTurn('coder-1')
 
@@ -4716,7 +5082,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
               { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'turn reply' }] },
             ],
             promptAsync: async (params: any) => {
-              if (params?.agent === 'code') throw new Error('send failed')
+              if (params?.agent === 'code-loop') throw new Error('send failed')
             },
           },
         })
@@ -4727,14 +5093,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
         loopService.registerLoopSession('coder-1', state.loopName)
 
         await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: 'coder-1' } })
-        const attemptsAfterNudge = promptTexts(calls, 'coder-1', 'code').length
+        const attemptsAfterNudge = promptTexts(calls, 'coder-1', 'code-loop').length
         expect(attemptsAfterNudge).toBeGreaterThan(0)
 
         loopService.replaceSession(state.loopName, { newSessionId: 'audit-1', phase: 'auditing' })
         loopService.registerLoopSession('audit-1', state.loopName)
         await vi.advanceTimersByTimeAsync(2500)
 
-        expect(promptTexts(calls, 'coder-1', 'code')).toHaveLength(attemptsAfterNudge)
+        expect(promptTexts(calls, 'coder-1', 'code-loop')).toHaveLength(attemptsAfterNudge)
       } finally {
         vi.useRealTimers()
       }
@@ -4852,7 +5218,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     function codePrompts(calls: RecordedCall[]): string[] {
       return calls
-        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code-loop')
         .map(c => (c.params as any)?.parts?.[0]?.text ?? '')
     }
 

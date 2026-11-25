@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { generateUniqueName } from '../../src/loop/name-uniqueness'
 import { createForgeExecutionService } from '../../src/services/execution'
-import type { Logger } from '../../src/types'
+import type { Logger, PluginConfig } from '../../src/types'
 import { buildLoopPermissionRuleset, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS } from '../../src/constants/loop'
 import type { LoopService } from '../../src/loop/service'
 import { createTestDb } from '../helpers/test-db'
@@ -1250,5 +1250,177 @@ describe('handleStartLoop section graph validation', () => {
     ])
     expect(rows[0].status).toBe('in_progress')
     expect(h.loopService.getActiveState(result.data.loopName)!.totalSections).toBe(4)
+  })
+})
+
+describe('handleStartLoop loop agents and post-action overrides', () => {
+  const PROJECT_ID = 'test-project'
+
+  async function buildService(config: PluginConfig = {}) {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const promptAsync = vi.fn(async () => {})
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({ id: 'ws_agents', directory: '/tmp/wt/agents', branch: 'opencode/agents' }),
+        warp: async () => {},
+      },
+      session: {
+        create: async () => ({ id: 'sess_agents' }),
+        get: async () => ({}),
+        promptAsync,
+      },
+    })
+    const built = buildExecutionDeps(testDb.db, {
+      client,
+      gitService: mockGitService,
+      config: {
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        ...config,
+        loop: { enabled: true, ...(config.loop ?? {}) },
+      },
+      loop: {
+        generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(built.loopService, baseName, isTaken),
+      },
+    })
+    const service = createForgeExecutionService(built.deps)
+    return { ...built, service, promptAsync }
+  }
+
+  test('defaults to the built-in loop agents and sends the configured execution variant on the initial prompt', async () => {
+    const h = await buildService({ executionVariant: 'high' })
+
+    const result = await h.service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText: '# Agents Plan\n\nBody.' } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const state = h.loopService.getActiveState(result.data.loopName)!
+    expect(state.executionAgent).toBeUndefined()
+    expect(state.auditorAgent).toBeUndefined()
+    expect(state.postActionAgent).toBeUndefined()
+    expect(state.postActionModel).toBeUndefined()
+    expect(state.postActionVariant).toBeUndefined()
+
+    const promptCall = h.promptAsync.mock.calls[0][0] as { agent?: string; model?: unknown; variant?: string }
+    expect(promptCall.agent).toBe('code-loop')
+    expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'exec' })
+    expect(promptCall.variant).toBe('high')
+  })
+
+  test('stores explicit loop agent and post-action overrides and uses the custom execution agent', async () => {
+    const h = await buildService({ loop: { postAction: { variant: 'cfgvar' } } })
+
+    const result = await h.service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Custom Agents Plan\n\nBody.' },
+        executionAgent: 'my-coder',
+        auditorAgent: 'my-auditor',
+        postActionAgent: 'my-post',
+        postActionModel: 'prov/post',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const state = h.loopService.getActiveState(result.data.loopName)!
+    expect(state.executionAgent).toBe('my-coder')
+    expect(state.auditorAgent).toBe('my-auditor')
+    expect(state.postActionAgent).toBe('my-post')
+    expect(state.postActionModel).toBe('prov/post')
+    expect(state.postActionVariant).toBeUndefined()
+
+    expect((h.promptAsync.mock.calls[0][0] as { agent?: string }).agent).toBe('my-coder')
+  })
+
+  test('falls back to configured loop agents and post-action settings', async () => {
+    const h = await buildService({
+      loop: {
+        executionAgent: 'cfg-coder',
+        auditorAgent: 'cfg-auditor',
+        postAction: { agent: 'cfg-post', model: 'prov/cfgpost', variant: 'cfgvar' },
+      },
+    })
+
+    const result = await h.service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText: '# Config Agents Plan\n\nBody.' } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const state = h.loopService.getActiveState(result.data.loopName)!
+    expect(state.executionAgent).toBe('cfg-coder')
+    expect(state.auditorAgent).toBe('cfg-auditor')
+    expect(state.postActionAgent).toBe('cfg-post')
+    expect(state.postActionModel).toBe('prov/cfgpost')
+    expect(state.postActionVariant).toBe('cfgvar')
+
+    expect((h.promptAsync.mock.calls[0][0] as { agent?: string }).agent).toBe('cfg-coder')
+  })
+})
+
+describe('plan execution agent selection', () => {
+  const PROJECT_ID = 'test-project'
+
+  function buildService() {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const promptAsync = vi.fn(async () => {})
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'sess_plan' }),
+        get: async () => ({}),
+        promptAsync,
+      },
+    })
+    const { deps } = buildExecutionDeps(testDb.db, { client })
+    return { service: createForgeExecutionService(deps), promptAsync }
+  }
+
+  test('new-session defaults to the code agent and honors an explicit execution agent', async () => {
+    const { service, promptAsync } = buildService()
+    const source = { kind: 'inline' as const, planText: '# Plan\n\nBody.' }
+
+    const defaultResult = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'plan.execute.newSession', source, title: 'Default agent' },
+    )
+    expect(defaultResult.ok).toBe(true)
+    expect((promptAsync.mock.calls[0][0] as { agent?: string }).agent).toBe('code')
+
+    const customResult = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'plan.execute.newSession', source, title: 'Custom agent', executionAgent: ' my-coder ' },
+    )
+    expect(customResult.ok).toBe(true)
+    expect((promptAsync.mock.calls[1][0] as { agent?: string }).agent).toBe('my-coder')
+  })
+
+  test('execute-here defaults to the code agent and honors an explicit execution agent', async () => {
+    const { service, promptAsync } = buildService()
+    const source = { kind: 'inline' as const, planText: '# Plan\n\nBody.' }
+
+    const defaultResult = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'plan.execute.here', source, targetSessionId: 'ses_target' },
+    )
+    expect(defaultResult.ok).toBe(true)
+    expect((promptAsync.mock.calls[0][0] as { agent?: string }).agent).toBe('code')
+
+    const customResult = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'plan.execute.here', source, targetSessionId: 'ses_target', executionAgent: 'my-coder' },
+    )
+    expect(customResult.ok).toBe(true)
+    expect((promptAsync.mock.calls[1][0] as { agent?: string }).agent).toBe('my-coder')
   })
 })

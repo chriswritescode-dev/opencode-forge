@@ -1,7 +1,7 @@
 import type { Logger } from '../types'
 import { processShared, projectLoopKey } from '../utils/process-shared'
 
-export type PromptAgent = 'code' | 'auditor-loop'
+export type PromptAgent = string
 
 export class ConcurrentPromptError extends Error {
   readonly code = 'concurrent_prompt'

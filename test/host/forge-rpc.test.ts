@@ -216,6 +216,74 @@ describe('FORGE_RPC', () => {
       .toEqual({ error: 'Forge returned an invalid loop defaults' })
   })
 
+  test('executePlan and loopRestart accept agent overrides and loopDefaults declares agent and model defaults', () => {
+    const agentFields = [
+      'executionAgent',
+      'auditorAgent',
+      'postActionAgent',
+      'postActionModel',
+      'postActionVariant',
+    ] as const
+
+    const planProperties = FORGE_RPC.methods.executePlan.input.properties
+    const restartProperties = FORGE_RPC.methods.loopRestart.input.properties
+    const loopProperties = FORGE_RPC.methods.loops.output.properties.loops.items.properties
+    const detailProperties = FORGE_RPC.methods.loopDetail.output.properties.loop.properties
+    for (const field of agentFields) {
+      expect(planProperties[field]).toEqual({ type: 'string' })
+      expect(restartProperties[field]).toEqual({ type: 'string' })
+      expect(loopProperties[field]).toEqual({ type: 'string' })
+      expect(detailProperties[field]).toEqual({ type: 'string' })
+    }
+
+    const defaults = FORGE_RPC.methods.loopDefaults.output.properties
+    expect(defaults.agents).toEqual({
+      type: 'object',
+      properties: {
+        execution: { type: 'string' },
+        auditor: { type: 'string' },
+        postAction: { type: 'string' },
+      },
+      additionalProperties: false,
+    })
+    expect(defaults.models).toEqual({
+      type: 'object',
+      properties: {
+        execution: { type: 'string' },
+        executionVariant: { type: 'string' },
+        auditor: { type: 'string' },
+        auditorVariant: { type: 'string' },
+        postAction: { type: 'string' },
+        postActionVariant: { type: 'string' },
+      },
+      additionalProperties: false,
+    })
+  })
+
+  test('readForgeLoopDefaults carries agent and model defaults while older payloads still parse', () => {
+    const base = {
+      maxIterations: 10,
+      sandbox: {
+        available: true,
+        resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+        allowLan: true,
+      },
+    }
+    const agents = { execution: 'code-loop', auditor: 'auditor-loop', postAction: 'code-loop' }
+    const models = {
+      execution: 'anthropic/claude',
+      executionVariant: 'high',
+      auditor: 'openai/gpt',
+      auditorVariant: 'low',
+      postAction: 'anthropic/claude',
+      postActionVariant: 'medium',
+    }
+    expect(readForgeLoopDefaults({ ...base, agents, models })).toEqual({ ...base, agents, models })
+    expect(readForgeLoopDefaults({ ...base, models: { execution: 'anthropic/claude' } }))
+      .toEqual({ ...base, models: { execution: 'anthropic/claude' } })
+    expect(readForgeLoopDefaults(base)).toEqual(base)
+  })
+
   test('autoApproveState requires a session and autoApproveSet requires a session and enabled', () => {
     const stateInput = FORGE_RPC.methods.autoApproveState.input
     expect(stateInput.required).toEqual(['sessionId'])
@@ -406,6 +474,11 @@ describe('FORGE_RPC', () => {
       startedAt: 100,
       currentSectionIndex: 0,
       totalSections: 1,
+      executionAgent: 'code-loop',
+      auditorAgent: 'auditor-loop',
+      postActionAgent: 'code-loop',
+      postActionModel: 'anthropic/claude',
+      postActionVariant: 'high',
     }
     const detail = { loop, sections: [], findings: [], transitions: [], transitionsCapped: false, amendments: [] }
     expect(readForgeLoopDetail(detail)).toEqual(detail)
@@ -550,6 +623,15 @@ describe('FORGE_RPC', () => {
     expect(readForgeLoops({ loops })).toEqual({ loops })
     const loopWithBranch = { ...loops[0], branch: 'pm-61-export' }
     expect(readForgeLoops({ loops: [loopWithBranch] })).toEqual({ loops: [loopWithBranch] })
+    const loopWithAgents = {
+      ...loops[0],
+      executionAgent: 'code-loop',
+      auditorAgent: 'auditor-loop',
+      postActionAgent: 'code-loop',
+      postActionModel: 'anthropic/claude',
+      postActionVariant: 'high',
+    }
+    expect(readForgeLoops({ loops: [loopWithAgents] })).toEqual({ loops: [loopWithAgents] })
     expect(readForgeLoops({ loops: [{ name: 'loop-a', status: 'running', restartable: true }] }))
       .toEqual({ error: 'Forge returned an invalid loop list' })
     expect(readForgeLoops({ error: 'no db' })).toEqual({ error: 'no db' })

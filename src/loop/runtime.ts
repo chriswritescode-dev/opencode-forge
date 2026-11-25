@@ -14,7 +14,7 @@ import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { LoopAttemptsRepo } from '../storage/repos/loop-attempts-repo'
 import { activeLoopSessions, createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
-import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase, standbyPhaseFor } from '../utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase, standbyPhaseFor, resolveLoopExecutionAgent, resolveLoopAuditorAgent, resolveLoopPostActionAgent } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 import { canonicalizePath } from '../sandbox/path'
@@ -486,11 +486,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     const choice = role === 'auditor' ? resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger) : undefined
+    const isAuditor = role === 'auditor'
     await sendPromptWithRetryRecovery({
       loopName,
       sessionId: state.sessionId,
       promptText,
-      agent: role === 'auditor' ? 'auditor-loop' : 'code',
+      agent: isAuditor ? resolveLoopAuditorAgent(getConfig(), state) : resolveLoopExecutionAgent(getConfig(), state),
+      role: isAuditor ? 'auditor' : 'code',
       model: choice ? choice.model : resolveLoopModel(getConfig(), loopService, loopName),
       variant: choice ? choice.variant : state.executionVariant,
       errorContext,
@@ -885,17 +887,19 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function sendPostActionPrompt(loopName: string, sessionId: string, promptText: string) {
-    const cfg = resolvePostActionConfig(getConfig())
+    const state = loopService.getActiveState(loopName)
+    const cfg = resolvePostActionConfig(getConfig(), state)
     const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
     const configuredModel = cfg.model ? parseModelString(cfg.model) : undefined
     return sendPromptWithFallback({
       loopName,
       sessionId,
       promptText,
-      agent: 'code',
+      agent: resolveLoopPostActionAgent(getConfig(), state),
+      role: 'code',
       model: configuredModel ?? auditorChoice.model,
       fallbackModel: configuredModel ? auditorChoice.model : undefined,
-      variant: configuredModel ? undefined : auditorChoice.variant,
+      variant: configuredModel ? cfg.variant : auditorChoice.variant,
       fallbackVariant: configuredModel ? auditorChoice.variant : undefined,
     })
   }
@@ -964,7 +968,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopName,
       sessionId: activeSessionId,
       promptText: continuationPrompt,
-      agent: 'code',
+      agent: resolveLoopExecutionAgent(currentConfig, currentState),
+      role: 'code',
       model: loopModel,
       variant: currentState.executionVariant,
       errorContext,
@@ -1056,7 +1061,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopName,
       sessionId: standby.sessionId,
       promptText: followUpPrompt,
-      agent: 'code',
+      agent: resolveLoopExecutionAgent(getConfig(), currentState),
+      role: 'code',
       model: loopModel,
       variant: currentState.executionVariant,
       errorContext,
@@ -1134,7 +1140,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopName,
       sessionId: newSessionId,
       promptText: continuationPrompt,
-      agent: 'code',
+      agent: resolveLoopExecutionAgent(getConfig(), state),
+      role: 'code',
       model: loopModel,
       variant: state.executionVariant,
     })
@@ -1328,7 +1335,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopName,
       sessionId: state.sessionId,
       promptText,
-      agent: 'auditor-loop',
+      agent: resolveLoopAuditorAgent(getConfig(), state),
+      role: 'auditor',
       model: choice.model,
       variant: choice.variant,
     })
@@ -1463,7 +1471,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   interface PromptRetryOptions {
     loopName: string
     sessionId: string
-    agent: 'code' | 'auditor-loop'
+    agent: string
+    role?: 'code' | 'auditor'
     errorContext: string
     isRetryValid?: (fresh: LoopState) => boolean
     send?: (fresh: LoopState) => Promise<void>
@@ -1504,7 +1513,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   interface SendPromptWithRetryRecoveryOptions extends PromptRetryOptions {
     promptText: string
     model?: Parameters<typeof sendPromptWithFallback>[0]['model']
+    fallbackModel?: Parameters<typeof sendPromptWithFallback>[0]['fallbackModel']
     variant?: string
+    fallbackVariant?: string
     errorState: LoopState
     sendErrorContext?: string
     activityTag?: string
@@ -1519,8 +1530,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       sessionId: opts.sessionId,
       promptText: opts.promptText,
       agent: opts.agent,
+      role: opts.role,
       model: opts.model,
+      fallbackModel: opts.fallbackModel,
       variant: opts.variant,
+      fallbackVariant: opts.fallbackVariant,
     })
     if (error) {
       opts.onSendError?.()
@@ -1569,18 +1583,50 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         await abortForInternalResend(loopName, fresh.sessionId)
 
-        const isAuditor = isAuditorPhase(fresh.phase)
-        const choice = isAuditor ? resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger) : undefined
-        await sendPromptWithRetryRecovery({
-          loopName,
-          sessionId: fresh.sessionId,
-          promptText: 'Continue where you left off.',
-          agent: isAuditor ? 'auditor-loop' : 'code',
-          model: choice ? choice.model : resolveLoopModel(getConfig(), loopService, loopName),
-          variant: choice ? choice.variant : fresh.executionVariant,
-          errorContext: 'busy-stall continue nudge',
-          errorState: fresh,
-        })
+        const cfg = getConfig()
+        if (fresh.phase === 'post_action') {
+          const postCfg = resolvePostActionConfig(cfg, fresh)
+          const auditorChoice = resolveLoopAuditorChoice(cfg, loopService, loopName, logger)
+          const configuredModel = postCfg.model ? parseModelString(postCfg.model) : undefined
+          await sendPromptWithRetryRecovery({
+            loopName,
+            sessionId: fresh.sessionId,
+            promptText: 'Continue where you left off.',
+            agent: postCfg.agent,
+            role: 'code',
+            model: configuredModel ?? auditorChoice.model,
+            fallbackModel: configuredModel ? auditorChoice.model : undefined,
+            variant: configuredModel ? postCfg.variant : auditorChoice.variant,
+            fallbackVariant: configuredModel ? auditorChoice.variant : undefined,
+            errorContext: 'busy-stall continue nudge',
+            errorState: fresh,
+          })
+        } else if (isAuditorPhase(fresh.phase)) {
+          const choice = resolveLoopAuditorChoice(cfg, loopService, loopName, logger)
+          await sendPromptWithRetryRecovery({
+            loopName,
+            sessionId: fresh.sessionId,
+            promptText: 'Continue where you left off.',
+            agent: resolveLoopAuditorAgent(cfg, fresh),
+            role: 'auditor',
+            model: choice.model,
+            variant: choice.variant,
+            errorContext: 'busy-stall continue nudge',
+            errorState: fresh,
+          })
+        } else {
+          await sendPromptWithRetryRecovery({
+            loopName,
+            sessionId: fresh.sessionId,
+            promptText: 'Continue where you left off.',
+            agent: resolveLoopExecutionAgent(cfg, fresh),
+            role: 'code',
+            model: resolveLoopModel(cfg, loopService, loopName),
+            variant: fresh.executionVariant,
+            errorContext: 'busy-stall continue nudge',
+            errorState: fresh,
+          })
+        }
       } catch (err) {
         await handlePromptError(loopName, fresh, 'busy-stall continue nudge', err)
       }
@@ -1805,7 +1851,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopName,
       sessionId,
       promptText: buildPrompt(currentState),
-      agent: 'auditor-loop',
+      agent: resolveLoopAuditorAgent(getConfig(), currentState),
+      role: 'auditor',
       model: auditorChoice.model,
       variant: auditorChoice.variant,
     })
@@ -1824,6 +1871,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             prompt: buildPrompt(currentState),
             auditorModel: retryChoice.model,
             auditorVariant: retryChoice.variant,
+            agent: resolveLoopAuditorAgent(getConfig(), currentState),
           })
           if (retryResult.ok) {
             logger.log(`Loop: recovered audit prompt after workspace re-bind for ${loopName}`)
@@ -1836,7 +1884,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const retryFn = buildPromptRetryFn({
         loopName,
         sessionId,
-        agent: 'auditor-loop',
+        agent: resolveLoopAuditorAgent(getConfig(), currentState),
+        role: 'auditor',
         errorContext: 'failed to send audit prompt',
         send: async (fresh) => {
           const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
@@ -1847,6 +1896,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             prompt: buildPrompt(fresh),
             auditorModel: retryChoice.model,
             auditorVariant: retryChoice.variant,
+            agent: resolveLoopAuditorAgent(getConfig(), fresh),
           })
           if (!retryResult.ok) throw retryResult.error
         },
@@ -2037,7 +2087,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           loopName,
           sessionId: rotatedSessionId,
           promptText: continuationPrompt,
-          agent: 'code',
+          agent: resolveLoopExecutionAgent(getConfig(), currentState),
+          role: 'code',
           variant: currentState.executionVariant,
         })
         if (promptErr) {
