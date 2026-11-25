@@ -3,7 +3,7 @@ import type { ForgeClient } from '../client/port'
 import { publishToast } from '../utils/toast'
 
 import type { PlansRepo } from '../storage/repos/plans-repo'
-import type { LoopsRepo } from '../storage/repos/loops-repo'
+import type { LoopsRepo, LoopRow } from '../storage/repos/loops-repo'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanExecutionMetadata, createPlanExecutionSession } from '../utils/plan-execution'
@@ -335,7 +335,7 @@ export interface LoopCancelledResult {
 export interface LoopStatusView {
   loopName: string
   displayName: string
-  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  status: LoopRow['status']
   phase?: string
   iteration: number
   maxIterations: number
@@ -1247,6 +1247,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     const statusFromState = (state: import('../loop/state').LoopState): LoopStatusView['status'] => {
       if (state.active) return 'running'
+      if (state.status === 'paused') return 'paused'
       if (state.terminationReason) return terminationStatusFor(parseTerminationReasonString(state.terminationReason))
       return 'completed'
     }

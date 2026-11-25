@@ -425,7 +425,10 @@ describe('FORGE_RPC', () => {
     delete rowWithoutStatus.status
     expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ ...project, loops: [rowWithoutStatus] }] }))
       .toEqual({ error: 'Forge returned an invalid dashboard summary' })
-    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ ...project, loops: [{ ...loopRow, status: 'paused' }] }] }))
+    const pausedLoop = { ...loopRow, status: 'paused' }
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ ...project, loops: [pausedLoop] }] }))
+      .toEqual({ generatedAt: 1, projects: [{ ...project, loops: [pausedLoop] }] })
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ ...project, loops: [{ ...loopRow, status: 'unknown' }] }] }))
       .toEqual({ error: 'Forge returned an invalid dashboard summary' })
 
     const extended = {
@@ -677,6 +680,8 @@ describe('FORGE_RPC', () => {
       postActionVariant: 'high',
     }
     expect(readForgeLoops({ loops: [loopWithAgents] })).toEqual({ loops: [loopWithAgents] })
+    const pausedLoop = { ...loops[0], status: 'paused' }
+    expect(readForgeLoops({ loops: [pausedLoop] })).toEqual({ loops: [pausedLoop] })
     expect(readForgeLoops({ loops: [{ name: 'loop-a', status: 'running', restartable: true }] }))
       .toEqual({ error: 'Forge returned an invalid loop list' })
     expect(readForgeLoops({ error: 'no db' })).toEqual({ error: 'no db' })

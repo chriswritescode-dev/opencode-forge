@@ -32,6 +32,14 @@ describe('getRestartability', () => {
     expect(result.restartRequiresForce).toBe(false)
   })
 
+  it('restarts a paused loop without force when the worktree exists', () => {
+    const state = makeLoopState({ ...STATE_DEFAULTS, status: 'paused', terminationReason: undefined })
+    const result = getRestartability(state, { worktreeExists: () => true, branchExists: () => true })
+    expect(result.restartable).toBe(true)
+    expect(result.restartRequiresForce).toBe(false)
+    expect(result.restartBlockedReason).toBeUndefined()
+  })
+
   it('allows restart when the worktree dir is missing but the branch survives', () => {
     const state = makeLoopState({ ...STATE_DEFAULTS })
     const result = getRestartability(state, {

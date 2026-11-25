@@ -2224,3 +2224,76 @@ test('migration 161 is a no-op when applied twice', () => {
 
   db.close()
 })
+
+test('migration 162 accepts paused loops while keeping loop and child rows', () => {
+  const dbPath = createTempDb()
+  const before = new Database(dbPath)
+  applyMigrationsThrough(before, '161')
+
+  before.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, current_section_index, total_sections, standby_session_id, execution_agent)
+    VALUES ('proj-1', 'loop-paused', 'running', 'sess-1', 0, '/tmp/wt', 'forge/loop-paused', '/tmp/proj', 5, 2, 1, 0, 'coding', 1, 0, 0, 'sess-standby', 'code-loop')
+  `).run()
+  before.prepare(`
+    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result)
+    VALUES ('proj-1', 'loop-paused', 'audit result')
+  `).run()
+  before.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, title, content, created_at)
+    VALUES ('proj-1', 'loop-paused', 0, 'Section 1', 'section content', 1)
+  `).run()
+  before.prepare(`
+    INSERT INTO loop_transitions (project_id, loop_name, event_type, transition_kind, from_phase, to_phase, created_at)
+    VALUES ('proj-1', 'loop-paused', 'phase', 'automatic', 'coding', 'auditing', 1)
+  `).run()
+  before.prepare(`
+    INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, iteration, payload, status, created_at)
+    VALUES ('proj-1', 'loop-paused', 'sess-1', 'coder', 'coding', 1, '{}', 'pending', 1)
+  `).run()
+  before.close()
+
+  const db = openForgeDatabase(dbPath)
+
+  const loop = db.prepare(
+    "SELECT status, current_session_id, worktree_dir, standby_session_id, execution_agent FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-paused'",
+  ).get() as Record<string, string | number | null>
+  expect(loop).toEqual({
+    status: 'running',
+    current_session_id: 'sess-1',
+    worktree_dir: '/tmp/wt',
+    standby_session_id: 'sess-standby',
+    execution_agent: 'code-loop',
+  })
+
+  expect(db.prepare("SELECT last_audit_result FROM loop_large_fields WHERE loop_name = 'loop-paused'").get())
+    .toEqual({ last_audit_result: 'audit result' })
+  expect(db.prepare("SELECT content FROM section_plans WHERE loop_name = 'loop-paused'").get())
+    .toEqual({ content: 'section content' })
+  expect(db.prepare("SELECT to_phase FROM loop_transitions WHERE loop_name = 'loop-paused'").get())
+    .toEqual({ to_phase: 'auditing' })
+  expect(db.prepare("SELECT role FROM loop_handoffs WHERE loop_name = 'loop-paused'").get())
+    .toEqual({ role: 'coder' })
+
+  expect(() => {
+    db.prepare("UPDATE loops SET status = 'paused' WHERE project_id = 'proj-1' AND loop_name = 'loop-paused'").run()
+  }).not.toThrow()
+  expect(db.prepare("SELECT status FROM loops WHERE loop_name = 'loop-paused'").get()).toEqual({ status: 'paused' })
+
+  for (const name of ['idx_loops_status', 'idx_loops_session', 'idx_loops_completed_at', 'idx_loops_project_name']) {
+    expect(indexExists(db, name), name).toBe(true)
+  }
+
+  db.close()
+})
+
+test('migration 162 is a no-op on a paused-capable schema', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  expect(() => applySingleMigration(db, '162')).not.toThrow()
+
+  const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='loops'").all() as Array<{ name: string }>
+  expect(indexes.filter((i) => i.name === 'idx_loops_session').length).toBe(1)
+
+  db.close()
+})

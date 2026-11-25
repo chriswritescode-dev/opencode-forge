@@ -692,7 +692,7 @@ export function readForgeExecutePlanOutput<P>(payload: P): ForgeExecutePlanOutpu
   })
 }
 
-const LOOP_STATUS_SCHEMA = z.enum(['running', 'completed', 'cancelled', 'errored', 'stalled'])
+const LOOP_STATUS_SCHEMA = z.enum(['running', 'paused', 'completed', 'cancelled', 'errored', 'stalled'])
 const LOOP_PHASE_SCHEMA = z.enum(['coding', 'auditing', 'post_action'])
 
 const loopInfoSchema = z.looseObject({

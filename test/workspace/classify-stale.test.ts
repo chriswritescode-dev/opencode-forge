@@ -141,6 +141,22 @@ describe('classifyForgeWorkspace', () => {
     expect(result).toEqual({ action: 'keep', reason: 'running' })
   })
 
+  test('paused loop → keep/paused', () => {
+    const entry = {
+      id: 'ws1',
+      type: 'forge',
+      extra: {
+        loopName: 'test-loop',
+        projectDirectory,
+      },
+    }
+    const loopsRepo = createMockLoopsRepo({
+      get: vi.fn().mockReturnValue({ projectId, loopName: 'test-loop', status: 'paused' }),
+    })
+    const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory)
+    expect(result).toEqual({ action: 'keep', reason: 'paused' })
+  })
+
   test('completed loop → remove-fully/completed', () => {
     const entry = {
       id: 'ws1',

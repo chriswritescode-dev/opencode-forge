@@ -1078,3 +1078,68 @@ describe('LoopsRepo', () => {
     })
   })
 })
+
+describe('LoopsRepo paused status', () => {
+  let testDb: TestDb
+  let repo: ReturnType<typeof createLoopsRepo>
+
+  const pausedRow: LoopRow = {
+    projectId: 'paused-project',
+    loopName: 'paused-loop',
+    status: 'running',
+    currentSessionId: 'paused-session',
+    worktree: false,
+    worktreeDir: '/tmp/paused',
+    worktreeBranch: null,
+    projectDir: '/tmp/paused',
+    maxIterations: 5,
+    iteration: 1,
+    auditCount: 0,
+    errorCount: 0,
+    phase: 'coding',
+    executionModel: null,
+    auditorModel: null,
+    modelFailed: false,
+    sandbox: false,
+    sandboxContainer: null,
+    startedAt: Date.now(),
+    completedAt: null,
+    terminationReason: null,
+    completionSummary: null,
+    workspaceId: null,
+    hostSessionId: null,
+    currentSectionIndex: 0,
+    totalSections: 0,
+    executionVariant: null,
+    auditorVariant: null,
+    baseCommit: null,
+    standbySessionId: null,
+  }
+
+  beforeEach(() => {
+    testDb = createTestDb()
+    repo = createLoopsRepo(testDb.db)
+  })
+
+  afterEach(() => {
+    testDb.cleanup()
+  })
+
+  test('setStatus round-trips paused through get, listAll, and findPartial', () => {
+    repo.insert(pausedRow, { lastAuditResult: null })
+
+    repo.setStatus(pausedRow.projectId, pausedRow.loopName, 'paused')
+
+    expect(repo.get(pausedRow.projectId, pausedRow.loopName)!.status).toBe('paused')
+    expect(repo.listAll(pausedRow.projectId).map((row) => row.status)).toEqual(['paused'])
+    expect(repo.findPartial(pausedRow.projectId, pausedRow.loopName).match!.status).toBe('paused')
+  })
+
+  test('getBySessionId does not resolve a paused loop', () => {
+    repo.insert(pausedRow, { lastAuditResult: null })
+
+    repo.setStatus(pausedRow.projectId, pausedRow.loopName, 'paused')
+
+    expect(repo.getBySessionId(pausedRow.projectId, pausedRow.currentSessionId)).toBeNull()
+  })
+})

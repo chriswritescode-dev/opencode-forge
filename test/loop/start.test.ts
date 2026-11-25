@@ -181,6 +181,17 @@ describe('Loop Runtime start()', () => {
       expect(active.length).toBeGreaterThanOrEqual(1)
       expect(active.find(s => s.loopName === state.loopName)).toBeDefined()
     })
+
+    test('a paused loop is listed as recent but not active', () => {
+      const { loop } = buildRuntime()
+      const state = makeLoopState(START_STATE_DEFAULTS)
+
+      loop.start({ state })
+      loopService.setStatus(state.loopName, 'paused')
+
+      expect(loopService.listActive().some(s => s.loopName === state.loopName)).toBe(false)
+      expect(loopService.listRecent().find(s => s.loopName === state.loopName)?.status).toBe('paused')
+    })
   })
 
   describe('only the instance owning the worktree supervises a loop', () => {

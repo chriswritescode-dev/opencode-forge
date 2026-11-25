@@ -1,5 +1,6 @@
 import type { Logger, LoopConfig } from '../types'
 import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
+import { LOOP_STATUSES } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
@@ -103,7 +104,7 @@ export interface LoopService {
   setPostActionReport(name: string, text: string): void
   setSandboxContainer(name: string, containerName: string | null): void
   setStandbySessionId(name: string, sessionId: string | null): void
-  setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
+  setStatus(name: string, status: LoopRow['status']): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
@@ -371,7 +372,7 @@ export function createLoopService(
   }
 
   function listRecent(): LoopState[] {
-    const rows = loopsRepo.listByStatus(projectId, ['completed', 'cancelled', 'errored', 'stalled'])
+    const rows = loopsRepo.listByStatus(projectId, LOOP_STATUSES.filter((s) => s !== 'running'))
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
       return hydratePlanFromPlans(loopRowToState(row, large))

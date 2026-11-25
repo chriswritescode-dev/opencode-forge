@@ -1,9 +1,10 @@
 import { existsSync } from 'fs'
 import { parseTerminationReasonString } from '../loop'
+import type { LoopRow } from '../storage/repos/loops-repo'
 
 export interface RestartableLoopState {
   loopName: string
-  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  status: LoopRow['status']
   terminationReason?: string | null
   worktree?: boolean
   worktreeDir?: string
