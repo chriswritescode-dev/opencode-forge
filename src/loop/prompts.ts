@@ -52,6 +52,11 @@ export function buildHandoffNudgePrompt(role: LoopHandoffRole): string {
   return `You ended your turn without calling \`${tool}\`. Finish the work, then call it.`
 }
 
+export function buildLoopResumePrompt(role: LoopHandoffRole): string {
+  const tool = role === 'post_action' ? LOOP_COMPLETE_TOOL_NAME : LOOP_HANDOFF_TOOL_NAME
+  return `The loop was paused and has now resumed. Your previous turn was interrupted. Check where you left off, finish the work, then call \`${tool}\`.`
+}
+
 export function buildBackgroundStallPrompt(role: LoopHandoffRole, jobs: BackgroundJob[], elapsedMs: number): string {
   const tool = role === 'post_action' ? LOOP_COMPLETE_TOOL_NAME : LOOP_HANDOFF_TOOL_NAME
   const minutes = Math.max(1, Math.round(elapsedMs / 60000))
