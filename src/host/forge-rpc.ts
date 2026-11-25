@@ -1,6 +1,7 @@
 import type { Rpc } from '@opencode/plugin/rpc'
 import { z } from 'zod'
 import { FORGE_PLUGIN_ID } from '../constants/plugin'
+import type { SandboxBuildStage } from '../sandbox/template'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import {
   appliedStateSchema,
@@ -107,6 +108,23 @@ export interface ForgeLoopDefaults {
 }
 
 export type ForgeLoopDefaultsOutput = ForgeLoopDefaults | ForgeRpcError
+
+export type ForgeSandboxTemplateBuildPhase = 'idle' | 'running' | 'success' | 'error'
+
+export interface ForgeSandboxTemplateBuildStatus {
+  phase: ForgeSandboxTemplateBuildPhase
+  image: string
+  contextDir: string
+  stage?: SandboxBuildStage
+  step?: { current: number; total: number; description: string }
+  lastLine?: string
+  tail: string[]
+  elapsedMs?: number
+  failure?: string
+  contextExists?: boolean
+}
+
+export type ForgeSandboxTemplateBuildOutput = ForgeSandboxTemplateBuildStatus | ForgeRpcError
 
 export type ForgeAutoApproveState =
   | { enabled: boolean; ownerSessionId?: string; inherited: boolean }
@@ -303,6 +321,45 @@ const LOOP_DEFAULTS_OUTPUT = {
   additionalProperties: false,
 } as const
 
+const SANDBOX_TEMPLATE_BUILD_OUTPUT = {
+  type: 'object',
+  properties: {
+    phase: {
+      type: 'string',
+      enum: ['idle', 'running', 'success', 'error'],
+      description: 'Server-side build phase; idle when no build has started in this process.',
+    },
+    image: { type: 'string', description: 'Image tag the server builds and loads.' },
+    contextDir: { type: 'string', description: 'Docker build context directory on the server.' },
+    stage: {
+      type: 'string',
+      enum: ['build', 'save', 'load'],
+      description: 'Current build stage of the running build.',
+    },
+    step: {
+      type: 'object',
+      description: 'Latest Docker build step counter and its description.',
+      properties: {
+        current: { type: 'integer', description: 'Completed step count.' },
+        total: { type: 'integer', description: 'Total step count.' },
+        description: { type: 'string', description: 'Description of the current build step.' },
+      },
+      additionalProperties: false,
+    },
+    lastLine: { type: 'string', description: 'Latest progress line reported by the build.' },
+    tail: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Last 12 progress lines of the build.',
+    },
+    elapsedMs: { type: 'integer', description: 'Server-measured elapsed time in milliseconds.' },
+    failure: { type: 'string', description: 'Failure message when the build errored.' },
+    contextExists: { type: 'boolean', description: 'Whether the Docker build context directory exists on the server.' },
+    error: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
+
 export const FORGE_RPC = {
   id: FORGE_PLUGIN_ID,
   methods: {
@@ -343,6 +400,14 @@ export const FORGE_RPC = {
     loopDefaults: {
       input: EMPTY_INPUT,
       output: LOOP_DEFAULTS_OUTPUT,
+    },
+    sandboxTemplateBuildStart: {
+      input: EMPTY_INPUT,
+      output: SANDBOX_TEMPLATE_BUILD_OUTPUT,
+    },
+    sandboxTemplateBuildStatus: {
+      input: EMPTY_INPUT,
+      output: SANDBOX_TEMPLATE_BUILD_OUTPUT,
     },
     autoApproveState: {
       input: {
@@ -652,6 +717,30 @@ export function readForgeLoopDefaults<P>(payload: P): ForgeLoopDefaultsOutput {
       },
     }
     return defaults
+  })
+}
+
+const sandboxTemplateBuildStatusSchema = z.object({
+  phase: z.enum(['idle', 'running', 'success', 'error']),
+  image: z.string(),
+  contextDir: z.string(),
+  stage: z.enum(['build', 'save', 'load']).optional().catch(undefined),
+  step: z.object({
+    current: z.number(),
+    total: z.number(),
+    description: z.string(),
+  }).optional().catch(undefined),
+  lastLine: optionalStringFieldSchema,
+  tail: z.array(z.string()),
+  elapsedMs: z.number().optional().catch(undefined),
+  failure: optionalStringFieldSchema,
+  contextExists: z.boolean().optional().catch(undefined),
+})
+
+export function readForgeSandboxTemplateBuildStatus<P>(payload: P): ForgeSandboxTemplateBuildOutput {
+  return readForgeRpcResult(payload, 'sandbox template build status', (value) => {
+    const parsed = sandboxTemplateBuildStatusSchema.safeParse(value)
+    return parsed.success ? parsed.data : null
   })
 }
 

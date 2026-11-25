@@ -1,6 +1,9 @@
-import { rmSync } from 'fs'
+import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
+import type { ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus } from '../host/forge-rpc'
 import type { Logger, PluginConfig } from '../types'
+import { errorMessage } from '../utils/error-message'
+import { processShared } from '../utils/process-shared'
 import { runCommand, type CommandResult, type RunCommandOpts } from './process'
 
 const BUILD_TIMEOUT = 600000
@@ -77,22 +80,117 @@ function dockerStageError(stage: 'build' | 'save', result: CommandResult): Error
 
 export const CONCURRENT_BUILD_MESSAGE = 'A sandbox template build is already running in this process.'
 
-let activeBuild: Promise<void> | null = null
+export const BUILD_TAIL_LIMIT = 12
 
-export function buildAndLoadSandboxTemplate(
-  contextDir: string,
-  tag: string,
-  deps: BuildTemplateDeps,
-): Promise<void> {
-  if (activeBuild) return Promise.reject(new Error(CONCURRENT_BUILD_MESSAGE))
-  const run = runBuildAndLoad(contextDir, tag, deps)
-  activeBuild = run
-  return run.finally(() => {
-    activeBuild = null
-  })
+export interface SandboxTemplateBuildRun {
+  phase: 'running' | 'success' | 'error'
+  image: string
+  contextDir: string
+  stage: SandboxBuildStage
+  step?: { current: number; total: number; description: string }
+  lastLine?: string
+  tail: string[]
+  startedAt: number
+  finishedAt?: number
+  failure?: string
 }
 
-async function runBuildAndLoad(
+export interface SandboxTemplateBuildTracker {
+  current: SandboxTemplateBuildRun | null
+}
+
+export interface StartSandboxTemplateBuildInput {
+  contextDir: string
+  tag: string
+  deps: BuildTemplateDeps
+  onSettled?: (result: { ok: true } | { ok: false; message: string }) => void
+}
+
+function buildTracker(): SandboxTemplateBuildTracker {
+  return processShared('sandbox-template-build.v1', () => ({ current: null }))
+}
+
+function appendBuildProgress(run: SandboxTemplateBuildRun, progress: SandboxBuildProgress): void {
+  run.tail.push(progress.line)
+  if (run.tail.length > BUILD_TAIL_LIMIT) run.tail.shift()
+  if (progress.stage !== run.stage) {
+    run.stage = progress.stage
+    run.step = undefined
+  }
+  if (progress.step && progress.step.current >= (run.step?.current ?? 0)) run.step = progress.step
+  run.lastLine = progress.line
+}
+
+function snapshotBuildRun(run: SandboxTemplateBuildRun): ForgeSandboxTemplateBuildStatus {
+  const status: ForgeSandboxTemplateBuildStatus = {
+    phase: run.phase,
+    image: run.image,
+    contextDir: run.contextDir,
+    stage: run.stage,
+    tail: [...run.tail],
+    elapsedMs: (run.finishedAt ?? Date.now()) - run.startedAt,
+    contextExists: existsSync(run.contextDir),
+  }
+  if (run.step) status.step = { ...run.step }
+  if (run.lastLine !== undefined) status.lastLine = run.lastLine
+  if (run.failure !== undefined) status.failure = run.failure
+  return status
+}
+
+export function startSandboxTemplateBuild(input: StartSandboxTemplateBuildInput): ForgeSandboxTemplateBuildOutput {
+  const tracker = buildTracker()
+  if (tracker.current?.phase === 'running') return { error: CONCURRENT_BUILD_MESSAGE }
+  if (!existsSync(input.contextDir)) {
+    return { error: `Sandbox build context is missing at ${input.contextDir}. Reinstall opencode-forge.` }
+  }
+  const run: SandboxTemplateBuildRun = {
+    phase: 'running',
+    image: input.tag,
+    contextDir: input.contextDir,
+    stage: 'build',
+    tail: [],
+    startedAt: Date.now(),
+  }
+  tracker.current = run
+  const callerProgress = input.deps.onProgress
+  const deps: BuildTemplateDeps = {
+    ...input.deps,
+    onProgress: (progress) => {
+      appendBuildProgress(run, progress)
+      callerProgress?.(progress)
+    },
+  }
+  const settle = (result: { ok: true } | { ok: false; message: string }): void => {
+    try {
+      input.onSettled?.(result)
+    } catch (err) {
+      deps.logger.error('Sandbox template build settle handler failed', err)
+    }
+  }
+  void (async () => {
+    try {
+      await buildAndLoadSandboxTemplate(input.contextDir, input.tag, deps)
+      run.phase = 'success'
+      run.finishedAt = Date.now()
+      settle({ ok: true })
+    } catch (err) {
+      const message = errorMessage(err)
+      run.phase = 'error'
+      run.failure = message
+      run.finishedAt = Date.now()
+      settle({ ok: false, message })
+    }
+  })()
+  return snapshotBuildRun(run)
+}
+
+export function readSandboxTemplateBuildStatus(input: { contextDir: string; tag: string }): ForgeSandboxTemplateBuildStatus {
+  const run = buildTracker().current
+  if (!run) return { phase: 'idle', image: input.tag, contextDir: input.contextDir, tail: [], contextExists: existsSync(input.contextDir) }
+  return snapshotBuildRun(run)
+}
+
+export async function buildAndLoadSandboxTemplate(
   contextDir: string,
   tag: string,
   deps: BuildTemplateDeps,

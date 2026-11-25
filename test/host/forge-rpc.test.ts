@@ -17,6 +17,7 @@ import {
   readForgePlanDeleteOutput,
   readForgeProjectChangedEvent,
   readForgeSessionPlan,
+  readForgeSandboxTemplateBuildStatus,
   readForgeDashboardSummary,
   readForgeVersion,
   readForgeWorktrees,
@@ -53,6 +54,8 @@ describe('FORGE_RPC', () => {
     expect(Object.keys(FORGE_RPC.methods)).toEqual([
       'executePlan',
       'loopDefaults',
+      'sandboxTemplateBuildStart',
+      'sandboxTemplateBuildStatus',
       'autoApproveState',
       'autoApproveSet',
       'loops',
@@ -214,6 +217,48 @@ describe('FORGE_RPC', () => {
     })).toEqual({ error: 'Forge returned an invalid loop defaults' })
     expect(readForgeLoopDefaults({ maxIterations: 1.5, sandbox: defaults.sandbox }))
       .toEqual({ error: 'Forge returned an invalid loop defaults' })
+  })
+
+  test('sandbox template build methods share an empty-input status output', () => {
+    const start = FORGE_RPC.methods.sandboxTemplateBuildStart
+    const status = FORGE_RPC.methods.sandboxTemplateBuildStatus
+    expect(start.input).toEqual({ type: 'object', properties: {}, additionalProperties: false })
+    expect(status.input).toEqual(start.input)
+    expect(status.output).toBe(start.output)
+    expect(start.output.additionalProperties).toBe(false)
+    expect(start.output.properties.phase.enum).toEqual(['idle', 'running', 'success', 'error'])
+    expect(start.output.properties.stage.enum).toEqual(['build', 'save', 'load'])
+    expect(start.output.properties.tail).toEqual({ type: 'array', items: { type: 'string' }, description: 'Last 12 progress lines of the build.' })
+    expect(start.output.properties.contextExists).toEqual({
+      type: 'boolean',
+      description: 'Whether the Docker build context directory exists on the server.',
+    })
+  })
+
+  test('readForgeSandboxTemplateBuildStatus parses a full status, an idle status, and errors', () => {
+    const running = {
+      phase: 'running',
+      image: 'oc-forge-sandbox:latest',
+      contextDir: '/ctx',
+      stage: 'build',
+      step: { current: 2, total: 22, description: 'RUN pnpm install' },
+      lastLine: '#7 [ 2/22] RUN pnpm install',
+      tail: ['#6 [ 1/22] FROM ubuntu', '#7 [ 2/22] RUN pnpm install'],
+      elapsedMs: 1234,
+    }
+    expect(readForgeSandboxTemplateBuildStatus(running)).toEqual(running)
+
+    const idle = { phase: 'idle', image: 'oc-forge-sandbox:latest', contextDir: '/ctx', tail: [], contextExists: false }
+    expect(readForgeSandboxTemplateBuildStatus(idle)).toEqual(idle)
+
+    expect(readForgeSandboxTemplateBuildStatus({ ...running, contextExists: true })).toEqual({ ...running, contextExists: true })
+    expect(readForgeSandboxTemplateBuildStatus({ ...running, contextExists: false })).toEqual({ ...running, contextExists: false })
+    expect(readForgeSandboxTemplateBuildStatus({ phase: 'idle', image: 'oc-forge-sandbox:latest', contextDir: '/ctx', tail: [] }))
+      .toEqual({ phase: 'idle', image: 'oc-forge-sandbox:latest', contextDir: '/ctx', tail: [] })
+
+    expect(readForgeSandboxTemplateBuildStatus({ error: 'no docker' })).toEqual({ error: 'no docker' })
+    expect(readForgeSandboxTemplateBuildStatus({ phase: 'error', failure: 'boom' }))
+      .toEqual({ error: 'Forge returned an invalid sandbox template build status' })
   })
 
   test('autoApproveState requires a session and autoApproveSet requires a session and enabled', () => {

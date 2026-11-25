@@ -1,9 +1,6 @@
 import type { Plugin } from '@opencode/plugin/tui'
-import { existsSync } from 'fs'
 import { For, Show, createEffect, createMemo, createRoot, createSignal, onCleanup, type Accessor } from 'solid-js'
-import { isSandboxConfigEnabled } from '../sandbox/context'
-import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
-import { loadPluginConfig, resolveBundledContainerDir } from '../setup'
+import { loadPluginConfig } from '../setup'
 import {
   FORGE_RPC,
   readForgeAmendmentDiff,
@@ -18,6 +15,7 @@ import {
   readForgePlanDeleteOutput,
   readForgeProjectChangedEvent,
   readForgeProjectFindings,
+  readForgeSandboxTemplateBuildStatus,
   readForgeSessionPlan,
   readForgeVersion,
   readForgeWorktrees,
@@ -253,16 +251,6 @@ function ForgeLoopsSidebar(props: {
 export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const pluginConfig = loadPluginConfig()
   const opts = resolveTuiOptions(pluginConfig.tui, context.options)
-
-  const buildContextDir = resolveBundledContainerDir()
-  if (isSandboxConfigEnabled(pluginConfig) && !existsSync(buildContextDir)) {
-    context.ui.toast.show({
-      title: 'Sandbox build context missing',
-      message: `Sandboxing is enabled but the bundled build context is missing at ${buildContextDir}. Reinstall opencode-forge, then build the template: ${formatTemplateBuildCommands(buildContextDir, pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE, resolveTemplateBuildArgs(pluginConfig))}`,
-      variant: 'warning',
-      duration: 10_000,
-    })
-  }
 
   const lifecycle = new AbortController()
   const host = createV2TuiHost(context)
@@ -510,7 +498,16 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
             description: 'Build the sandbox template image and load it into msb',
             group: 'Forge',
             palette: true,
-            run: () => openSandboxBuildDialog(host, pluginConfig),
+            run: () => openSandboxBuildDialog(host, {
+              start: () => call(
+                async (rpc, location) => await rpc.sandboxTemplateBuildStart({}, location),
+                readForgeSandboxTemplateBuildStatus,
+              ),
+              readStatus: () => call(
+                async (rpc, location) => await rpc.sandboxTemplateBuildStatus({}, location),
+                readForgeSandboxTemplateBuildStatus,
+              ),
+            }),
           },
         ],
       }))
