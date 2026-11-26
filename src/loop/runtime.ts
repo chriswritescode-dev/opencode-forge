@@ -3012,6 +3012,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
       }
 
+      const role = handoffRoleForPhase(state.phase)
+      if (!role) {
+        return { kind: 'failed', message: `Loop "${name}" cannot resume: phase "${state.phase}" has no handoff role.` }
+      }
+
       if (state.sandbox && deps.sandboxManager) {
         try {
           await deps.sandboxManager.start(name, state.worktreeDir, undefined, state.sandboxSettings)
@@ -3034,10 +3039,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (!running) {
         return { kind: 'failed', message: `Loop "${name}" cannot resume: it is no longer running.` }
       }
-      const role = handoffRoleForPhase(running.phase)
-      if (!role) {
-        return { kind: 'failed', message: `Loop "${name}" cannot resume: phase "${running.phase}" has no handoff role.` }
-      }
 
       let lastMessageRole: string
       try {
@@ -3049,7 +3050,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const promptText = lastMessageRole === 'none'
         ? buildPhasePromptForCurrentState(running)
         : buildLoopResumePrompt(role)
-      await sendLoopTurnPrompt(name, running, role, promptText, 'resume prompt')
+      try {
+        await sendLoopTurnPrompt(name, running, role, promptText, 'resume prompt')
+      } catch (err) {
+        if (loopService.getActiveState(name)) loopService.setStatus(name, 'paused')
+        return { kind: 'failed', message: `Loop "${name}" cannot resume: ${err instanceof Error ? err.message : String(err)}` }
+      }
       if (!loopService.getActiveState(name)) {
         const ended = loopService.getAnyState(name)
         return { kind: 'failed', message: `Loop "${name}" ended while resuming (${ended?.status ?? 'removed'}).` }

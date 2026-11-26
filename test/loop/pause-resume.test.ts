@@ -330,6 +330,35 @@ describe('loop pause and resume', () => {
       expect(loopService.getActiveState(state.loopName)).toBeNull()
     })
 
+    test('returns failed and restores the paused status when sending the resume prompt throws unexpectedly', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [] },
+          ],
+        },
+      })
+      const { loop, loopService } = buildRuntime({ client })
+      const state = pausedAuditState(nextLoopName('resume-prompt-throws'))
+      loop.start({ state })
+      await loop.pause(state.loopName)
+
+      const sendLoopPromptModule = await import('../../src/loop/send-loop-prompt')
+      const sendSpy = vi.spyOn(sendLoopPromptModule, 'sendLoopPrompt').mockRejectedValueOnce(new Error('resume prompt exploded'))
+      try {
+        await expect(loop.resume(state.loopName)).resolves.toEqual({
+          kind: 'failed',
+          message: `Loop "${state.loopName}" cannot resume: resume prompt exploded`,
+        })
+      } finally {
+        sendSpy.mockRestore()
+      }
+
+      const after = loopService.getAnyState(state.loopName)!
+      expect(after.status).toBe('paused')
+      expect(after.active).toBe(false)
+    })
+
     test('returns unchanged for a running loop without sending a prompt', async () => {
       const { client, calls } = createFakeForgeClient()
       const { loop } = buildRuntime({ client })
