@@ -181,6 +181,8 @@ const sessionStatusPropertiesSchema = z.looseObject({
 
 const STATE_LOCKS_SHARED_KEY = 'loop-state-locks.v1'
 const INTERNAL_FALLBACK_ABORTS_SHARED_KEY = 'loop-internal-fallback-aborts.v1'
+const PAUSE_ABORTS_SHARED_KEY = 'loop-pause-aborts.v1'
+const PAUSE_ABORT_MARKER_TTL_MS = 10_000
 const PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY = 'loop-pending-code-graph-snapshots.v1'
 const CODE_GRAPH_HEARTBEAT_MS = 20_000
 const PAUSE_TRANSITION_WAIT_MS = 15_000
@@ -188,6 +190,7 @@ const PAUSE_TRANSITION_WAIT_MS = 15_000
 export function __resetLoopRuntimeSharedState(): void {
   processShared(STATE_LOCKS_SHARED_KEY, () => new Map()).clear()
   processShared(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map()).clear()
+  processShared(PAUSE_ABORTS_SHARED_KEY, () => new Map()).clear()
   processShared(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map()).clear()
 }
 
@@ -259,6 +262,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (outstanding === 1) internalFallbackAborts.delete(sessionId)
     else internalFallbackAborts.set(sessionId, outstanding - 1)
     return true
+  }
+
+  const pauseAborts = processShared(PAUSE_ABORTS_SHARED_KEY, () => new Map<string, number>())
+
+  function consumePauseAbort(sessionId: string): boolean {
+    const expiresAt = pauseAborts.get(sessionId)
+    if (expiresAt === undefined) return false
+    pauseAborts.delete(sessionId)
+    return Date.now() <= expiresAt
   }
 
   const coalescedLimitSessions = new Map<string, string>()
@@ -1288,9 +1300,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (ln === loopName) {
         sessionToLoop.delete(sid)
         internalFallbackAborts.delete(sid)
+        pauseAborts.delete(sid)
       }
     }
     internalFallbackAborts.delete(sessionId)
+    pauseAborts.delete(sessionId)
     sessionToLoop.delete(sessionId)
 
     const fallbackModel = getFallbackModelForSession(state, state.phase)
@@ -2535,6 +2549,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (isAbort) {
         const loopName = loopService.resolveLoopName(eventSessionId)
         if (!loopName) {
+          consumePauseAbort(eventSessionId)
           consumeInternalFallbackAbort(eventSessionId)
           return
         }
@@ -2545,7 +2560,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             logger.log(`Loop: ignoring aborted event for ${loopName}; worktree ${state.worktreeDir} is owned by another instance`)
             return
           }
-          if (consumeInternalFallbackAbort(eventSessionId)) {
+          if (consumeInternalFallbackAbort(eventSessionId) || consumePauseAbort(eventSessionId)) {
             logger.log(`Loop: consuming internal fallback abort for session ${eventSessionId}`)
             return
           }
@@ -2707,6 +2722,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (!isAwaitingBusyExpired(projectId, loopName)) {
         logger.debug(`[idle-gate] suppressing premature idle loop=${loopName} session=${sessionId} (no busy yet)`)
         consumeInternalFallbackAbort(sessionId)
+        consumePauseAbort(sessionId)
         return
       }
       logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName}, dispatching idle anyway`)
@@ -2727,6 +2743,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (!isAwaitingBusyExpired(projectId, loopName)) {
           logger.debug(`[idle-gate] suppressing queued premature idle loop=${loopName} session=${sessionId} (replacement prompt pending)`)
           consumeInternalFallbackAbort(sessionId)
+          consumePauseAbort(sessionId)
           return
         }
         logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName} after lock, dispatching idle anyway`)
@@ -2734,6 +2751,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
 
       internalFallbackAborts.delete(sessionId)
+      pauseAborts.delete(sessionId)
       if (coalescedLimitSessions.get(loopName) === sessionId) {
         coalescedLimitSessions.delete(loopName)
       }
@@ -2940,7 +2958,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         try {
           await client.session.abort({ sessionID: state.sessionId, directory: state.worktreeDir })
-          internalFallbackAborts.set(state.sessionId, (internalFallbackAborts.get(state.sessionId) ?? 0) + 1)
+          pauseAborts.set(state.sessionId, Date.now() + PAUSE_ABORT_MARKER_TTL_MS)
         } catch (err) {
           return { kind: 'failed', message: err instanceof Error ? err.message : String(err) }
         }

@@ -404,6 +404,33 @@ describe('loop pause and resume', () => {
       expect(after.terminationReason).toBe('user_aborted')
     })
 
+    test('expires the pause abort marker when no abort event arrives before resume', async () => {
+      vi.useFakeTimers()
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [] },
+          ],
+        },
+      })
+      const { loop, loopService } = buildRuntime({ client })
+      const state = makeLoopState({ loopName: nextLoopName('pause-abort-expiry'), worktree: false })
+      loop.start({ state })
+
+      await loop.pause(state.loopName)
+      await vi.advanceTimersByTimeAsync(15_000)
+      await loop.resume(state.loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'MessageAbortedError' } },
+      })
+
+      const after = loopService.getAnyState(state.loopName)!
+      expect(after.active).toBe(false)
+      expect(after.terminationReason).toBe('user_aborted')
+    })
+
     test('returns not_found for an unknown loop name', async () => {
       const { loop } = buildRuntime()
       await expect(loop.resume('no-such-loop')).resolves.toEqual({ kind: 'not_found' })

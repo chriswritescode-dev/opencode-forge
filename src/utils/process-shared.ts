@@ -14,6 +14,7 @@ export interface ForgeSharedRegistries {
   'prompt-in-flight.v2': Map<string, InFlightEntry>
   'loop-state-locks.v1': Map<string, Promise<unknown>>
   'loop-internal-fallback-aborts.v1': Map<string, number>
+  'loop-pause-aborts.v1': Map<string, number>
   'loop-pending-code-graph-snapshots.v1': Map<string, string>
   'session-sandbox-controllers.v1': Map<string, SharedSessionSandboxController>
   'tui-event-emitters.v1': Map<string, Set<ForgeTuiEventEmitter>>
