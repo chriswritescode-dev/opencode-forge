@@ -13,7 +13,7 @@ The loop system provides autonomous iterative development with automatic code au
 ### Restartability
 
 - **Any non-completed loop is restartable** via explicit restart when the worktree is available.
-- Restartable statuses: `running`, `cancelled`, `errored`, `stalled`.
+- Restartable statuses: `running`, `paused`, `cancelled`, `errored`, `stalled`.
 - **Completed loops are history-only** and cannot be restarted.
 - **A missing worktree blocks restart only when the scratch branch is gone too** — if the branch survives, restart recreates the worktree from it (`git worktree add <branch>`); when both are gone the work is unrecoverable.
 
@@ -29,8 +29,18 @@ The loop system provides autonomous iterative development with automatic code au
 
 - Stale workspace sweep is **teardown cleanup-only**, not boot-time recovery.
 - Sweep removes workspace registrations for non-running restartable loops (`cancelled`, `errored`, `stalled`) while preserving worktrees for manual restart.
+- Paused loops keep their workspace registration and worktree untouched, like running loops.
 - Completed loops are fully removed (registration + worktree).
-- Running loops are never touched by sweep.
+- Running and paused loops are never touched by sweep.
+
+### Pause and Resume
+
+- `paused` is a non-terminal loop status. Pausing a running loop aborts its current coder, auditor, or post-action session and any busy subagents, then clears this instance's retry timers, handoff deferral, watchdog, and prompt gates and marks the row `paused`. The worktree, branch, sandbox, current and standby sessions, pending handoff, iteration, phase, and section are all kept.
+- A pause requested while a phase transition waits on a code-graph snapshot or a launch's first prompt waits up to 15 seconds for that transition. If it is still in transition, the pause is refused as retryable and the loop stays running.
+- Resuming re-adopts the loop's sandbox — creating it when it is missing — restores the loop to the in-process registry, and prompts the same session to continue: the full phase prompt when the session has no messages, otherwise a short resume notice telling it to check where it left off and finish the turn. The watchdog restarts with the loop. A paused loop whose worktree no longer exists cannot resume; restart it instead.
+- A paused loop is ignored by stall detection, session-event handling, the completion TTL sweep, the stale-workspace sweep, and plugin shutdown, so it stays paused across an OpenCode restart.
+- A paused loop can still be cancelled, or restarted without `force` (a restart starts a fresh session, like restarting a cancelled or errored loop).
+- Pause and resume are exposed to TUI clients as the `loopPause` and `loopResume` `FORGE_RPC` methods, and `version` reports a `capabilities` list containing `loopPause` so callers can detect pause support.
 
 ## Loop Lifecycle
 

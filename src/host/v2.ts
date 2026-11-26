@@ -12,7 +12,7 @@ import { errorMessage } from '../utils/error-message'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
 import { createForgeAgentConfig, createForgeCore, type ForgeCore, type ForgeHostInput } from './forge-core'
-import { FORGE_EXECUTION_MODES, FORGE_RPC, toForgeRpcJson, type ForgeRpcError, type ForgeToastInput, type ForgeTuiEvent } from './forge-rpc'
+import { FORGE_EXECUTION_MODES, FORGE_RPC, FORGE_RPC_CAPABILITIES, toForgeRpcJson, type ForgeRpcError, type ForgeToastInput, type ForgeTuiEvent } from './forge-rpc'
 import { VERSION } from '../version'
 import {
   V2_EVENT_TYPES,
@@ -157,6 +157,8 @@ const hostSandboxSetRpcInputSchema = z.object({
   overrides: sandboxOverridesRpcSchema.optional(),
 })
 
+const loopNameRpcInputSchema = z.object({ loopName: z.string().min(1) }).strict()
+
 const loopRefRpcInputSchema = z.object({ projectId: z.string().min(1), loopName: z.string().min(1) })
 
 const projectRpcInputSchema = z.object({ projectId: z.string().min(1) })
@@ -239,11 +241,15 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
           active.tui.getSessionPlan(input.sessionId, input.projectId))),
         loopRestart: rpcHandler(loopRestartRpcInputSchema, async (input) => withCore((active) =>
           active.tui.restartLoop(input))),
+        loopPause: rpcHandler(loopNameRpcInputSchema, async (input) => withCore((active) =>
+          active.tui.pauseLoop(input))),
+        loopResume: rpcHandler(loopNameRpcInputSchema, async (input) => withCore((active) =>
+          active.tui.resumeLoop(input))),
         hostSandboxState: jsonOutput(() => withCore((active) => active.tui.getHostSandboxState())),
         hostSandboxSet: rpcHandler(hostSandboxSetRpcInputSchema, async (input) => withCore((active) =>
           active.tui.requestHostSandbox(input))),
         worktrees: jsonOutput(() => withCore((active) => active.tui.listWorktrees())),
-        version: jsonOutput(() => ({ version: VERSION })),
+        version: jsonOutput(() => ({ version: VERSION, capabilities: [...FORGE_RPC_CAPABILITIES] })),
         dashboardSummary: jsonOutput(() => withCore((active) => active.dashboard.getSummary())),
         loopDetail: rpcHandler(loopRefRpcInputSchema, async (input) => withCore((active) =>
           active.dashboard.getLoopDetail(input.projectId, input.loopName))),

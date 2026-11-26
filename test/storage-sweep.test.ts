@@ -146,3 +146,20 @@ test('sweepExpiredLoops does not delete plans from other projects with same loop
 
   db.close()
 })
+
+test('sweepExpiredLoops never deletes a paused loop', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  db.run(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, completed_at)
+    VALUES ('proj1', 'loop-paused', 'paused', 'sess1', 0, '/path', NULL, '/proj1', 10, 3, 1, 0, 'coding', ?, NULL)
+  `, [Date.now()])
+
+  const deleted = sweepExpiredLoops(db, 0)
+
+  expect(deleted).toBe(0)
+  expect(db.prepare("SELECT status FROM loops WHERE loop_name = 'loop-paused'").get()).toEqual({ status: 'paused' })
+
+  db.close()
+})

@@ -618,4 +618,13 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: '162',
+    description: "Extend loops status CHECK to include 'paused'",
+    apply: (db: Database) => {
+      const row = sqliteSqlRowSchema.nullish().parse(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get())
+      if (row?.sql?.includes("'paused'")) return
+      db.run(loadSql('162_add_loops_paused_status.sql'))
+    },
+  },
 ]

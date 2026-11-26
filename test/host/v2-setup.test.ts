@@ -10,7 +10,11 @@ import { processShared } from '../../src/utils/process-shared'
 import { VERSION } from '../../src/version'
 import { isPromptQueued, hasSuppressedIdle, recordSuppressedIdle, recordIdleBackgroundWork, hasPendingBackgroundWork, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { ForgeClient } from '../../src/client/port'
+import { closeDatabase, initializeDatabase } from '../../src/storage/database'
+import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
+import { resolveForgeDataDir } from '../../src/utils/opencode-paths'
 import { createFakeV2Context } from '../helpers/fake-v2-context'
+import { makeLoopRow } from '../helpers/dashboard-fixtures'
 import { useTempConfigHome } from '../helpers/temp-config'
 import pluginModule from '../../src/index'
 
@@ -369,7 +373,7 @@ describe('V2 server setup', () => {
       version: () => Promise<Record<string, unknown>>
     }
 
-    await expect(handlers.version()).resolves.toEqual({ version: VERSION })
+    await expect(handlers.version()).resolves.toEqual({ version: VERSION, capabilities: ['loopPause'] })
   })
 
   test('the loopDefaults RPC returns the core loop-setting defaults', async () => {
@@ -573,6 +577,48 @@ describe('V2 server setup', () => {
     const worktrees = await handlers.worktrees()
     expect(typeof worktrees.root).toBe('string')
     expect(worktrees.dirs).toEqual([])
+  })
+
+  test('the loopPause and loopResume RPCs validate their input and reach the core', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      loopPause: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+      loopResume: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+
+    expect(typeof handlers.loopPause).toBe('function')
+    expect(typeof handlers.loopResume).toBe('function')
+
+    await expect(handlers.loopPause({ loopName: 'missing-loop' }))
+      .resolves.toEqual({ error: 'No loop named "missing-loop".' })
+    await expect(handlers.loopResume({ loopName: 'missing-loop' }))
+      .resolves.toEqual({ error: 'No loop named "missing-loop".' })
+
+    await expect(handlers.loopPause({})).rejects.toThrow()
+    await expect(handlers.loopResume({ loopName: 'missing-loop', extra: true })).rejects.toThrow()
+  })
+
+  test('the loops RPC reports a paused loop', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      loops: () => Promise<{ loops: Array<{ name: string; status: string }> }>
+    }
+
+    await expect(handlers.loops()).resolves.toEqual({ loops: [] })
+
+    const db = initializeDatabase(resolveForgeDataDir())
+    cleanups.push(async () => { closeDatabase(db) })
+    createLoopsRepo(db).insert(
+      makeLoopRow({ projectId: 'proj_fake', loopName: 'loop-paused', status: 'paused' }),
+      { lastAuditResult: null },
+    )
+
+    const listed = await handlers.loops()
+    expect(listed.loops).toEqual([
+      expect.objectContaining({ name: 'loop-paused', status: 'paused' }),
+    ])
   })
 
   test('the executePlan and loopRestart RPCs accept sandbox secret definitions', async () => {

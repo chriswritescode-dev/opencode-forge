@@ -1,3 +1,4 @@
+import { existsSync } from 'fs'
 import type { ForgeClient, ForgeEvent, SessionPromptAsyncParams, SessionStatus } from '../client/port'
 import type { LoopChangeNotifier, LoopService } from './service'
 import { createLoopService, MAX_RETRIES } from './service'
@@ -5,7 +6,7 @@ import { generateUniqueName } from './name-uniqueness'
 import type { LoopState } from './state'
 import { transitionSectionIndex } from './state'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
-import type { LoopsRepo } from '../storage/repos/loops-repo'
+import type { LoopsRepo, LoopRow } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
@@ -54,7 +55,7 @@ import { resolvePostActionConfig } from './post-action-config'
 import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
 import { truncateAtWordBoundary } from '../utils/format'
-import { buildBackgroundStallPrompt, buildHandoffNudgePrompt } from './prompts'
+import { buildBackgroundStallPrompt, buildHandoffNudgePrompt, buildLoopResumePrompt } from './prompts'
 import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, parseHandoffWriteInput, type HandoffArgs, type LoopHandoffRecordFor, type LoopHandoffRole } from './handoff'
 import { z, type ZodError } from 'zod'
 
@@ -95,6 +96,21 @@ export interface StartLoopInput {
 
 export type HandoffRecordingResult = { ok: true; replaced: boolean } | { ok: false; error: string }
 
+export type LoopPauseOutcome =
+  | { kind: 'paused' }
+  | { kind: 'unchanged' }
+  | { kind: 'not_found' }
+  | { kind: 'ended'; status: LoopRow['status'] }
+  | { kind: 'in_transition' }
+  | { kind: 'failed'; message: string }
+
+export type LoopResumeOutcome =
+  | { kind: 'resumed'; sessionId: string }
+  | { kind: 'unchanged'; sessionId: string }
+  | { kind: 'not_found' }
+  | { kind: 'ended'; status: LoopRow['status'] }
+  | { kind: 'failed'; message: string }
+
 export interface HandoffRecordingInput {
   sessionId: string
   tool: LoopPhaseToolName
@@ -106,6 +122,8 @@ export interface Loop {
   tick(event: LoopEvent): Promise<void>
   start(input: StartLoopInput): void
   cancel(name: string): Promise<void>
+  pause(name: string): Promise<LoopPauseOutcome>
+  resume(name: string): Promise<LoopResumeOutcome>
   inspect(name: string): LoopState | null
   listActive(): LoopState[]
   listRecent(): LoopState[]
@@ -163,12 +181,16 @@ const sessionStatusPropertiesSchema = z.looseObject({
 
 const STATE_LOCKS_SHARED_KEY = 'loop-state-locks.v1'
 const INTERNAL_FALLBACK_ABORTS_SHARED_KEY = 'loop-internal-fallback-aborts.v1'
+const PAUSE_ABORTS_SHARED_KEY = 'loop-pause-aborts.v1'
+const PAUSE_ABORT_MARKER_TTL_MS = 10_000
 const PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY = 'loop-pending-code-graph-snapshots.v1'
 const CODE_GRAPH_HEARTBEAT_MS = 20_000
+const PAUSE_TRANSITION_WAIT_MS = 15_000
 
 export function __resetLoopRuntimeSharedState(): void {
   processShared(STATE_LOCKS_SHARED_KEY, () => new Map()).clear()
   processShared(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map()).clear()
+  processShared(PAUSE_ABORTS_SHARED_KEY, () => new Map()).clear()
   processShared(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map()).clear()
 }
 
@@ -240,6 +262,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (outstanding === 1) internalFallbackAborts.delete(sessionId)
     else internalFallbackAborts.set(sessionId, outstanding - 1)
     return true
+  }
+
+  const pauseAborts = processShared(PAUSE_ABORTS_SHARED_KEY, () => new Map<string, number>())
+
+  function consumePauseAbort(sessionId: string): boolean {
+    const expiresAt = pauseAborts.get(sessionId)
+    if (expiresAt === undefined) return false
+    pauseAborts.delete(sessionId)
+    return Date.now() <= expiresAt
   }
 
   const coalescedLimitSessions = new Map<string, string>()
@@ -1160,6 +1191,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return loopService.buildContinuationPrompt(state)
   }
 
+  function buildPhasePromptForCurrentState(state: LoopState): string {
+    if (state.phase === 'coding') return buildCodingPromptForCurrentState(state)
+    if (state.phase === 'auditing') return loopService.buildAuditPrompt(state)
+    const cfg = resolvePostActionConfig(getConfig())
+    return loopService.buildPostActionPrompt(state, { skill: cfg.skill, prompt: cfg.prompt })
+  }
+
   async function scheduleSessionDelete(input: {
     loopName: string
     sessionId: string
@@ -1209,8 +1247,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     terminatingLoops.add(loopName)
 
     try {
-    const current = loopService.getActiveState(loopName)
-    if (!current?.active) {
+    const current = loopService.getAnyState(loopName)
+    if (!current || (current.status !== 'running' && current.status !== 'paused')) {
       logger.debug(`Loop: terminateLoop called for already-terminated loop ${loopName}, skipping`)
       return
     }
@@ -1262,9 +1300,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (ln === loopName) {
         sessionToLoop.delete(sid)
         internalFallbackAborts.delete(sid)
+        pauseAborts.delete(sid)
       }
     }
     internalFallbackAborts.delete(sessionId)
+    pauseAborts.delete(sessionId)
     sessionToLoop.delete(sessionId)
 
     const fallbackModel = getFallbackModelForSession(state, state.phase)
@@ -1993,7 +2033,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'coder')
     if (!record) reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'coder')
     if (!record && !assistantErrorDetected) {
-      await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => buildCodingPromptForCurrentState(nudgeState))
+      await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => buildPhasePromptForCurrentState(nudgeState))
       return
     }
 
@@ -2234,13 +2274,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const nudgeState = currentState
     if (discardCleanSectionHandoffWithoutSummary(loopName, currentState)) {
-      await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
+      await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => buildPhasePromptForCurrentState(nudgeState))
       return
     }
     const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'auditor')
     if (!record) {
       reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'auditor')
-      await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
+      await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => buildPhasePromptForCurrentState(nudgeState))
       return
     }
     handoffNudges.delete(loopName)
@@ -2470,8 +2510,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'post_action')
     if (!record) {
       reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'post_action')
-      const cfg = resolvePostActionConfig(getConfig())
-      await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => loopService.buildPostActionPrompt(nudgeState, { skill: cfg.skill, prompt: cfg.prompt }))
+      await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => buildPhasePromptForCurrentState(nudgeState))
       return
     }
     handoffNudges.delete(loopName)
@@ -2509,15 +2548,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       if (isAbort) {
         const loopName = loopService.resolveLoopName(eventSessionId)
-        if (!loopName) return
+        if (!loopName) {
+          consumePauseAbort(eventSessionId)
+          consumeInternalFallbackAbort(eventSessionId)
+          return
+        }
         await withStateLock(loopName, async () => {
           const state = loopService.getActiveState(loopName)
-          if (!state?.active) return
+          if (!state?.active) {
+            consumePauseAbort(eventSessionId)
+            return
+          }
           if (!ownsLoopWorktree(state.worktreeDir)) {
             logger.log(`Loop: ignoring aborted event for ${loopName}; worktree ${state.worktreeDir} is owned by another instance`)
             return
           }
-          if (consumeInternalFallbackAbort(eventSessionId)) {
+          if (consumeInternalFallbackAbort(eventSessionId) || consumePauseAbort(eventSessionId)) {
             logger.log(`Loop: consuming internal fallback abort for session ${eventSessionId}`)
             return
           }
@@ -2706,6 +2752,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
 
       internalFallbackAborts.delete(sessionId)
+      pauseAborts.delete(sessionId)
       if (coalescedLimitSessions.get(loopName) === sessionId) {
         coalescedLimitSessions.delete(loopName)
       }
@@ -2824,8 +2871,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   async function terminateLoopByName(loopName: string, reason: TerminationReason): Promise<boolean> {
     return await withStateLock(loopName, async () => {
-      const state = loopService.getActiveState(loopName)
-      if (!state?.active) return false
+      const state = loopService.getAnyState(loopName)
+      if (!state || (state.status !== 'running' && state.status !== 'paused')) return false
       await terminateLoop(loopName, state, reason)
       return true
     })
@@ -2898,6 +2945,132 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   async function cancel(name: string): Promise<void> {
     await terminateLoopByName(name, { kind: 'user_aborted' })
+  }
+
+  async function pause(name: string): Promise<LoopPauseOutcome> {
+    const deadline = Date.now() + PAUSE_TRANSITION_WAIT_MS
+    for (;;) {
+      const outcome = await withStateLock(name, async (): Promise<LoopPauseOutcome> => {
+        const state = loopService.getAnyState(name)
+        if (!state) return { kind: 'not_found' }
+        if (state.status === 'paused') return { kind: 'unchanged' }
+        if (state.status !== 'running') return { kind: 'ended', status: state.status }
+        if (terminatingLoops.has(name) || pendingCodeGraphSnapshots.has(stateLockKey(name))) return { kind: 'in_transition' }
+
+        try {
+          await client.session.abort({ sessionID: state.sessionId, directory: state.worktreeDir })
+          pauseAborts.set(state.sessionId, Date.now() + PAUSE_ABORT_MARKER_TTL_MS)
+        } catch (err) {
+          return { kind: 'failed', message: err instanceof Error ? err.message : String(err) }
+        }
+
+        let childSessions: string[] = []
+        try {
+          childSessions = await findBusyChildSessions(state)
+        } catch (err) {
+          logger.log(`Loop: could not list child sessions while pausing ${name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        for (const childSessionId of childSessions) {
+          try {
+            await client.session.abort({ sessionID: childSessionId, directory: state.worktreeDir })
+          } catch (err) {
+            logger.log(`Loop: could not abort child session ${childSessionId} while pausing ${name}: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+
+        const retryTimeout = retryTimeouts.get(name)
+        if (retryTimeout) {
+          clearTimeout(retryTimeout)
+          retryTimeouts.delete(name)
+        }
+        clearHandoffDeferTimer(name)
+        coalescedLimitSessions.delete(name)
+        watchdog.stop(name)
+        clearPromptPending(projectId, name, logger)
+        clearPromptInFlight(projectId, name)
+
+        loopService.setStatus(name, 'paused')
+        logger.log(`Loop: paused loop=${name} session=${state.sessionId}`)
+        return { kind: 'paused' }
+      })
+      if (outcome.kind !== 'in_transition') return outcome
+      if (Date.now() >= deadline) return outcome
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+
+  async function resume(name: string): Promise<LoopResumeOutcome> {
+    return await withStateLock(name, async (): Promise<LoopResumeOutcome> => {
+      const state = loopService.getAnyState(name)
+      if (!state) return { kind: 'not_found' }
+      if (state.status === 'running') return { kind: 'unchanged', sessionId: state.sessionId }
+      if (state.status !== 'paused') return { kind: 'ended', status: state.status }
+
+      if (state.worktree && !existsSync(state.worktreeDir)) {
+        return {
+          kind: 'failed',
+          message: `Loop "${name}" cannot resume: its worktree ${state.worktreeDir} no longer exists. Restart the loop instead.`,
+        }
+      }
+
+      const role = handoffRoleForPhase(state.phase)
+      if (!role) {
+        return { kind: 'failed', message: `Loop "${name}" cannot resume: phase "${state.phase}" has no handoff role.` }
+      }
+
+      if (state.sandbox && deps.sandboxManager) {
+        try {
+          await deps.sandboxManager.start(name, state.worktreeDir, undefined, state.sandboxSettings)
+        } catch (err) {
+          return {
+            kind: 'failed',
+            message: `Loop "${name}" cannot resume: could not start its sandbox: ${err instanceof Error ? err.message : String(err)}`,
+          }
+        }
+      }
+
+      loopService.setStatus(name, 'running')
+      const wasRegistered = loopRegistry.has(projectId, name)
+      loopRegistry.add(projectId, name)
+      sessionToLoop.set(state.sessionId, name)
+      handoffNudges.delete(name)
+      clearPromptPending(projectId, name, logger)
+      clearPromptInFlight(projectId, name)
+
+      const running = loopService.getActiveState(name)
+      if (!running) {
+        return { kind: 'failed', message: `Loop "${name}" cannot resume: it is no longer running.` }
+      }
+
+      let lastMessageRole: string
+      try {
+        lastMessageRole = (await getLastAssistantInfo(running.sessionId, running.worktreeDir)).lastMessageRole
+      } catch {
+        lastMessageRole = 'unknown'
+      }
+
+      const promptText = lastMessageRole === 'none'
+        ? buildPhasePromptForCurrentState(running)
+        : buildLoopResumePrompt(role)
+      try {
+        await sendLoopTurnPrompt(name, running, role, promptText, 'resume prompt')
+      } catch (err) {
+        if (loopService.getActiveState(name)) {
+          clearPromptPending(projectId, name, logger)
+          clearPromptInFlight(projectId, name)
+          if (!wasRegistered) loopRegistry.remove(projectId, name)
+          loopService.setStatus(name, 'paused')
+        }
+        return { kind: 'failed', message: `Loop "${name}" cannot resume: ${err instanceof Error ? err.message : String(err)}` }
+      }
+      if (!loopService.getActiveState(name)) {
+        const ended = loopService.getAnyState(name)
+        return { kind: 'failed', message: `Loop "${name}" ended while resuming (${ended?.status ?? 'removed'}).` }
+      }
+      startWatchdog(name)
+      logger.log(`Loop: resumed loop=${name} session=${running.sessionId}`)
+      return { kind: 'resumed', sessionId: running.sessionId }
+    })
   }
 
   async function terminate(name: string, reason: TerminationReason): Promise<boolean> {
@@ -3013,6 +3186,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     tick,
     start,
     cancel,
+    pause,
+    resume,
     inspect,
     listActive,
     listRecent,

@@ -5,7 +5,7 @@ import { getForgeWorkspaceForgeLoop, getForgeWorkspaceLoopName, getForgeWorkspac
 const PENDING_ATTACH_GRACE_MS = 5 * 60 * 1000
 
 export type ClassifyAction =
-  | { action: 'keep'; reason: 'running' | 'pending-attach' | 'pending-start' | 'not-forge' | 'no-loop-name' | 'no-project-directory' | 'wrong-project' }
+  | { action: 'keep'; reason: 'running' | 'paused' | 'pending-attach' | 'pending-start' | 'not-forge' | 'no-loop-name' | 'no-project-directory' | 'wrong-project' }
   | { action: 'remove-registration-only'; reason: 'restartable'; loopName: string }
   | { action: 'remove-fully'; reason: 'completed' | 'missing-row'; loopName: string }
 
@@ -79,6 +79,10 @@ export function classifyForgeWorkspace(
 
   if (row.status === 'running') {
     return { action: 'keep', reason: 'running' }
+  }
+
+  if (row.status === 'paused') {
+    return { action: 'keep', reason: 'paused' }
   }
 
   if (row.status === 'completed') {

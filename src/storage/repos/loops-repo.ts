@@ -19,7 +19,8 @@ import {
   type LoopHandoffWriteInput,
 } from '../../loop/handoff'
 
-const loopStatusSchema = z.enum(['running', 'completed', 'cancelled', 'errored', 'stalled'])
+export const LOOP_STATUSES = ['running', 'paused', 'completed', 'cancelled', 'errored', 'stalled'] as const
+const loopStatusSchema = z.enum(LOOP_STATUSES)
 const loopPhaseSchema = z.enum(['coding', 'auditing', 'post_action'])
 
 const loopRowSchema = z.object({
@@ -103,7 +104,7 @@ const auditorFallbackIndexRowSchema = z.object({ auditor_fallback_index: z.numbe
 export interface LoopRow {
   projectId: string
   loopName: string
-  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  status: (typeof LOOP_STATUSES)[number]
   currentSessionId: string
   worktree: boolean
   worktreeDir: string
@@ -778,8 +779,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     listAll(projectId: string): LoopRow[] {
-      const allStatuses: LoopRow['status'][] = ['running', 'completed', 'cancelled', 'errored', 'stalled']
-      return this.listByStatus(projectId, allStatuses)
+      return this.listByStatus(projectId, [...LOOP_STATUSES])
     },
 
     listSidebarRows(projectId: string, limit: number): LoopSidebarRow[] {
@@ -948,7 +948,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       projectId: string,
       loopName: string,
       opts: {
-        status: Exclude<LoopRow['status'], 'running'>
+        status: Exclude<LoopRow['status'], 'running' | 'paused'>
         reason: string
         completedAt: number
         summary?: string
@@ -963,7 +963,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] } {
-      const all = this.listByStatus(projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
+      const all = this.listByStatus(projectId, [...LOOP_STATUSES])
       return findPartialMatch(name, all, (row: LoopRow) => [row.loopName, row.worktreeBranch ?? undefined])
     },
 

@@ -15,8 +15,11 @@ import {
   type ForgeHostSandboxSetOutput,
   type ForgeHostSandboxState,
   type ForgeHostSandboxStateOutput,
+  type ForgeLoopPauseOutput,
+  type ForgeLoopRefInput,
   type ForgeLoopRestartInput,
   type ForgeLoopRestartOutput,
+  type ForgeLoopResumeOutput,
   type ForgeLoopsOutput,
   type ForgeLoopSidebarOutput,
   type ForgeSessionPlanOutput,
@@ -31,6 +34,8 @@ export interface TuiRpcServiceDeps {
   plansRepo: PlansRepo
   sandboxPreferences: SessionSandboxPreferencesRepo
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
+  pauseLoop(request: ForgeLoopRefInput): Promise<ForgeLoopPauseOutput>
+  resumeLoop(request: ForgeLoopRefInput): Promise<ForgeLoopResumeOutput>
   onHostSandboxChanged?: () => void
   logger: Logger
 }
@@ -41,6 +46,8 @@ export interface TuiRpcService {
   listWorktrees(): ForgeWorktreesOutput
   getSessionPlan(sessionId: string, projectId?: string): ForgeSessionPlanOutput
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
+  pauseLoop(request: ForgeLoopRefInput): Promise<ForgeLoopPauseOutput>
+  resumeLoop(request: ForgeLoopRefInput): Promise<ForgeLoopResumeOutput>
   getHostSandboxState(): ForgeHostSandboxStateOutput
   requestHostSandbox(request: ForgeHostSandboxSetInput): ForgeHostSandboxSetOutput
 }
@@ -120,6 +127,24 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
         return await deps.restartLoop(request)
       } catch (err) {
         deps.logger.error('TUI loop restart failed', err)
+        return { error: errorMessage(err) }
+      }
+    },
+
+    async pauseLoop(request: ForgeLoopRefInput): Promise<ForgeLoopPauseOutput> {
+      try {
+        return await deps.pauseLoop(request)
+      } catch (err) {
+        deps.logger.error('TUI loop pause failed', err)
+        return { error: errorMessage(err) }
+      }
+    },
+
+    async resumeLoop(request: ForgeLoopRefInput): Promise<ForgeLoopResumeOutput> {
+      try {
+        return await deps.resumeLoop(request)
+      } catch (err) {
+        deps.logger.error('TUI loop resume failed', err)
         return { error: errorMessage(err) }
       }
     },

@@ -1,4 +1,5 @@
 import type { ProviderList } from '../client/port'
+import type { LoopRow } from '../storage/repos/loops-repo'
 import { z } from 'zod'
 
 export interface ModelVariantConfig {
@@ -88,7 +89,7 @@ export interface ModelSortOptions {
 
 export type LoopInfo = {
   name: string
-  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  status: LoopRow['status']
   phase: string
   iteration: number
   maxIterations: number

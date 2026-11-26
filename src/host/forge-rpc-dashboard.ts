@@ -22,6 +22,7 @@ function enumList<Union>() {
 
 const DASHBOARD_LOOP_STATUSES = enumList<LoopRow['status']>()([
   'running',
+  'paused',
   'completed',
   'cancelled',
   'errored',
