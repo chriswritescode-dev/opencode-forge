@@ -8,6 +8,7 @@ import {
   type SessionSandboxControllerState,
   type SessionSandboxDesiredState,
   withoutSandboxSession,
+  withPinnedSandboxSession,
 } from '../session-sandbox-state'
 import { runImmediateTransaction } from '../sqlite-open'
 
@@ -27,6 +28,7 @@ export interface SessionSandboxPreferencesRepo {
     projectId: string,
     build: (current: SessionSandboxDesiredState | null) => SessionSandboxDesiredState,
   ): SessionSandboxDesiredState
+  pinDesiredSessionDefault(projectId: string, sessionId: string, revision: string): SessionSandboxDesiredState | null
   moveDesiredSession(sessionId: string, toProjectId: string, revision: string): string[]
   getApplied(projectId: string): SessionSandboxAppliedState | null
   setApplied(projectId: string, state: SessionSandboxAppliedState): void
@@ -105,6 +107,15 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
     updateDesired(projectId, build) {
       return runImmediateTransaction(db, () => {
         const next = build(readDesired(projectId))
+        upsertStmt.run(projectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(next), now())
+        return next
+      })
+    },
+
+    pinDesiredSessionDefault(projectId, sessionId, revision) {
+      return runImmediateTransaction(db, () => {
+        const next = withPinnedSandboxSession(readDesired(projectId), sessionId, revision)
+        if (!next) return null
         upsertStmt.run(projectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(next), now())
         return next
       })

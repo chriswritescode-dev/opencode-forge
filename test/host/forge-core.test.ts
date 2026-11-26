@@ -290,6 +290,31 @@ describe('createForgeCore', () => {
     expect(desired?.revision).toBe('rev-seed')
   })
 
+  test('a session created with a workspace is not pinned', async () => {
+    const built = await buildCore({ sandbox: { hostSessions: false } })
+    seedHostSandboxDesired(built.projectId, {
+      version: 2,
+      revision: 'rev-seed',
+      sessions: {},
+      defaultEnabled: false,
+      requestedAt: 1,
+    })
+
+    await built.core.onEvent({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: createdSessionInfo(built.projectId, 'ses_workspace', { workspaceID: 'ws-loop' }),
+        },
+      },
+    })
+    await settleTuiEvents()
+
+    const desired = readHostSandboxDesired(built.projectId)
+    expect(desired?.sessions).toEqual({})
+    expect(desired?.revision).toBe('rev-seed')
+  })
+
   test('a child session is not pinned', async () => {
     const built = await buildCore({ sandbox: { hostSessions: false } })
     seedHostSandboxDesired(built.projectId, {

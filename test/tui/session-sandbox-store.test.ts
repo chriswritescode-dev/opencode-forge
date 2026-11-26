@@ -294,5 +294,23 @@ describe('session-sandbox-store', () => {
         hostSessionsDefault: false,
       })).toBe('enabled')
     })
+
+    test('shows the stored default without waiting for a sandbox no session wants yet', () => {
+      const pref: SessionSandboxPreference = {
+        desired: desired({ defaultEnabled: true, sessions: {} }),
+        applied: appliedState({ running: false, error: 'stale failure' }),
+        hostSessionsDefault: false,
+      }
+      expect(deriveSessionSandboxDisplayStatus(pref)).toBe('enabled')
+    })
+
+    test('shows disabled without a session when the stored default is off', () => {
+      const pref: SessionSandboxPreference = {
+        desired: desired({ defaultEnabled: false, sessions: { 'sess-1': true } }),
+        applied: appliedState({ running: true }),
+        hostSessionsDefault: true,
+      }
+      expect(deriveSessionSandboxDisplayStatus(pref)).toBe('disabled')
+    })
   })
 })

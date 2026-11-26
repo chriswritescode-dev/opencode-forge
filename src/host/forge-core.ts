@@ -59,7 +59,7 @@ import { createDashboardService, type DashboardService } from '../services/dashb
 import { processShared } from '../utils/process-shared'
 import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
 import { FORGE_EVENT_TYPES } from './v2-events'
-import { withoutSandboxSession, withPinnedSandboxSession } from '../storage/session-sandbox-state'
+import { withoutSandboxSession } from '../storage/session-sandbox-state'
 import { withWriteNotifications } from '../utils/write-notifications'
 import { errorMessage } from '../utils/error-message'
 
@@ -861,23 +861,12 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   }
 
   const pinHostSandboxSession = (info: Session | undefined): void => {
-    if (!info || !info.id || info.parentID) return
+    if (!info || !info.id || info.parentID || info.workspaceID) return
     if (info.projectID && info.projectID !== projectId) return
     try {
       if (isForgeWorktreeDir(dataDir, info.directory)) return
       if (loopsRepo.getBySessionId(projectId, info.id)) return
-      const revision = randomUUID()
-      if (!withPinnedSandboxSession(sandboxPreferences.getDesired(projectId), info.id, revision)) return
-      let pinned = false
-      sandboxPreferences.updateDesired(projectId, (current) => {
-        const next = withPinnedSandboxSession(current, info.id, revision)
-        if (next) {
-          pinned = true
-          return next
-        }
-        return current ?? { version: 2, revision: randomUUID(), sessions: {}, requestedAt: Date.now() }
-      })
-      if (!pinned) return
+      if (!sandboxPreferences.pinDesiredSessionDefault(projectId, info.id, randomUUID())) return
       emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId })
     } catch (err) {
       logger.log(`[sandbox] failed to pin the host sandbox default for session ${info.id}: ${errorMessage(err)}`)
