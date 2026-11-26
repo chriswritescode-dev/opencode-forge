@@ -2534,7 +2534,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       if (isAbort) {
         const loopName = loopService.resolveLoopName(eventSessionId)
-        if (!loopName) return
+        if (!loopName) {
+          consumeInternalFallbackAbort(eventSessionId)
+          return
+        }
         await withStateLock(loopName, async () => {
           const state = loopService.getActiveState(loopName)
           if (!state?.active) return
@@ -2937,17 +2940,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         try {
           await client.session.abort({ sessionID: state.sessionId, directory: state.worktreeDir })
+          internalFallbackAborts.set(state.sessionId, (internalFallbackAborts.get(state.sessionId) ?? 0) + 1)
         } catch (err) {
           return { kind: 'failed', message: err instanceof Error ? err.message : String(err) }
         }
 
+        let childSessions: string[] = []
         try {
-          const childSessions = await findBusyChildSessions(state)
-          for (const childSessionId of childSessions) {
-            await client.session.abort({ sessionID: childSessionId, directory: state.worktreeDir })
-          }
+          childSessions = await findBusyChildSessions(state)
         } catch (err) {
-          logger.log(`Loop: could not abort child sessions while pausing ${name}: ${err instanceof Error ? err.message : String(err)}`)
+          logger.log(`Loop: could not list child sessions while pausing ${name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        for (const childSessionId of childSessions) {
+          try {
+            await client.session.abort({ sessionID: childSessionId, directory: state.worktreeDir })
+          } catch (err) {
+            logger.log(`Loop: could not abort child session ${childSessionId} while pausing ${name}: ${err instanceof Error ? err.message : String(err)}`)
+          }
         }
 
         const retryTimeout = retryTimeouts.get(name)

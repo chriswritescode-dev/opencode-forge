@@ -198,6 +198,37 @@ describe('loop pause and resume', () => {
       await expect(loop.pause(state.loopName)).resolves.toEqual({ kind: 'failed', message: 'abort exploded' })
       expect(loopService.getAnyState(state.loopName)!.status).toBe('running')
     })
+
+    test('aborts every remaining busy child session when one child abort fails', async () => {
+      const state = makeLoopState({ loopName: nextLoopName('pause-child-abort'), worktree: false })
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          status: async () => ({
+            [state.sessionId]: { type: 'busy' },
+            'busy-child-one': { type: 'busy' },
+            'busy-child-two': { type: 'busy' },
+          }) as any,
+          abort: async (params: { sessionID: string }) => {
+            if (params.sessionID === 'busy-child-one') throw new Error('child abort exploded')
+          },
+        },
+      })
+      const { loop, loopService } = buildRuntime({
+        client,
+        getParentSessionId: async (sessionId) => (
+          sessionId === 'busy-child-one' || sessionId === 'busy-child-two' ? state.sessionId : null
+        ),
+      })
+      loop.start({ state })
+
+      await expect(loop.pause(state.loopName)).resolves.toEqual({ kind: 'paused' })
+
+      const aborted = calls
+        .filter(c => c.method === 'session.abort')
+        .map(c => (c.params as { sessionID: string }).sessionID)
+      expect(aborted).toEqual([state.sessionId, 'busy-child-one', 'busy-child-two'])
+      expect(loopService.getAnyState(state.loopName)!.status).toBe('paused')
+    })
   })
 
   describe('resume', () => {
@@ -307,6 +338,70 @@ describe('loop pause and resume', () => {
 
       await expect(loop.resume(state.loopName)).resolves.toEqual({ kind: 'unchanged', sessionId: state.sessionId })
       expect(calls.filter(c => c.method === 'session.promptAsync')).toHaveLength(0)
+    })
+
+    test('ignores the delayed abort of a pause that was resumed before the abort event arrived', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [] },
+          ],
+        },
+      })
+      const { loop, loopService } = buildRuntime({ client })
+      const state = makeLoopState({ loopName: nextLoopName('resume-before-abort'), worktree: false })
+      loop.start({ state })
+      await loop.pause(state.loopName)
+      await loop.resume(state.loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'MessageAbortedError' } },
+      })
+
+      const resumed = loopService.getAnyState(state.loopName)!
+      expect(resumed.status).toBe('running')
+      expect(resumed.active).toBe(true)
+      expect(resumed.terminationReason).toBeUndefined()
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'MessageAbortedError' } },
+      })
+
+      const after = loopService.getAnyState(state.loopName)!
+      expect(after.active).toBe(false)
+      expect(after.terminationReason).toBe('user_aborted')
+    })
+
+    test('does not leak the pause abort marker into a later genuine abort after resume', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [] },
+          ],
+        },
+      })
+      const { loop, loopService } = buildRuntime({ client })
+      const state = makeLoopState({ loopName: nextLoopName('pause-abort-marker'), worktree: false })
+      loop.start({ state })
+      await loop.pause(state.loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'MessageAbortedError' } },
+      })
+      expect(loopService.getAnyState(state.loopName)!.status).toBe('paused')
+
+      await loop.resume(state.loopName)
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'MessageAbortedError' } },
+      })
+
+      const after = loopService.getAnyState(state.loopName)!
+      expect(after.active).toBe(false)
+      expect(after.terminationReason).toBe('user_aborted')
     })
 
     test('returns not_found for an unknown loop name', async () => {
