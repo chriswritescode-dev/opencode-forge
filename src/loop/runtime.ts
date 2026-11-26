@@ -2725,7 +2725,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (!isAwaitingBusyExpired(projectId, loopName)) {
         logger.debug(`[idle-gate] suppressing premature idle loop=${loopName} session=${sessionId} (no busy yet)`)
         consumeInternalFallbackAbort(sessionId)
-        consumePauseAbort(sessionId)
         return
       }
       logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName}, dispatching idle anyway`)
@@ -2746,7 +2745,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (!isAwaitingBusyExpired(projectId, loopName)) {
           logger.debug(`[idle-gate] suppressing queued premature idle loop=${loopName} session=${sessionId} (replacement prompt pending)`)
           consumeInternalFallbackAbort(sessionId)
-          consumePauseAbort(sessionId)
           return
         }
         logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName} after lock, dispatching idle anyway`)
@@ -2956,8 +2954,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const state = loopService.getAnyState(name)
         if (!state) return { kind: 'not_found' }
         if (state.status === 'paused') return { kind: 'unchanged' }
-        if (state.status !== 'running' || terminatingLoops.has(name)) return { kind: 'ended', status: state.status }
-        if (pendingCodeGraphSnapshots.has(stateLockKey(name))) return { kind: 'in_transition' }
+        if (state.status !== 'running') return { kind: 'ended', status: state.status }
+        if (terminatingLoops.has(name) || pendingCodeGraphSnapshots.has(stateLockKey(name))) return { kind: 'in_transition' }
 
         try {
           await client.session.abort({ sessionID: state.sessionId, directory: state.worktreeDir })
