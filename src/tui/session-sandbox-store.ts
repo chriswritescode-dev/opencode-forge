@@ -1,4 +1,5 @@
 import { FORGE_HOST_SANDBOX_DISABLED_ERROR } from '../host/forge-rpc'
+import { isHostSandboxWanted, isSessionSandboxDefaultEnabled } from '../storage/session-sandbox-state'
 import type {
   SessionSandboxAppliedState,
   SessionSandboxControllerState,
@@ -62,11 +63,15 @@ export function deriveSessionSandboxDisplayStatus(
   sessionId?: string,
   getParentSessionId?: ParentSessionIdResolver,
 ): SessionSandboxDisplayStatus {
-  if (!pref || !sessionId) return 'disabled'
-  if (pref.activeLoopSandboxes && Object.hasOwn(pref.activeLoopSandboxes, sessionId)) {
+  if (!pref) return 'disabled'
+  if (sessionId && pref.activeLoopSandboxes && Object.hasOwn(pref.activeLoopSandboxes, sessionId)) {
     return pref.activeLoopSandboxes[sessionId] ? 'enabled' : 'disabled'
   }
-  if (!isSessionSandboxWanted(pref, sessionId, getParentSessionId)) return 'disabled'
+  const wanted = sessionId
+    ? isSessionSandboxWanted(pref, sessionId, getParentSessionId)
+    : isSessionSandboxDefaultEnabled(pref.desired, pref.hostSessionsDefault)
+  if (!wanted) return 'disabled'
+  if (!sessionId && !isHostSandboxWanted(pref.desired, pref.hostSessionsDefault)) return 'enabled'
   const controller = pref.controller
   if (controller && controller.revision === pref.desired?.revision) {
     if (controller.phase === 'loading') return 'loading'

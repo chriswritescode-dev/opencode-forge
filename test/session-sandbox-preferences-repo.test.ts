@@ -7,7 +7,7 @@ import {
   SESSION_SANDBOX_CONTROLLER_KEY,
 } from '../src/storage'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState } from '../src/storage'
-import { withoutSandboxSession } from '../src/storage/session-sandbox-state'
+import { withoutSandboxSession, withPinnedSandboxSession } from '../src/storage/session-sandbox-state'
 import { createTestDb } from './helpers/test-db'
 
 const PROJECT_A = 'project-a'
@@ -49,6 +49,44 @@ describe('withoutSandboxSession', () => {
   })
 })
 
+describe('withPinnedSandboxSession', () => {
+  test('returns null when no desired state exists', () => {
+    expect(withPinnedSandboxSession(null, 'sess-2', 'rev-2')).toBeNull()
+  })
+
+  test('pins the stored default with the new revision and preserves other entries and overrides', () => {
+    const desired = makeDesired({ sessions: { 'sess-1': true }, defaultEnabled: false, overrides: { allowLan: true } })
+    const before = Date.now()
+    const next = withPinnedSandboxSession(desired, 'sess-2', 'rev-2')
+
+    expect(next).toEqual({
+      version: 2,
+      revision: 'rev-2',
+      sessions: { 'sess-1': true, 'sess-2': false },
+      defaultEnabled: false,
+      requestedAt: expect.any(Number),
+      overrides: { allowLan: true },
+    })
+    expect(next?.requestedAt).toBeGreaterThanOrEqual(before)
+    expect(desired.sessions).toEqual({ 'sess-1': true })
+  })
+
+  test('returns null when no stored default exists', () => {
+    expect(withPinnedSandboxSession(makeDesired({ sessions: {} }), 'sess-2', 'rev-2')).toBeNull()
+  })
+
+  test('does not overwrite an existing session entry', () => {
+    expect(withPinnedSandboxSession(makeDesired({ sessions: { 'sess-1': true }, defaultEnabled: false }), 'sess-1', 'rev-2')).toBeNull()
+  })
+
+  test('pins a session id that only exists on the object prototype', () => {
+    const next = withPinnedSandboxSession(makeDesired({ sessions: {}, defaultEnabled: true }), 'toString', 'rev-2')
+
+    expect(Object.hasOwn(next?.sessions ?? {}, 'toString')).toBe(true)
+    expect(next?.sessions['toString']).toBe(true)
+  })
+})
+
 describe('SessionSandboxPreferencesRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createSessionSandboxPreferencesRepo>
@@ -70,7 +108,12 @@ describe('SessionSandboxPreferencesRepo', () => {
     })
 
     test('round-trips a full desired state', () => {
-      const state = makeDesired({ revision: 'abc', sessions: { 'sess-2': false, 'sess-3': true }, requestedAt: 999 })
+      const state = makeDesired({
+        revision: 'abc',
+        sessions: { 'sess-2': false, 'sess-3': true },
+        defaultEnabled: false,
+        requestedAt: 999,
+      })
       repo.setDesired(PROJECT_A, state)
       expect(repo.getDesired(PROJECT_A)).toEqual(state)
     })
@@ -396,6 +439,37 @@ describe('SessionSandboxPreferencesRepo', () => {
       repo.setApplied(PROJECT_A, applied)
       expect(repo.getDesired(PROJECT_A)).toBeNull()
       expect(repo.getApplied(PROJECT_A)).toEqual(applied)
+    })
+  })
+
+  describe('pinDesiredSessionDefault', () => {
+    test('pins the stored default without changing the revision', () => {
+      repo.setDesired(PROJECT_A, makeDesired({ revision: 'rev-1', sessions: {}, defaultEnabled: false }))
+
+      const next = repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1')
+
+      expect(next).toMatchObject({
+        revision: 'rev-1',
+        sessions: { 'sess-1': false },
+        defaultEnabled: false,
+      })
+      expect(repo.getDesired(PROJECT_A)).toEqual(next)
+    })
+
+    test('does not write when no stored default exists', () => {
+      const state = makeDesired({ revision: 'rev-1', sessions: {} })
+      repo.setDesired(PROJECT_A, state)
+
+      expect(repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1')).toBeNull()
+      expect(repo.getDesired(PROJECT_A)).toEqual(state)
+    })
+
+    test('does not write when the session already has an entry', () => {
+      const state = makeDesired({ revision: 'rev-1', sessions: { 'sess-1': true }, defaultEnabled: false })
+      repo.setDesired(PROJECT_A, state)
+
+      expect(repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1')).toBeNull()
+      expect(repo.getDesired(PROJECT_A)).toEqual(state)
     })
   })
 })

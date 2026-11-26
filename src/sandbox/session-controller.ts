@@ -434,7 +434,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     const failure = recordedFailure
     if (failure && desired && failure.revision === desired.revision) {
       throw new Error(
-        `Host sandbox unavailable: ${failure.error}. Toggle the sandbox off and on to retry, or set sandbox.hostSessions to false.`,
+        `Host sandbox unavailable: ${failure.error}. Toggle the sandbox off and on to retry, or toggle it off to run this session on the host.`,
       )
     }
 

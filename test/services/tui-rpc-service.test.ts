@@ -340,6 +340,23 @@ describe('createTuiRpcService', () => {
       })
     })
 
+    test('an enabled change stores the project default, an overrides-only change preserves it, and a later enabled change replaces it', () => {
+      const service = createService()
+      service.requestHostSandbox({ sessionId: 'session-1', enabled: false })
+      expect(sandboxPreferences.getDesired(PROJECT)?.defaultEnabled).toBe(false)
+
+      service.requestHostSandbox({ sessionId: 'session-2', overrides: { resources: { cpus: '8' } } })
+      expect(sandboxPreferences.getDesired(PROJECT)?.defaultEnabled).toBe(false)
+
+      service.requestHostSandbox({ sessionId: 'session-3', enabled: true })
+      expect(sandboxPreferences.getDesired(PROJECT)?.defaultEnabled).toBe(true)
+    })
+
+    test('an overrides-only change leaves an absent project default absent', () => {
+      createService().requestHostSandbox({ sessionId: 'session-1', overrides: { resources: { cpus: '8' } } })
+      expect(sandboxPreferences.getDesired(PROJECT)).not.toHaveProperty('defaultEnabled')
+    })
+
     test('keeps other sessions entries when one session opts out', () => {
       const service = createService()
       service.requestHostSandbox({ sessionId: 'session-1', enabled: true })

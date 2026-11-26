@@ -11,6 +11,7 @@ import {
   isSessionSandboxWanted,
   type SessionSandboxPreference,
 } from './session-sandbox-store'
+import { isSessionSandboxDefaultEnabled } from '../storage/session-sandbox-state'
 import { createRefetchCoordinator } from './refetch-coordinator'
 import { errorMessage } from '../utils/error-message'
 import type { SessionSandboxAppliedState } from '../storage/repos/session-sandbox-preferences-repo'
@@ -154,7 +155,7 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
   }
 
   interface HostSandboxRequest {
-    build(current: SessionSandboxPreference, sessionId: string): Omit<ForgeHostSandboxSetInput, 'sessionId'> | null
+    build(current: SessionSandboxPreference, sessionId: string, createdSession: boolean): Omit<ForgeHostSandboxSetInput, 'sessionId'> | null
     label: string
     timeoutMs: number
     success(applied: SessionSandboxAppliedState): string
@@ -200,7 +201,7 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
       sessionId = newSessionId
       createdSession = true
     }
-    const change = spec.build(current, sessionId)
+    const change = spec.build(current, sessionId, createdSession)
     if (!change) return
     let revision: string | null = null
     let pending: SandboxWaiter | null = null
@@ -244,8 +245,10 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
       timeoutMs: TOGGLE_ACK_TIMEOUT_MS,
       createSession: true,
       afterSet: (sessionId) => deps.openSession?.(sessionId),
-      build: (current, sessionId) => {
-        enabling = !isSessionSandboxWanted(current, sessionId, deps.getParentSessionId)
+      build: (current, sessionId, createdSession) => {
+        enabling = !(createdSession
+          ? isSessionSandboxDefaultEnabled(current.desired, current.hostSessionsDefault)
+          : isSessionSandboxWanted(current, sessionId, deps.getParentSessionId))
         return { enabled: enabling }
       },
       success: () => enabling

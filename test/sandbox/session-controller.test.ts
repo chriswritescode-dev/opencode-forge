@@ -232,6 +232,40 @@ describe('SessionSandboxController', () => {
     await controller.dispose()
   })
 
+  test('a stored default off does not stop the sandbox while the config default is on and an explicit opt-in runs it', async () => {
+    repo.setDesired(PROJECT, makeDesired({ defaultEnabled: false, sessions: { 'session-on': true } }))
+    const controller = createController({ hostSessionsDefault: true })
+    await controller.start()
+
+    expect(manager.ensureRunningCalls).toEqual([MANAGER_KEY])
+    expect(repo.getApplied(PROJECT)).toMatchObject({ revision: 'rev-1', running: true, error: null })
+    expect(await controller.resolveSandboxForSession('session-plain')).not.toBeNull()
+    expect(await controller.resolveSandboxForSession('session-on')).not.toBeNull()
+    await controller.dispose()
+  })
+
+  test('a stored default on does not run the sandbox while the config default is off', async () => {
+    repo.setDesired(PROJECT, makeDesired({ defaultEnabled: true }))
+    const controller = createController({ hostSessionsDefault: false })
+    await controller.start()
+
+    expect(manager.ensureRunningCalls).toEqual([])
+    expect(repo.getApplied(PROJECT)).toMatchObject({ revision: 'rev-1', running: false, error: null })
+    await expect(controller.resolveSandboxForSession('session-plain')).resolves.toBeNull()
+    await controller.dispose()
+  })
+
+  test('a pinned session entry opts out while other sessions follow the config default', async () => {
+    repo.setDesired(PROJECT, makeDesired({ defaultEnabled: false, sessions: { 'session-pinned': false } }))
+    const controller = createController({ hostSessionsDefault: true })
+    await controller.start()
+
+    expect(manager.ensureRunningCalls).toEqual([MANAGER_KEY])
+    await expect(controller.resolveSandboxForSession('session-pinned')).resolves.toBeNull()
+    expect(await controller.resolveSandboxForSession('session-plain')).not.toBeNull()
+    await controller.dispose()
+  })
+
   test('removing the last opt-in with default off stops the sandbox', async () => {
     repo.setDesired(PROJECT, makeDesired({ sessions: { 'session-in': true } }))
     const controller = createController({ hostSessionsDefault: false, pollIntervalMs: 10 })

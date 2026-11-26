@@ -24,6 +24,7 @@ describe('createHostSandboxToggle', () => {
     readError?: string
     setError?: string
     sessions?: Record<string, boolean>
+    defaultEnabled?: boolean
     parentSessionId?: string
     createSession?: () => Promise<string | null>
     openSession?: (sessionId: string) => void
@@ -37,8 +38,14 @@ describe('createHostSandboxToggle', () => {
     let state: ForgeHostSandboxState = {
       configEnabled: options.configEnabled ?? true,
       hostSessionsDefault: options.hostSessionsDefault ?? true,
-      desired: options.sessions
-        ? { version: 2, revision: 'rev-0', sessions: { ...options.sessions }, requestedAt: 1 }
+      desired: options.sessions !== undefined || options.defaultEnabled !== undefined
+        ? {
+            version: 2,
+            revision: 'rev-0',
+            sessions: { ...(options.sessions ?? {}) },
+            requestedAt: 1,
+            ...(options.defaultEnabled !== undefined ? { defaultEnabled: options.defaultEnabled } : {}),
+          }
         : null,
       applied: null,
       controller: null,
@@ -57,6 +64,7 @@ describe('createHostSandboxToggle', () => {
       const sessions = { ...(current?.sessions ?? {}) }
       if (input.enabled !== undefined) sessions[input.sessionId] = input.enabled
       const overrides = input.overrides ?? current?.overrides
+      const defaultEnabled = input.enabled !== undefined ? input.enabled : current?.defaultEnabled
       state = {
         ...state,
         desired: {
@@ -64,6 +72,7 @@ describe('createHostSandboxToggle', () => {
           revision: next,
           sessions,
           requestedAt: 1,
+          ...(defaultEnabled !== undefined ? { defaultEnabled } : {}),
           ...(overrides ? { overrides } : {}),
         },
       }
@@ -94,7 +103,7 @@ describe('createHostSandboxToggle', () => {
     const acknowledge = (outcome: { error?: string; running?: boolean } = {}): void => {
       const desired = state.desired
       if (!desired) return
-      const wanted = Object.values(desired.sessions).some(Boolean) || state.hostSessionsDefault
+      const wanted = state.hostSessionsDefault || Object.values(desired.sessions).some(Boolean)
       state = {
         ...state,
         applied: {
@@ -173,6 +182,32 @@ describe('createHostSandboxToggle', () => {
     expect(toasts.at(-1)).toMatchObject({
       variant: 'success',
       message: 'Sandbox off for this session; its agent shell, glob, and grep calls run on the host. Other sessions keep the sandbox for their folder.',
+    })
+  })
+
+  test('creates and opens a session that joins the sandbox when the stored default is off', async () => {
+    const { toasts, toggle, setState, acknowledge, openSession } = setup({
+      sessionId: null,
+      hostSessionsDefault: true,
+      sessions: {},
+      defaultEnabled: false,
+      createSession: async () => 'ses_new',
+      openSession: () => {},
+    })
+
+    const pending = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_new', enabled: true })
+
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(openSession).toHaveBeenCalledWith('ses_new')
+    expect(toasts.at(-1)).toMatchObject({
+      variant: 'success',
+      message: 'Sandbox on for this session. Agent shell, glob, and grep calls run in the sandbox for this session\'s folder; commands you run yourself stay on the host.',
     })
   })
 
@@ -265,6 +300,62 @@ describe('createHostSandboxToggle', () => {
       variant: 'success',
       message: 'Sandbox on for this session. Agent shell, glob, and grep calls run in the sandbox for this session\'s folder; commands you run yourself stay on the host.',
     })
+  })
+
+  test('opts an existing unpinned session in when the config default is off and the stored default is on', async () => {
+    const { toggle, setState, acknowledge } = setup({
+      sessionId: 'ses_1',
+      hostSessionsDefault: false,
+      sessions: {},
+      defaultEnabled: true,
+    })
+
+    const pending = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', enabled: true })
+  })
+
+  test('opts an existing unpinned session out when the config default is on and the stored default is off', async () => {
+    const { toggle, setState, acknowledge } = setup({
+      sessionId: 'ses_1',
+      hostSessionsDefault: true,
+      sessions: {},
+      defaultEnabled: false,
+    })
+
+    const pending = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', enabled: false })
+  })
+
+  test('a new session opts out when the stored default is on and the config default is off', async () => {
+    const { toggle, setState, acknowledge, openSession } = setup({
+      sessionId: null,
+      hostSessionsDefault: false,
+      sessions: {},
+      defaultEnabled: true,
+      createSession: async () => 'ses_new',
+      openSession: () => {},
+    })
+
+    const pending = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_new', enabled: false })
+
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(openSession).toHaveBeenCalledWith('ses_new')
   })
 
   test('toggles a child of an opted-out parent back into the host sandbox', async () => {
