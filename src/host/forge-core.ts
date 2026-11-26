@@ -866,7 +866,9 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     try {
       if (isForgeWorktreeDir(dataDir, info.directory)) return
       if (loopsRepo.getBySessionId(projectId, info.id)) return
-      if (!sandboxPreferences.pinDesiredSessionDefault(projectId, info.id, randomUUID())) return
+      const desired = sandboxPreferences.getDesired(projectId)
+      if (desired?.defaultEnabled === undefined || desired.defaultEnabled === isHostSessionsDefaultEnabled(config)) return
+      if (!sandboxPreferences.pinDesiredSessionDefault(projectId, info.id)) return
       emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId })
     } catch (err) {
       logger.log(`[sandbox] failed to pin the host sandbox default for session ${info.id}: ${errorMessage(err)}`)

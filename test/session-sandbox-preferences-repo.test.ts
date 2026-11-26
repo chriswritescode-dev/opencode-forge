@@ -443,13 +443,13 @@ describe('SessionSandboxPreferencesRepo', () => {
   })
 
   describe('pinDesiredSessionDefault', () => {
-    test('pins the stored default and persists the new state', () => {
+    test('pins the stored default without changing the revision', () => {
       repo.setDesired(PROJECT_A, makeDesired({ revision: 'rev-1', sessions: {}, defaultEnabled: false }))
 
-      const next = repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1', 'rev-2')
+      const next = repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1')
 
       expect(next).toMatchObject({
-        revision: 'rev-2',
+        revision: 'rev-1',
         sessions: { 'sess-1': false },
         defaultEnabled: false,
       })
@@ -460,7 +460,7 @@ describe('SessionSandboxPreferencesRepo', () => {
       const state = makeDesired({ revision: 'rev-1', sessions: {} })
       repo.setDesired(PROJECT_A, state)
 
-      expect(repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1', 'rev-2')).toBeNull()
+      expect(repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1')).toBeNull()
       expect(repo.getDesired(PROJECT_A)).toEqual(state)
     })
 
@@ -468,7 +468,7 @@ describe('SessionSandboxPreferencesRepo', () => {
       const state = makeDesired({ revision: 'rev-1', sessions: { 'sess-1': true }, defaultEnabled: false })
       repo.setDesired(PROJECT_A, state)
 
-      expect(repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1', 'rev-2')).toBeNull()
+      expect(repo.pinDesiredSessionDefault(PROJECT_A, 'sess-1')).toBeNull()
       expect(repo.getDesired(PROJECT_A)).toEqual(state)
     })
   })

@@ -242,11 +242,33 @@ describe('createForgeCore', () => {
     expect(events.filter((event) => event.type === 'hostSandboxChanged').length).toBeGreaterThan(0)
   })
 
-  test('a new top-level session pins the stored host sandbox default and notifies the TUI', async () => {
+  test('a new top-level session pins a stored default that differs from the config default and notifies the TUI', async () => {
     const events: ForgeTuiEvent[] = []
     const built = await buildCore({ sandbox: { hostSessions: false } }, undefined, {
       publishTuiEvent: (event) => events.push(event),
     })
+    seedHostSandboxDesired(built.projectId, {
+      version: 2,
+      revision: 'rev-seed',
+      sessions: {},
+      defaultEnabled: true,
+      requestedAt: 1,
+    })
+
+    await built.core.onEvent({
+      event: { type: 'session.created', properties: { info: createdSessionInfo(built.projectId, 'ses_new') } },
+    })
+    await settleTuiEvents()
+
+    const desired = readHostSandboxDesired(built.projectId)
+    expect(desired?.sessions).toEqual({ ses_new: true })
+    expect(desired?.defaultEnabled).toBe(true)
+    expect(desired?.revision).toBe('rev-seed')
+    expect(events.filter((event) => event.type === 'hostSandboxChanged').length).toBeGreaterThan(0)
+  })
+
+  test('a new session is not pinned when the stored default matches the config default', async () => {
+    const built = await buildCore({ sandbox: { hostSessions: false } })
     seedHostSandboxDesired(built.projectId, {
       version: 2,
       revision: 'rev-seed',
@@ -261,10 +283,8 @@ describe('createForgeCore', () => {
     await settleTuiEvents()
 
     const desired = readHostSandboxDesired(built.projectId)
-    expect(desired?.sessions).toEqual({ ses_new: false })
-    expect(desired?.defaultEnabled).toBe(false)
-    expect(desired?.revision).not.toBe('rev-seed')
-    expect(events.filter((event) => event.type === 'hostSandboxChanged').length).toBeGreaterThan(0)
+    expect(desired?.sessions).toEqual({})
+    expect(desired?.revision).toBe('rev-seed')
   })
 
   test('a creation event for a session in another project is not pinned', async () => {
@@ -273,7 +293,7 @@ describe('createForgeCore', () => {
       version: 2,
       revision: 'rev-seed',
       sessions: {},
-      defaultEnabled: false,
+      defaultEnabled: true,
       requestedAt: 1,
     })
 
@@ -296,7 +316,7 @@ describe('createForgeCore', () => {
       version: 2,
       revision: 'rev-seed',
       sessions: {},
-      defaultEnabled: false,
+      defaultEnabled: true,
       requestedAt: 1,
     })
 
@@ -321,7 +341,7 @@ describe('createForgeCore', () => {
       version: 2,
       revision: 'rev-seed',
       sessions: {},
-      defaultEnabled: false,
+      defaultEnabled: true,
       requestedAt: 1,
     })
 
@@ -357,7 +377,7 @@ describe('createForgeCore', () => {
       version: 2,
       revision: 'rev-seed',
       sessions: {},
-      defaultEnabled: false,
+      defaultEnabled: true,
       requestedAt: 1,
     })
 
@@ -384,7 +404,7 @@ describe('createForgeCore', () => {
       version: 2,
       revision: 'rev-seed',
       sessions: {},
-      defaultEnabled: false,
+      defaultEnabled: true,
       requestedAt: 1,
     })
     seedRunningLoop(built.projectId, 'ses_loop')
@@ -405,7 +425,7 @@ describe('createForgeCore', () => {
       version: 2,
       revision: 'rev-seed',
       sessions: { ses_new: true },
-      defaultEnabled: false,
+      defaultEnabled: true,
       requestedAt: 1,
     })
 

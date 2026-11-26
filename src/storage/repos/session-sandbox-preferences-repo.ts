@@ -28,7 +28,7 @@ export interface SessionSandboxPreferencesRepo {
     projectId: string,
     build: (current: SessionSandboxDesiredState | null) => SessionSandboxDesiredState,
   ): SessionSandboxDesiredState
-  pinDesiredSessionDefault(projectId: string, sessionId: string, revision: string): SessionSandboxDesiredState | null
+  pinDesiredSessionDefault(projectId: string, sessionId: string): SessionSandboxDesiredState | null
   moveDesiredSession(sessionId: string, toProjectId: string, revision: string): string[]
   getApplied(projectId: string): SessionSandboxAppliedState | null
   setApplied(projectId: string, state: SessionSandboxAppliedState): void
@@ -112,9 +112,11 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
       })
     },
 
-    pinDesiredSessionDefault(projectId, sessionId, revision) {
+    pinDesiredSessionDefault(projectId, sessionId) {
       return runImmediateTransaction(db, () => {
-        const next = withPinnedSandboxSession(readDesired(projectId), sessionId, revision)
+        const current = readDesired(projectId)
+        if (!current) return null
+        const next = withPinnedSandboxSession(current, sessionId, current.revision)
         if (!next) return null
         upsertStmt.run(projectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(next), now())
         return next
