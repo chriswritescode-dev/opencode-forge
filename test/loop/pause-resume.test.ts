@@ -433,6 +433,50 @@ describe('loop pause and resume', () => {
       expect(after.terminationReason).toBe('user_aborted')
     })
 
+    test('consumes the pause abort marker when the abort event races the pause status write', async () => {
+      let loopRef: Loop | null = null
+      let stateRef: LoopState | null = null
+      let abortTick: Promise<void> | null = null
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [] },
+          ],
+          abort: async () => {
+            const runtime = loopRef
+            const state = stateRef
+            if (runtime && state) {
+              abortTick = runtime.tick({
+                type: 'session.error',
+                properties: { sessionID: state.sessionId, error: { name: 'MessageAbortedError' } },
+              })
+            }
+          },
+        },
+      })
+      const { loop, loopService } = buildRuntime({ client })
+      const state = makeLoopState({ loopName: nextLoopName('pause-abort-race'), worktree: false })
+      loopRef = loop
+      stateRef = state
+      loop.start({ state })
+
+      await expect(loop.pause(state.loopName)).resolves.toEqual({ kind: 'paused' })
+      expect(abortTick).not.toBeNull()
+      await abortTick
+
+      expect(loopService.getAnyState(state.loopName)!.status).toBe('paused')
+
+      await loop.resume(state.loopName)
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'MessageAbortedError' } },
+      })
+
+      const after = loopService.getAnyState(state.loopName)!
+      expect(after.active).toBe(false)
+      expect(after.terminationReason).toBe('user_aborted')
+    })
+
     test('expires the pause abort marker when no abort event arrives before resume', async () => {
       vi.useFakeTimers()
       const { client } = createFakeForgeClient({

@@ -2555,7 +2555,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
         await withStateLock(loopName, async () => {
           const state = loopService.getActiveState(loopName)
-          if (!state?.active) return
+          if (!state?.active) {
+            consumePauseAbort(eventSessionId)
+            return
+          }
           if (!ownsLoopWorktree(state.worktreeDir)) {
             logger.log(`Loop: ignoring aborted event for ${loopName}; worktree ${state.worktreeDir} is owned by another instance`)
             return
@@ -3029,6 +3032,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
 
       loopService.setStatus(name, 'running')
+      const wasRegistered = loopRegistry.has(projectId, name)
       loopRegistry.add(projectId, name)
       sessionToLoop.set(state.sessionId, name)
       handoffNudges.delete(name)
@@ -3053,7 +3057,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       try {
         await sendLoopTurnPrompt(name, running, role, promptText, 'resume prompt')
       } catch (err) {
-        if (loopService.getActiveState(name)) loopService.setStatus(name, 'paused')
+        if (loopService.getActiveState(name)) {
+          clearPromptPending(projectId, name, logger)
+          clearPromptInFlight(projectId, name)
+          if (!wasRegistered) loopRegistry.remove(projectId, name)
+          loopService.setStatus(name, 'paused')
+        }
         return { kind: 'failed', message: `Loop "${name}" cannot resume: ${err instanceof Error ? err.message : String(err)}` }
       }
       if (!loopService.getActiveState(name)) {
