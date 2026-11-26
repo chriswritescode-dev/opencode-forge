@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'fs'
 import type { Logger } from '../types'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage'
-import { isHostSandboxWanted } from '../storage/session-sandbox-state'
+import { isHostSandboxWanted, isSessionSandboxDefaultEnabled } from '../storage/session-sandbox-state'
 import { sandboxContextFromActive, type SandboxContext } from './context'
 import type { SandboxRuntime } from './msb'
 import type { ActiveSandbox, ApplyOverridesOutcome } from './manager'
@@ -281,7 +281,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       const value = desired.sessions[ancestorId]
       return value === undefined ? null : value
     })
-    return inherited ?? deps.hostSessionsDefault
+    return inherited ?? isSessionSandboxDefaultEnabled(desired, deps.hostSessionsDefault)
   }
 
   async function reconcilePair(
@@ -434,7 +434,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     const failure = recordedFailure
     if (failure && desired && failure.revision === desired.revision) {
       throw new Error(
-        `Host sandbox unavailable: ${failure.error}. Toggle the sandbox off and on to retry, or set sandbox.hostSessions to false.`,
+        `Host sandbox unavailable: ${failure.error}. Toggle the sandbox off and on to retry, or toggle it off to run this session on the host.`,
       )
     }
 

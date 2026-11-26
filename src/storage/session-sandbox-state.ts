@@ -6,6 +6,7 @@ export interface SessionSandboxDesiredState {
   version: 2
   revision: string
   sessions: Record<string, boolean>
+  defaultEnabled?: boolean
   requestedAt: number
   overrides?: SandboxOverrides
 }
@@ -35,6 +36,7 @@ const desiredStateV2Schema = z.object({
   version: z.literal(2),
   revision: nonBlankString,
   sessions: z.record(nonBlankString, z.boolean()),
+  defaultEnabled: z.boolean().optional(),
   requestedAt: z.number(),
   overrides: z.unknown().optional(),
 })
@@ -75,8 +77,16 @@ export const controllerStateSchema = z.object({
   revision: nonBlankString.nullable(),
 })
 
+export function isSessionSandboxDefaultEnabled(
+  desired: SessionSandboxDesiredState | null,
+  hostSessionsDefault: boolean,
+): boolean {
+  return desired?.defaultEnabled ?? hostSessionsDefault
+}
+
 export function isHostSandboxWanted(desired: SessionSandboxDesiredState | null, hostSessionsDefault: boolean): boolean {
-  return hostSessionsDefault || Object.values(desired?.sessions ?? {}).some(Boolean)
+  return isSessionSandboxDefaultEnabled(desired, hostSessionsDefault)
+    || Object.values(desired?.sessions ?? {}).some(Boolean)
 }
 
 export function withoutSandboxSession(

@@ -189,6 +189,8 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
             sessions,
             requestedAt: Date.now(),
           }
+          const defaultEnabled = request.enabled !== undefined ? request.enabled : current?.defaultEnabled
+          if (defaultEnabled !== undefined) desired.defaultEnabled = defaultEnabled
           if (overrides) desired.overrides = overrides
           return desired
         })

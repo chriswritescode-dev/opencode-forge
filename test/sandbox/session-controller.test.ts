@@ -232,6 +232,29 @@ describe('SessionSandboxController', () => {
     await controller.dispose()
   })
 
+  test('a stored default off overrides the config default while an explicit opt-in still runs the sandbox', async () => {
+    repo.setDesired(PROJECT, makeDesired({ defaultEnabled: false, sessions: { 'session-on': true } }))
+    const controller = createController({ hostSessionsDefault: true })
+    await controller.start()
+
+    expect(manager.ensureRunningCalls).toEqual([MANAGER_KEY])
+    expect(repo.getApplied(PROJECT)).toMatchObject({ revision: 'rev-1', running: true, error: null })
+    await expect(controller.resolveSandboxForSession('session-plain')).resolves.toBeNull()
+    expect(await controller.resolveSandboxForSession('session-on')).not.toBeNull()
+    await controller.dispose()
+  })
+
+  test('a stored default on overrides a config default off for sessions without an entry', async () => {
+    repo.setDesired(PROJECT, makeDesired({ defaultEnabled: true }))
+    const controller = createController({ hostSessionsDefault: false })
+    await controller.start()
+
+    expect(manager.ensureRunningCalls).toEqual([MANAGER_KEY])
+    expect(repo.getApplied(PROJECT)).toMatchObject({ revision: 'rev-1', running: true, error: null })
+    expect(await controller.resolveSandboxForSession('session-plain')).not.toBeNull()
+    await controller.dispose()
+  })
+
   test('removing the last opt-in with default off stops the sandbox', async () => {
     repo.setDesired(PROJECT, makeDesired({ sessions: { 'session-in': true } }))
     const controller = createController({ hostSessionsDefault: false, pollIntervalMs: 10 })

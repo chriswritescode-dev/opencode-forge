@@ -6,7 +6,7 @@
 
 # Interface: CompactionConfig
 
-Defined in: [types.ts:144](https://github.com/chriswritescode-dev/opencode-forge/blob/056842f76311cb119bd5ccfc14f5ec103a8e5d51/src/types.ts#L144)
+Defined in: [types.ts:144](https://github.com/chriswritescode-dev/opencode-forge/blob/98bb4d1a572aa72e6b5033b8b44fc9b625e9162a/src/types.ts#L144)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [types.ts:144](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **customPrompt?**: `boolean`
 
-Defined in: [types.ts:145](https://github.com/chriswritescode-dev/opencode-forge/blob/056842f76311cb119bd5ccfc14f5ec103a8e5d51/src/types.ts#L145)
+Defined in: [types.ts:145](https://github.com/chriswritescode-dev/opencode-forge/blob/98bb4d1a572aa72e6b5033b8b44fc9b625e9162a/src/types.ts#L145)
 
 ***
 
@@ -22,4 +22,4 @@ Defined in: [types.ts:145](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **maxContextTokens?**: `number`
 
-Defined in: [types.ts:146](https://github.com/chriswritescode-dev/opencode-forge/blob/056842f76311cb119bd5ccfc14f5ec103a8e5d51/src/types.ts#L146)
+Defined in: [types.ts:146](https://github.com/chriswritescode-dev/opencode-forge/blob/98bb4d1a572aa72e6b5033b8b44fc9b625e9162a/src/types.ts#L146)

@@ -76,6 +76,19 @@ describe('session-sandbox-store', () => {
       expect(isSessionSandboxWanted({ desired: null, applied: null, hostSessionsDefault: true }, 'sess-1')).toBe(true)
     })
 
+    test('a stored project default overrides the config default without a session entry', () => {
+      const off = { desired: desired({ defaultEnabled: false }), applied: null, hostSessionsDefault: true }
+      expect(isSessionSandboxWanted(off, 'sess-1')).toBe(false)
+      const on = { desired: desired({ defaultEnabled: true }), applied: null, hostSessionsDefault: false }
+      expect(isSessionSandboxWanted(on, 'sess-1')).toBe(true)
+    })
+
+    test('a stored project default wins over the config default when no ancestor has an entry', () => {
+      const pref = { desired: desired({ defaultEnabled: false, sessions: { 'sess-other': false } }), applied: null, hostSessionsDefault: true }
+      const links: Record<string, string | undefined> = { 'sess-child': 'sess-parent' }
+      expect(isSessionSandboxWanted(pref, 'sess-child', (id) => links[id])).toBe(false)
+    })
+
     test('inherits a parent entry when the session has none of its own', () => {
       const pref = { desired: desired({ sessions: { 'sess-parent': false } }), applied: null, hostSessionsDefault: true }
       const getParentSessionId = (id: string) => (id === 'sess-child' ? 'sess-parent' : undefined)
@@ -263,9 +276,23 @@ describe('session-sandbox-store', () => {
       expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('failed')
     })
 
-    test('shows disabled without a session or preference', () => {
+    test('shows the project default without a session and disabled without a preference', () => {
       expect(deriveSessionSandboxDisplayStatus(null, 'sess-1')).toBe('disabled')
-      expect(deriveSessionSandboxDisplayStatus({ desired: null, applied: null, hostSessionsDefault: true })).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus({
+        desired: null,
+        applied: null,
+        hostSessionsDefault: false,
+      })).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus({
+        desired: null,
+        applied: null,
+        hostSessionsDefault: true,
+      })).toBe('loading')
+      expect(deriveSessionSandboxDisplayStatus({
+        desired: desired({ revision: 'r1', defaultEnabled: true }),
+        applied: appliedState({ revision: 'r1' }),
+        hostSessionsDefault: false,
+      })).toBe('enabled')
     })
   })
 })

@@ -70,7 +70,12 @@ describe('SessionSandboxPreferencesRepo', () => {
     })
 
     test('round-trips a full desired state', () => {
-      const state = makeDesired({ revision: 'abc', sessions: { 'sess-2': false, 'sess-3': true }, requestedAt: 999 })
+      const state = makeDesired({
+        revision: 'abc',
+        sessions: { 'sess-2': false, 'sess-3': true },
+        defaultEnabled: false,
+        requestedAt: 999,
+      })
       repo.setDesired(PROJECT_A, state)
       expect(repo.getDesired(PROJECT_A)).toEqual(state)
     })
