@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'os'
-import type { ForgeClient, ForgeEvent, SessionGetParams } from '../client/port'
+import type { ForgeClient, ForgeEvent, Session, SessionGetParams } from '../client/port'
 import { ForgeClientError } from '../client/port'
 import { buildAgents, type AgentDefinitionsByRole } from '../agents'
 import { createConfigHandler } from '../config'
@@ -59,7 +59,7 @@ import { createDashboardService, type DashboardService } from '../services/dashb
 import { processShared } from '../utils/process-shared'
 import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
 import { FORGE_EVENT_TYPES } from './v2-events'
-import { withoutSandboxSession } from '../storage/session-sandbox-state'
+import { withoutSandboxSession, withPinnedSandboxSession } from '../storage/session-sandbox-state'
 import { withWriteNotifications } from '../utils/write-notifications'
 import { errorMessage } from '../utils/error-message'
 
@@ -860,6 +860,22 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     }
   }
 
+  const pinHostSandboxSession = (info: Session | undefined): void => {
+    if (!info || !info.id || info.parentID) return
+    try {
+      if (isForgeWorktreeDir(dataDir, info.directory)) return
+      if (loopsRepo.getBySessionId(projectId, info.id)) return
+      const revision = randomUUID()
+      const pinned = withPinnedSandboxSession(sandboxPreferences.getDesired(projectId), info.id, revision)
+      if (!pinned) return
+      sandboxPreferences.updateDesired(projectId, (current) =>
+        withPinnedSandboxSession(current, info.id, revision) ?? current ?? pinned)
+      emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId })
+    } catch (err) {
+      logger.log(`[sandbox] failed to pin the host sandbox default for session ${info.id}: ${errorMessage(err)}`)
+    }
+  }
+
   const resolveSandboxForSession = createUnifiedSandboxResolver({
     resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     resolveLoopSandbox: (resolved, opts) => resolveSandboxContextForLoop(sandboxManager, resolved, logger, opts),
@@ -1253,6 +1269,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       if (input.event.type === FORGE_EVENT_TYPES.sessionMoved) {
         moveHostSandboxSession(input.event.properties.sessionID, input.event.properties.projectID)
       }
+      if (input.event.type === FORGE_EVENT_TYPES.sessionCreated) pinHostSandboxSession(input.event.properties.info)
     },
     toolBefore: async (input, output) => {
       let resolved: Awaited<ReturnType<typeof sessionLoopResolver.resolveActiveLoopForSession>> | null = null

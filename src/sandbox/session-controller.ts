@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'fs'
 import type { Logger } from '../types'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage'
-import { isHostSandboxWanted, isSessionSandboxDefaultEnabled } from '../storage/session-sandbox-state'
+import { isHostSandboxWanted } from '../storage/session-sandbox-state'
 import { sandboxContextFromActive, type SandboxContext } from './context'
 import type { SandboxRuntime } from './msb'
 import type { ActiveSandbox, ApplyOverridesOutcome } from './manager'
@@ -281,7 +281,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       const value = desired.sessions[ancestorId]
       return value === undefined ? null : value
     })
-    return inherited ?? isSessionSandboxDefaultEnabled(desired, deps.hostSessionsDefault)
+    return inherited ?? deps.hostSessionsDefault
   }
 
   async function reconcilePair(

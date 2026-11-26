@@ -16,6 +16,8 @@ import {
   SESSION_AUTO_APPROVE_TTL_MS,
 } from '../../src/storage'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
+import type { SessionSandboxDesiredState } from '../../src/storage'
+import type { Session } from '../../src/client/port'
 import type { AutoApproveDenyRule, PluginConfig } from '../../src/types'
 import { resolveSessionAutoApproveFlag } from '../../src/utils/session-auto-approve-flag'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
@@ -124,6 +126,37 @@ describe('createForgeCore', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
   }
 
+  function seedHostSandboxDesired(projectId: string, state: SessionSandboxDesiredState): void {
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createSessionSandboxPreferencesRepo(db).setDesired(projectId, state)
+    } finally {
+      closeDatabase(db)
+    }
+  }
+
+  function readHostSandboxDesired(projectId: string): SessionSandboxDesiredState | null {
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      return createSessionSandboxPreferencesRepo(db).getDesired(projectId)
+    } finally {
+      closeDatabase(db)
+    }
+  }
+
+  function createdSessionInfo(projectId: string, id: string, overrides: Partial<Session> = {}): Session {
+    return {
+      id,
+      slug: id,
+      projectID: projectId,
+      directory: testDir,
+      title: id,
+      version: '1',
+      time: { created: 1, updated: 1 },
+      ...overrides,
+    }
+  }
+
   test('registers the forge workspace adapter and writes the sandbox shim', async () => {
     const built = await buildCore()
 
@@ -207,6 +240,135 @@ describe('createForgeCore', () => {
       closeDatabase(readDb)
     }
     expect(events.filter((event) => event.type === 'hostSandboxChanged').length).toBeGreaterThan(0)
+  })
+
+  test('a new top-level session pins the stored host sandbox default and notifies the TUI', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { hostSessions: false } }, undefined, {
+      publishTuiEvent: (event) => events.push(event),
+    })
+    seedHostSandboxDesired(built.projectId, {
+      version: 2,
+      revision: 'rev-seed',
+      sessions: {},
+      defaultEnabled: false,
+      requestedAt: 1,
+    })
+
+    await built.core.onEvent({
+      event: { type: 'session.created', properties: { info: createdSessionInfo(built.projectId, 'ses_new') } },
+    })
+    await settleTuiEvents()
+
+    const desired = readHostSandboxDesired(built.projectId)
+    expect(desired?.sessions).toEqual({ ses_new: false })
+    expect(desired?.defaultEnabled).toBe(false)
+    expect(desired?.revision).not.toBe('rev-seed')
+    expect(events.filter((event) => event.type === 'hostSandboxChanged').length).toBeGreaterThan(0)
+  })
+
+  test('a child session is not pinned', async () => {
+    const built = await buildCore({ sandbox: { hostSessions: false } })
+    seedHostSandboxDesired(built.projectId, {
+      version: 2,
+      revision: 'rev-seed',
+      sessions: {},
+      defaultEnabled: false,
+      requestedAt: 1,
+    })
+
+    await built.core.onEvent({
+      event: {
+        type: 'session.created',
+        properties: { info: createdSessionInfo(built.projectId, 'ses_child', { parentID: 'ses_parent' }) },
+      },
+    })
+    await settleTuiEvents()
+
+    const desired = readHostSandboxDesired(built.projectId)
+    expect(desired?.sessions).toEqual({})
+    expect(desired?.revision).toBe('rev-seed')
+  })
+
+  test('a new session is not pinned when no stored default exists', async () => {
+    const built = await buildCore({ sandbox: { hostSessions: false } })
+
+    await built.core.onEvent({
+      event: { type: 'session.created', properties: { info: createdSessionInfo(built.projectId, 'ses_new') } },
+    })
+    await settleTuiEvents()
+
+    const desired = readHostSandboxDesired(built.projectId)
+    expect(Object.hasOwn(desired?.sessions ?? {}, 'ses_new')).toBe(false)
+    expect(desired?.defaultEnabled).toBeUndefined()
+  })
+
+  test('a session created in a forge loop worktree is not pinned', async () => {
+    const built = await buildCore({ sandbox: { hostSessions: false } })
+    seedHostSandboxDesired(built.projectId, {
+      version: 2,
+      revision: 'rev-seed',
+      sessions: {},
+      defaultEnabled: false,
+      requestedAt: 1,
+    })
+
+    await built.core.onEvent({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: createdSessionInfo(built.projectId, 'ses_worktree', {
+            directory: join(testDir, 'memory', 'worktrees', 'loop-1'),
+          }),
+        },
+      },
+    })
+    await settleTuiEvents()
+
+    const desired = readHostSandboxDesired(built.projectId)
+    expect(desired?.sessions).toEqual({})
+    expect(desired?.revision).toBe('rev-seed')
+  })
+
+  test('a creation event for a loop session is not pinned', async () => {
+    const built = await buildCore({ sandbox: { hostSessions: false } })
+    seedHostSandboxDesired(built.projectId, {
+      version: 2,
+      revision: 'rev-seed',
+      sessions: {},
+      defaultEnabled: false,
+      requestedAt: 1,
+    })
+    seedRunningLoop(built.projectId, 'ses_loop')
+
+    await built.core.onEvent({
+      event: { type: 'session.created', properties: { info: createdSessionInfo(built.projectId, 'ses_loop') } },
+    })
+    await settleTuiEvents()
+
+    const desired = readHostSandboxDesired(built.projectId)
+    expect(desired?.sessions).toEqual({})
+    expect(desired?.revision).toBe('rev-seed')
+  })
+
+  test('a new session keeps an existing own entry instead of overwriting it with the default', async () => {
+    const built = await buildCore({ sandbox: { hostSessions: false } })
+    seedHostSandboxDesired(built.projectId, {
+      version: 2,
+      revision: 'rev-seed',
+      sessions: { ses_new: true },
+      defaultEnabled: false,
+      requestedAt: 1,
+    })
+
+    await built.core.onEvent({
+      event: { type: 'session.created', properties: { info: createdSessionInfo(built.projectId, 'ses_new') } },
+    })
+    await settleTuiEvents()
+
+    const desired = readHostSandboxDesired(built.projectId)
+    expect(desired?.sessions).toEqual({ ses_new: true })
+    expect(desired?.revision).toBe('rev-seed')
   })
 
   test('autoApprovesPermissions honors the per-session auto-approve flag', async () => {

@@ -38,7 +38,7 @@ export function isSessionSandboxWanted(
   getParentSessionId?: ParentSessionIdResolver,
 ): boolean {
   const sessions = pref.desired?.sessions
-  if (!sessions) return isSessionSandboxDefaultEnabled(pref.desired, pref.hostSessionsDefault)
+  if (!sessions) return pref.hostSessionsDefault
   const visited = new Set<string>()
   let current: string | null | undefined = sessionId
   while (current !== null && current !== undefined && !visited.has(current)) {
@@ -46,7 +46,7 @@ export function isSessionSandboxWanted(
     if (Object.hasOwn(sessions, current)) return sessions[current]
     current = getParentSessionId?.(current)
   }
-  return isSessionSandboxDefaultEnabled(pref.desired, pref.hostSessionsDefault)
+  return pref.hostSessionsDefault
 }
 
 export function isSessionSandboxPreferenceSettled(pref: SessionSandboxPreference): boolean {

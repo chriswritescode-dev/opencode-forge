@@ -7,7 +7,7 @@ import {
   SESSION_SANDBOX_CONTROLLER_KEY,
 } from '../src/storage'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState } from '../src/storage'
-import { withoutSandboxSession } from '../src/storage/session-sandbox-state'
+import { withoutSandboxSession, withPinnedSandboxSession } from '../src/storage/session-sandbox-state'
 import { createTestDb } from './helpers/test-db'
 
 const PROJECT_A = 'project-a'
@@ -46,6 +46,44 @@ describe('withoutSandboxSession', () => {
     })
     expect(next?.requestedAt).toBeGreaterThanOrEqual(before)
     expect(desired.sessions).toEqual({ 'sess-1': true, 'sess-2': false })
+  })
+})
+
+describe('withPinnedSandboxSession', () => {
+  test('returns null when no desired state exists', () => {
+    expect(withPinnedSandboxSession(null, 'sess-2', 'rev-2')).toBeNull()
+  })
+
+  test('pins the stored default with the new revision and preserves other entries and overrides', () => {
+    const desired = makeDesired({ sessions: { 'sess-1': true }, defaultEnabled: false, overrides: { allowLan: true } })
+    const before = Date.now()
+    const next = withPinnedSandboxSession(desired, 'sess-2', 'rev-2')
+
+    expect(next).toEqual({
+      version: 2,
+      revision: 'rev-2',
+      sessions: { 'sess-1': true, 'sess-2': false },
+      defaultEnabled: false,
+      requestedAt: expect.any(Number),
+      overrides: { allowLan: true },
+    })
+    expect(next?.requestedAt).toBeGreaterThanOrEqual(before)
+    expect(desired.sessions).toEqual({ 'sess-1': true })
+  })
+
+  test('returns null when no stored default exists', () => {
+    expect(withPinnedSandboxSession(makeDesired({ sessions: {} }), 'sess-2', 'rev-2')).toBeNull()
+  })
+
+  test('does not overwrite an existing session entry', () => {
+    expect(withPinnedSandboxSession(makeDesired({ sessions: { 'sess-1': true }, defaultEnabled: false }), 'sess-1', 'rev-2')).toBeNull()
+  })
+
+  test('pins a session id that only exists on the object prototype', () => {
+    const next = withPinnedSandboxSession(makeDesired({ sessions: {}, defaultEnabled: true }), 'toString', 'rev-2')
+
+    expect(Object.hasOwn(next?.sessions ?? {}, 'toString')).toBe(true)
+    expect(next?.sessions['toString']).toBe(true)
   })
 })
 

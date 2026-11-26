@@ -76,17 +76,17 @@ describe('session-sandbox-store', () => {
       expect(isSessionSandboxWanted({ desired: null, applied: null, hostSessionsDefault: true }, 'sess-1')).toBe(true)
     })
 
-    test('a stored project default overrides the config default without a session entry', () => {
+    test('an unpinned session follows the config default even when a project default is stored', () => {
       const off = { desired: desired({ defaultEnabled: false }), applied: null, hostSessionsDefault: true }
-      expect(isSessionSandboxWanted(off, 'sess-1')).toBe(false)
+      expect(isSessionSandboxWanted(off, 'sess-1')).toBe(true)
       const on = { desired: desired({ defaultEnabled: true }), applied: null, hostSessionsDefault: false }
-      expect(isSessionSandboxWanted(on, 'sess-1')).toBe(true)
+      expect(isSessionSandboxWanted(on, 'sess-1')).toBe(false)
     })
 
-    test('a stored project default wins over the config default when no ancestor has an entry', () => {
+    test('falls back to the config default when a stored project default exists but no ancestor has an entry', () => {
       const pref = { desired: desired({ defaultEnabled: false, sessions: { 'sess-other': false } }), applied: null, hostSessionsDefault: true }
       const links: Record<string, string | undefined> = { 'sess-child': 'sess-parent' }
-      expect(isSessionSandboxWanted(pref, 'sess-child', (id) => links[id])).toBe(false)
+      expect(isSessionSandboxWanted(pref, 'sess-child', (id) => links[id])).toBe(true)
     })
 
     test('inherits a parent entry when the session has none of its own', () => {
