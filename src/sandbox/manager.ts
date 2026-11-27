@@ -9,7 +9,7 @@ import { mkdirSync, existsSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
-import { formatTemplateBuildCommands } from './template'
+import { formatTemplateBuildCommands, type SandboxImageExtension } from './template'
 
 export interface SandboxManagerConfig {
   image: string
@@ -21,6 +21,7 @@ export interface SandboxManagerConfig {
   customMounts?: SandboxMountConfig[]
   buildContextDir?: string
   templateBuildArgs?: string[]
+  templateImageExtensions?: SandboxImageExtension[]
   toolOutputDir?: string
   tmpDir?: string
   listSkillPaths?: (projectDir: string) => Promise<string[]>
@@ -347,6 +348,7 @@ export function createSandboxManager(
         config.buildContextDir ?? '<build-context-dir>',
         config.image,
         config.templateBuildArgs ?? [],
+        config.templateImageExtensions ?? [],
       )}`
       throw new Error(
         `Sandbox template "${config.image}" not found. Build and load it first:\n${buildHint}\n\n` +

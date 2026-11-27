@@ -1,11 +1,12 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { spawnSync } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { join } from 'path'
-import { buildAndLoadSandboxTemplate, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep, readSandboxTemplateBuildStatus, resolveTemplateBuildArgs, startSandboxTemplateBuild } from '../../src/sandbox/template'
+import { resolveConfigDir } from '../../src/install/paths'
+import { buildAndLoadSandboxTemplate, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep, readSandboxTemplateBuildStatus, resolveTemplateBuildArgs, resolveTemplateImageExtensions, startSandboxTemplateBuild } from '../../src/sandbox/template'
 import type { BuildTemplateDeps, SandboxBuildProgress } from '../../src/sandbox/template'
-import type { Logger } from '../../src/types'
+import type { Logger, PluginConfig } from '../../src/types'
 
 const logger: Logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() }
 
@@ -258,6 +259,134 @@ describe('buildAndLoadSandboxTemplate', () => {
         'oc-forge-sandbox:latest',
         '/ctx',
       ])
+      expect(leftoverTars(tmp)).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  test('builds image extensions in order on top of the base image, then saves and loads', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    try {
+      const extensionRoot = join(tmp, 'extensions')
+      const firstContext = join(extensionRoot, 'first-context')
+      const secondContext = join(extensionRoot, 'second-context')
+      mkdirSync(firstContext, { recursive: true })
+      mkdirSync(secondContext, { recursive: true })
+      const firstDockerfile = join(extensionRoot, 'first.Dockerfile')
+      const secondDockerfile = join(extensionRoot, 'second.Dockerfile')
+      writeFileSync(firstDockerfile, 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n')
+      writeFileSync(secondDockerfile, 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n')
+
+      const record: Array<{ command: string; args: string[] }> = []
+      const loadTemplate = vi.fn(async () => {})
+      const deps: BuildTemplateDeps = {
+        runCommand: makeFakeRun(record),
+        loadTemplate,
+        logger,
+        tmpDir: tmp,
+        extensions: [
+          { dockerfile: firstDockerfile, context: firstContext },
+          { dockerfile: secondDockerfile, context: secondContext },
+        ],
+      }
+
+      await buildAndLoadSandboxTemplate('/ctx', 'oc-forge-sandbox:latest', deps)
+
+      expect(record.map((entry) => entry.args[0])).toEqual(['build', 'build', 'build', 'save'])
+      expect(record[0].args).toEqual(['build', '--progress=plain', '-t', 'oc-forge-sandbox:latest', '/ctx'])
+      expect(record[1].args).toEqual([
+        'build',
+        '--progress=plain',
+        '--build-arg',
+        'BASE_IMAGE=oc-forge-sandbox:latest',
+        '-f',
+        firstDockerfile,
+        '-t',
+        'oc-forge-sandbox:latest',
+        firstContext,
+      ])
+      expect(record[2].args).toEqual([
+        'build',
+        '--progress=plain',
+        '--build-arg',
+        'BASE_IMAGE=oc-forge-sandbox:latest',
+        '-f',
+        secondDockerfile,
+        '-t',
+        'oc-forge-sandbox:latest',
+        secondContext,
+      ])
+      expect(loadTemplate).toHaveBeenCalledTimes(1)
+      expect(leftoverTars(tmp)).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  test('a missing extension dockerfile or context rejects without invoking docker', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    try {
+      const extensionRoot = join(tmp, 'extensions')
+      const context = join(extensionRoot, 'context')
+      mkdirSync(context, { recursive: true })
+      const dockerfile = join(extensionRoot, 'Dockerfile')
+      writeFileSync(dockerfile, 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n')
+      const missingDockerfile = join(extensionRoot, 'absent.Dockerfile')
+      const missingContext = join(extensionRoot, 'absent-context')
+
+      const record: Array<{ command: string; args: string[] }> = []
+      const deps: BuildTemplateDeps = {
+        runCommand: makeFakeRun(record),
+        loadTemplate: vi.fn(async () => {}),
+        logger,
+        tmpDir: tmp,
+        extensions: [{ dockerfile: missingDockerfile, context }],
+      }
+
+      await expect(buildAndLoadSandboxTemplate('/ctx', 't', deps)).rejects.toThrow(
+        `Image extension Dockerfile not found: ${missingDockerfile}`,
+      )
+      expect(record).toHaveLength(0)
+      expect(leftoverTars(tmp)).toHaveLength(0)
+
+      deps.extensions = [{ dockerfile, context: missingContext }]
+      await expect(buildAndLoadSandboxTemplate('/ctx', 't', deps)).rejects.toThrow(
+        `Image extension build context directory not found: ${missingContext}`,
+      )
+      expect(record).toHaveLength(0)
+      expect(leftoverTars(tmp)).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  test('a failing extension build rejects with the last output line and never calls loadTemplate', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    try {
+      const extensionRoot = join(tmp, 'extensions')
+      const context = join(extensionRoot, 'context')
+      mkdirSync(context, { recursive: true })
+      const dockerfile = join(extensionRoot, 'Dockerfile')
+      writeFileSync(dockerfile, 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n')
+
+      const record: Array<{ command: string; args: string[] }> = []
+      const loadTemplate = vi.fn(async () => {})
+      const deps: BuildTemplateDeps = {
+        runCommand: async (command, args) => {
+          record.push({ command, args })
+          if (args.includes('-f')) return { stdout: 'first line', stderr: 'extension build detail', exitCode: 1 }
+          return { stdout: '', stderr: '', exitCode: 0 }
+        },
+        loadTemplate,
+        logger,
+        tmpDir: tmp,
+        extensions: [{ dockerfile, context }],
+      }
+
+      await expect(buildAndLoadSandboxTemplate('/ctx', 't', deps)).rejects.toThrow(/extension build detail/)
+      expect(record.map((entry) => entry.args[0])).toEqual(['build', 'build'])
+      expect(loadTemplate).not.toHaveBeenCalled()
       expect(leftoverTars(tmp)).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -702,6 +831,20 @@ describe('template build command formatter', () => {
       'docker build --build-arg INSTALL_CODEGRAPH=false -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && msb load --input <tar> --tag oc-forge-sandbox:latest',
     )
   })
+
+  test('formatTemplateBuildCommands appends one build command per image extension', () => {
+    expect(
+      formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest', ['--build-arg', 'INSTALL_CODEGRAPH=false'], [
+        { dockerfile: '/ext/first.Dockerfile', context: '/ext/first' },
+        { dockerfile: '/ext/second.Dockerfile', context: '/ext/second' },
+      ]),
+    ).toBe(
+      'docker build --build-arg INSTALL_CODEGRAPH=false -t oc-forge-sandbox:latest "/ctx" && ' +
+        'docker build --build-arg BASE_IMAGE=oc-forge-sandbox:latest -f "/ext/first.Dockerfile" -t oc-forge-sandbox:latest "/ext/first" && ' +
+        'docker build --build-arg BASE_IMAGE=oc-forge-sandbox:latest -f "/ext/second.Dockerfile" -t oc-forge-sandbox:latest "/ext/second" && ' +
+        'docker save oc-forge-sandbox:latest -o <tar> && msb load --input <tar> --tag oc-forge-sandbox:latest',
+    )
+  })
 })
 
 describe('resolveTemplateBuildArgs', () => {
@@ -716,6 +859,64 @@ describe('resolveTemplateBuildArgs', () => {
     expect(resolveTemplateBuildArgs({ codeGraph: { install: false } })).toEqual([
       '--build-arg',
       'INSTALL_CODEGRAPH=false',
+    ])
+  })
+})
+
+describe('resolveTemplateImageExtensions', () => {
+  test('is empty when no image extensions are configured', () => {
+    expect(resolveTemplateImageExtensions(undefined)).toEqual([])
+    expect(resolveTemplateImageExtensions({})).toEqual([])
+    expect(resolveTemplateImageExtensions({ sandbox: {} })).toEqual([])
+    expect(resolveTemplateImageExtensions({ sandbox: { imageExtensions: [] } })).toEqual([])
+  })
+
+  test('resolves home, absolute, and config-relative paths', () => {
+    const previous = process.env.XDG_CONFIG_HOME
+    const configHome = mkdtempSync(join(tmpdir(), 'forge-config-'))
+    process.env.XDG_CONFIG_HOME = configHome
+    try {
+      const extensions = resolveTemplateImageExtensions({
+        sandbox: {
+          imageExtensions: [
+            { dockerfile: '~/ext/home.Dockerfile', context: '~/ext/home' },
+            { dockerfile: '/abs/ext/abs.Dockerfile', context: '/abs/ext/abs' },
+            { dockerfile: 'relative/ext/rel.Dockerfile', context: 'relative/ext/rel' },
+          ],
+        },
+      })
+
+      expect(extensions).toEqual([
+        { dockerfile: join(homedir(), 'ext/home.Dockerfile'), context: join(homedir(), 'ext/home') },
+        { dockerfile: '/abs/ext/abs.Dockerfile', context: '/abs/ext/abs' },
+        {
+          dockerfile: join(resolveConfigDir(), 'relative/ext/rel.Dockerfile'),
+          context: join(resolveConfigDir(), 'relative/ext/rel'),
+        },
+      ])
+    } finally {
+      if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = previous
+      rmSync(configHome, { recursive: true, force: true })
+    }
+  })
+
+  test('skips malformed entries', () => {
+    const config = {
+      sandbox: {
+        imageExtensions: [
+          { dockerfile: 42, context: '/ctx' },
+          { dockerfile: '', context: '/ctx' },
+          { dockerfile: '/ext/Dockerfile', context: '   ' },
+          null,
+          { context: '/ctx' },
+          { dockerfile: '/ext/valid.Dockerfile', context: '/ctx/valid' },
+        ],
+      },
+    } as unknown as PluginConfig
+
+    expect(resolveTemplateImageExtensions(config)).toEqual([
+      { dockerfile: '/ext/valid.Dockerfile', context: '/ctx/valid' },
     ])
   })
 })

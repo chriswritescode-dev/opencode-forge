@@ -1,7 +1,5 @@
-import { homedir } from 'os'
-import { isAbsolute, join, resolve } from 'path'
 import { z } from 'zod'
-import { resolveConfigDir } from '../install/paths'
+import { resolveConfigRelativePath } from '../install/paths'
 import type { SandboxSecretConfig, SandboxSecretSubstitution } from '../types'
 import { processShared } from '../utils/process-shared'
 
@@ -100,9 +98,7 @@ export function resolveSandboxSecret(
 }
 
 export function resolveSandboxSecretFilePath(file: string): string {
-  if (file === '~' || file.startsWith('~/')) return join(homedir(), file.slice(1))
-  if (isAbsolute(file)) return resolve(file)
-  return resolve(resolveConfigDir(), file)
+  return resolveConfigRelativePath(file)
 }
 
 export interface SandboxSecretValuesRequest {

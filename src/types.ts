@@ -119,6 +119,11 @@ export interface SandboxPermissionsConfig {
   host?: SandboxModeDenyConfig
 }
 
+export interface SandboxImageExtensionConfig {
+  dockerfile: string
+  context: string
+}
+
 export interface SandboxConfig {
   mode?: 'msb'
   enabled?: boolean
@@ -130,6 +135,7 @@ export interface SandboxConfig {
   autoApprovePermissions?: boolean
   permissions?: SandboxPermissionsConfig
   hostSessions?: boolean
+  imageExtensions?: SandboxImageExtensionConfig[]
 }
 
 export interface AutoApproveDenyRule {
