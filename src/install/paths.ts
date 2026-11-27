@@ -1,5 +1,5 @@
 import { homedir, platform } from 'os'
-import { join } from 'path'
+import { isAbsolute, join, resolve } from 'path'
 import { resolveShippedRoot } from '../utils/shipped-paths'
 
 export function resolvePluginDir(): string {
@@ -10,6 +10,12 @@ export function resolveConfigDir(): string {
   const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.config')
   const xdgConfigHome = process.env['XDG_CONFIG_HOME'] || defaultBase
   return join(xdgConfigHome, 'opencode')
+}
+
+export function resolveConfigRelativePath(file: string): string {
+  if (file === '~' || file.startsWith('~/')) return join(homedir(), file.slice(1))
+  if (isAbsolute(file)) return resolve(file)
+  return resolve(resolveConfigDir(), file)
 }
 
 export function resolveConfigPath(): string {

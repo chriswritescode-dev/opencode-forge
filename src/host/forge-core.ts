@@ -29,7 +29,7 @@ import { normalizeAgentName, resolveLoopExecutionAgent, resolveLoopAuditorAgent,
 import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } from '../utils/loop-permission-warnings'
 import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
-import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, readSandboxTemplateBuildStatus, resolveTemplateBuildArgs, startSandboxTemplateBuild } from '../sandbox/template'
+import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, readSandboxTemplateBuildStatus, resolveTemplateBuildArgs, resolveTemplateImageExtensions, startSandboxTemplateBuild } from '../sandbox/template'
 import { runCommand } from '../sandbox/process'
 import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, FOLDER_SANDBOX_IDLE_TIMEOUT, isFolderManagerKey, isHostSessionManagerKey, type SessionSandboxController } from '../sandbox/session-controller'
 import type { PluginConfig, CompactionConfig, AutoApproveDenyRule, Logger } from '../types'
@@ -543,6 +543,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         mountProjectReadonly: config.sandbox?.mountProjectReadonly,
         buildContextDir: resolveBundledContainerDir(),
         templateBuildArgs: resolveTemplateBuildArgs(config),
+        templateImageExtensions: resolveTemplateImageExtensions(config),
         resolveOverrides: (worktreeName) => isHostSessionManagerKey(projectId, worktreeName)
           ? sandboxPreferences.getDesired(projectId)?.overrides
           : readSandboxOverrides(loopsRepo.get(projectId, worktreeName)?.sandboxSettings),
@@ -577,7 +578,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         directory,
         logger,
         title: 'Sandbox build context missing',
-        message: `Sandboxing is enabled but the bundled build context is missing at ${buildContextDir}. Reinstall opencode-forge, then build the template: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, resolveTemplateBuildArgs(config))}`,
+        message: `Sandboxing is enabled but the bundled build context is missing at ${buildContextDir}. Reinstall opencode-forge, then build the template: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, resolveTemplateBuildArgs(config), resolveTemplateImageExtensions(config))}`,
         variant: 'warning',
         duration: 10_000,
       })
@@ -607,7 +608,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
             directory,
             logger,
             title: 'Sandbox template not found',
-            message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, resolveTemplateBuildArgs(config))}`,
+            message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, resolveTemplateBuildArgs(config), resolveTemplateImageExtensions(config))}`,
             variant: 'warning',
             duration: 10_000,
           })
@@ -1155,6 +1156,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
           logger,
           tmpDir: tmpdir(),
           buildArgs: resolveTemplateBuildArgs(config),
+          extensions: resolveTemplateImageExtensions(config),
         },
         onSettled: (result) => {
           if (!forgeClient) return

@@ -1,6 +1,8 @@
-import { existsSync, rmSync } from 'fs'
+import { existsSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
+import { z } from 'zod'
 import type { ForgeSandboxTemplateBuildOutput, ForgeSandboxTemplateBuildStatus } from '../host/forge-rpc'
+import { resolveConfigRelativePath } from '../install/paths'
 import type { Logger, PluginConfig } from '../types'
 import { errorMessage } from '../utils/error-message'
 import { processShared } from '../utils/process-shared'
@@ -19,6 +21,11 @@ export interface SandboxBuildProgress {
   step?: { current: number; total: number; description: string }
 }
 
+export interface SandboxImageExtension {
+  dockerfile: string
+  context: string
+}
+
 export interface BuildTemplateDeps {
   runCommand: typeof runCommand
   loadTemplate: (tar: string, ref: string) => Promise<void>
@@ -26,10 +33,31 @@ export interface BuildTemplateDeps {
   tmpDir: string
   onProgress?: (progress: SandboxBuildProgress) => void
   buildArgs?: string[]
+  extensions?: SandboxImageExtension[]
 }
 
 export function resolveTemplateBuildArgs(config: PluginConfig | undefined): string[] {
   return config?.codeGraph?.install === false ? ['--build-arg', 'INSTALL_CODEGRAPH=false'] : []
+}
+
+const imageExtensionSchema = z.looseObject({
+  dockerfile: z.string().trim().min(1),
+  context: z.string().trim().min(1),
+})
+
+export function resolveTemplateImageExtensions(config: PluginConfig | undefined): SandboxImageExtension[] {
+  const configured = config?.sandbox?.imageExtensions
+  if (!Array.isArray(configured)) return []
+  const extensions: SandboxImageExtension[] = []
+  for (const entry of configured) {
+    const parsed = imageExtensionSchema.safeParse(entry)
+    if (!parsed.success) continue
+    extensions.push({
+      dockerfile: resolveConfigRelativePath(parsed.data.dockerfile),
+      context: resolveConfigRelativePath(parsed.data.context),
+    })
+  }
+  return extensions
 }
 
 const DOCKER_BUILD_STEP_RE = /^#\d+\s+\[\s*(?:.+\s+)?(\d+)\/(\d+)\]\s*(.*)$/
@@ -59,10 +87,30 @@ function reportLines(stage: SandboxBuildStage, onProgress: (progress: SandboxBui
   }
 }
 
-export function formatTemplateBuildCommands(contextDir: string, tag: string, buildArgs: string[] = []): string {
+export function formatTemplateBuildCommands(
+  contextDir: string,
+  tag: string,
+  buildArgs: string[] = [],
+  extensions: SandboxImageExtension[] = [],
+): string {
   const args = buildArgs.length > 0 ? ` ${buildArgs.join(' ')}` : ''
   const build = ['docker', `build${args}`, '-t', tag, `"${contextDir}"`].join(' ')
-  return `${build} && docker save ${tag} -o <tar> && msb load --input <tar> --tag ${tag}`
+  const extensionBuilds = extensions.map(
+    (extension) =>
+      `docker build --build-arg BASE_IMAGE=${tag} -f "${extension.dockerfile}" -t ${tag} "${extension.context}"`,
+  )
+  return `${[build, ...extensionBuilds].join(' && ')} && docker save ${tag} -o <tar> && msb load --input <tar> --tag ${tag}`
+}
+
+function validateImageExtensions(extensions: SandboxImageExtension[]): void {
+  for (const extension of extensions) {
+    if (!statSync(extension.dockerfile, { throwIfNoEntry: false })?.isFile()) {
+      throw new Error(`Image extension Dockerfile not found: ${extension.dockerfile}`)
+    }
+    if (!statSync(extension.context, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new Error(`Image extension build context directory not found: ${extension.context}`)
+    }
+  }
 }
 
 function dockerStageError(stage: 'build' | 'save', result: CommandResult): Error {
@@ -199,14 +247,28 @@ export async function buildAndLoadSandboxTemplate(
   const onProgress = deps.onProgress
   try {
     const buildArgs = deps.buildArgs ?? []
-    const buildOpts: RunCommandOpts = {
-      logger: deps.logger,
-      logLabel: 'docker',
-      timeout: BUILD_TIMEOUT,
+    const extensions = deps.extensions ?? []
+    validateImageExtensions(extensions)
+    const makeBuildOpts = (): RunCommandOpts => {
+      const opts: RunCommandOpts = {
+        logger: deps.logger,
+        logLabel: 'docker',
+        timeout: BUILD_TIMEOUT,
+      }
+      if (onProgress) opts.onOutput = reportLines('build', onProgress)
+      return opts
     }
-    if (onProgress) buildOpts.onOutput = reportLines('build', onProgress)
-    const build = await deps.runCommand('docker', ['build', '--progress=plain', ...buildArgs, '-t', tag, contextDir], buildOpts)
+    const build = await deps.runCommand('docker', ['build', '--progress=plain', ...buildArgs, '-t', tag, contextDir], makeBuildOpts())
     if (build.exitCode !== 0) throw dockerStageError('build', build)
+
+    for (const extension of extensions) {
+      const extensionBuild = await deps.runCommand(
+        'docker',
+        ['build', '--progress=plain', '--build-arg', `BASE_IMAGE=${tag}`, '-f', extension.dockerfile, '-t', tag, extension.context],
+        makeBuildOpts(),
+      )
+      if (extensionBuild.exitCode !== 0) throw dockerStageError('build', extensionBuild)
+    }
 
     onProgress?.({ stage: 'save', line: `Saving ${tag} to a temporary tar...` })
     const saveOpts: RunCommandOpts = {

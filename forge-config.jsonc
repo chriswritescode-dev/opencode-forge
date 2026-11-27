@@ -95,6 +95,13 @@
     "enabled": true,
     "mode": "msb",
     "image": "oc-forge-sandbox:latest",
+    // Layered Dockerfiles built on top of the base image, in order. Each one gets `--build-arg
+    // BASE_IMAGE=<image>` and must use `ARG BASE_IMAGE` with `FROM ${BASE_IMAGE}`. Paths resolve
+    // with `~/`, absolute, or relative to this config file. Rebuild the sandbox template after
+    // changing them.
+    // "imageExtensions": [
+    //   { "dockerfile": "~/sandbox/mytool.Dockerfile", "context": "~/src/mytool" }
+    // ],
     // Run every regular (non-loop) session of a project in one shared host-session sandbox,
     // started in the background at plugin load and reused by new sessions. `Toggle sandbox` turns
     // it on or off for the current session. With it false, nothing is sandboxed until a session is

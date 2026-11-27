@@ -32,6 +32,37 @@ The image installs `codegraph` by default. Set `codeGraph.install` to `false` be
 
 The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, the Rust toolchain (rustup, cargo, rustc, clippy, rustfmt), ripgrep, git with Git LFS, jq, rsync, sqlite3, the GitHub CLI (`gh`), the Gitea CLI (`tea`), the Hugging Face CLI (`hf`), `codegraph` (pinned v1.6.4 under `/opt/codegraph`, with telemetry, daemon, and file watcher disabled image-wide; leave it out with `codeGraph.install: false`, see [Code Graph](configuration.md#code-graph)), Chromium, the recording tools `ffmpeg`, `ttyd`, and `vhs` (see [Recording](#recording)), and Docker Engine (see [Nested Docker](#nested-docker)).
 
+### Image extensions
+
+Layered Dockerfiles can extend the sandbox image without editing the bundled `container/Dockerfile`. Each entry in `sandbox.imageExtensions` is built on top of the previous image and re-tagged to `sandbox.image`, so the final image contains every layer:
+
+```jsonc
+{
+  "sandbox": {
+    "imageExtensions": [
+      { "dockerfile": "~/sandbox/mytool.Dockerfile", "context": "~/src/mytool" }
+    ]
+  }
+}
+```
+
+Entries are applied in order. Paths resolve with `~/` as your home directory, absolute paths as-is, and relative paths against the config directory. Each Dockerfile must declare `ARG BASE_IMAGE` (a default such as `oc-forge-sandbox:latest` avoids Docker's empty-base warning) and use `FROM ${BASE_IMAGE}`; it may define extra build stages before that final `FROM`. If it switches to root to install something, it must leave the final user as `agent`, because `msb exec` runs commands as the image's user and host-mapped files must keep the host owner. Rebuild the sandbox template after changing an extension, its Dockerfile, or its context: both the **Build sandbox template** command and the manual command Forge prints include each extension build.
+
+For example, a multi-stage build can compile a Go binary from the extension's context and install it globally:
+
+```dockerfile
+ARG BASE_IMAGE=oc-forge-sandbox:latest
+FROM golang:1.23-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/mytool ./cmd/mytool
+
+FROM ${BASE_IMAGE}
+COPY --from=build /out/mytool /usr/local/bin/mytool
+RUN mytool --version
+USER agent
+```
+
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
 ### Chromium
