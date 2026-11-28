@@ -788,7 +788,7 @@ describe('createForgeSessionAttachHook', () => {
   test('attachLoopToSession returns ok:false (non-already_attached) triggers orphan cleanup', async () => {
     const workspaceRemove = vi.fn().mockResolvedValue(undefined)
     const tuiPublish = vi.fn().mockResolvedValue(undefined)
-    mockAttachLoop.mockResolvedValueOnce({ ok: false, code: 'prompt_failed', message: 'prompt blew up' })
+    mockAttachLoop.mockResolvedValueOnce({ ok: false, code: 'internal_error', message: 'prompt blew up' })
     const deps = buildHookDeps({
       workspaceList: vi.fn().mockResolvedValue([
         {

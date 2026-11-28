@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawnSync } from 'child_process'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { hostname, tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -22,8 +22,9 @@ import type { Database } from 'bun:sqlite'
 import type { PluginConfig } from '../../src/types'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import { buildExecutionDeps, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { createMockLogger } from '../helpers/logger'
+import { isStartInFlight } from '../../src/loop/start-owner'
 
 const mockLogger = createMockLogger()
 
@@ -123,6 +124,9 @@ describe('handleLoopRestart from stall_timeout', () => {
     startedAt: number
     baseCommit: string | null
     standbySessionId: string | null
+    startOwner: string | null
+    firstPromptSentAt: number | null
+    requestKey: string | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -148,6 +152,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       startedAt: Date.now(),
       baseCommit: null as string | null,
       standbySessionId: null as string | null,
+      startOwner: null as string | null,
+      firstPromptSentAt: null as number | null,
+      requestKey: null as string | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -186,6 +193,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       totalSections: opts.totalSections,
       baseCommit: opts.baseCommit,
       standbySessionId: opts.standbySessionId,
+      startOwner: opts.startOwner,
+      firstPromptSentAt: opts.firstPromptSentAt,
+      requestKey: opts.requestKey,
     }, { lastAuditResult: null })
   }
 
@@ -238,6 +248,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: (name) => loopService.recordFirstPromptSent(name),
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
@@ -294,6 +305,10 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const retained = reviewFindingsRepo.listByLoopName(PROJECT_ID, 'stall-loop')
     expect(retained).toHaveLength(1)
+
+    const row = loopsRepo.get(PROJECT_ID, 'stall-loop')!
+    expect(row.firstPromptSentAt).not.toBeNull()
+    expect(row.startOwner).toMatch(/^.+:\d+:.+$/)
   })
 
   test('restart captures usage for and deletes the standby session before starting fresh', async () => {
@@ -318,6 +333,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
@@ -415,6 +431,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
@@ -482,6 +499,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
@@ -615,6 +633,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildSectionContinuationPrompt: (state, notice, bugs) => loopService.buildSectionContinuationPrompt(state, notice, bugs),
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -712,6 +731,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       terminate: (name, opts) => loopService.terminate(name, opts),
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
@@ -783,6 +803,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -859,6 +880,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -928,6 +950,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -1008,6 +1031,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -1110,6 +1134,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       buildPostActionPrompt: buildPostActionPromptSpy,
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -1208,6 +1233,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: (name, phase) => loopService.setPhase(name, phase),
+      recordFirstPromptSent: (name) => loopService.recordFirstPromptSent(name),
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -1298,6 +1324,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: (name, phase) => loopService.setPhase(name, phase),
+      recordFirstPromptSent: (name) => loopService.recordFirstPromptSent(name),
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -1382,6 +1409,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       terminate: (name, opts) => loopService.terminate(name, opts),
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
@@ -1459,6 +1487,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
@@ -2023,6 +2052,64 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(client.session.create).not.toHaveBeenCalled()
     expect(loopsRepo.get(PROJECT_ID, 'abort-failure-loop')!.currentSessionId).toBe('session-old')
   })
+
+  test('restart reconciles an interrupted start and sends the section-0 initial prompt once', async () => {
+    const child = spawnSync(process.execPath, ['-e', ''])
+    const deadOwner = `${hostname()}:${String(child.pid)}:dead`
+
+    insertLoop({
+      loopName: 'interrupted-restart-loop',
+      status: 'running',
+      terminationReason: null,
+      totalSections: 1,
+      startOwner: deadOwner,
+    })
+
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: 'interrupted-restart-loop',
+      sections: [{ index: 0, title: 'Setup', content: '# Setup\nInstall deps' }],
+    })
+
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session-interrupted' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      toast: async () => {},
+    })
+
+    const runtime = buildLoopRuntime(db, { projectId: PROJECT_ID, client })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: runtime.loop }).deps,
+    )
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'interrupted-restart-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    const prompts = calls.filter((call) => call.method === 'session.promptAsync')
+    expect(prompts).toHaveLength(1)
+    const promptText = (prompts[0].params as { parts: Array<{ text: string }> }).parts[0].text
+    expect(promptText).toContain('Setup')
+
+    const row = loopsRepo.get(PROJECT_ID, 'interrupted-restart-loop')!
+    expect(typeof row.firstPromptSentAt).toBe('number')
+    expect(row.status).toBe('running')
+  })
 })
 
 describe('handleLoopRestart restartability rules', () => {
@@ -2157,6 +2244,7 @@ describe('handleLoopRestart restartability rules', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       terminate: (name, opts) => loopService.terminate(name, opts),
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
@@ -3239,6 +3327,7 @@ describe('handleLoopRestart restartability rules', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      recordFirstPromptSent: noopFn,
       terminate: (name, opts) => loopService.terminate(name, opts),
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
@@ -3323,5 +3412,66 @@ describe('handleLoopRestart restartability rules', () => {
     expect(termRow.status).toBe('errored')
     expect(termRow.reason).toContain('provider_limit')
     expect(rows.filter((r) => r.transitionKind === 'rollback')).toHaveLength(0)
+  })
+
+  test('a provider-limit restart keeps its start in flight past runExclusive so a reconcile cannot mark it start-interrupted', async () => {
+    const loopName = 'provider-limit-in-flight-window'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      iteration: 2,
+      totalSections: 0,
+    })
+
+    const inFlightAfterLockRelease: boolean[] = []
+    const inFlightDuringTerminate: boolean[] = []
+    const reconcileTerminations: string[] = []
+
+    const terminate = async (name: string, reason: any) => {
+      inFlightDuringTerminate.push(isStartInFlight(PROJECT_ID, name))
+      const state = loopService.getActiveState(name)
+      if (!state?.active) return false
+      loopService.terminate(name, {
+        status: 'errored',
+        reason: reason.kind === 'provider_limit' ? `provider_limit: ${reason.message}` : reason.kind,
+        completedAt: Date.now(),
+      })
+      return true
+    }
+
+    const { service, client } = await createMockService({
+      terminate,
+      runExclusive: async (name: string, fn: () => Promise<any>) => {
+        const result = await fn()
+        const inFlight = isStartInFlight(PROJECT_ID, name)
+        inFlightAfterLockRelease.push(inFlight)
+        if (!inFlight) {
+          reconcileTerminations.push(name)
+          await terminate(name, { kind: 'start_interrupted' })
+        }
+        return result
+      },
+    })
+
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(inFlightAfterLockRelease).toEqual([true])
+    expect(inFlightDuringTerminate).toEqual([true])
+    expect(reconcileTerminations).toEqual([])
+    const row = loopsRepo.get(PROJECT_ID, loopName)
+    expect(row).not.toBeNull()
+    expect(row!.status).toBe('errored')
+    expect(row!.terminationReason).toContain('provider_limit')
+    expect(isStartInFlight(PROJECT_ID, loopName)).toBe(false)
   })
 })

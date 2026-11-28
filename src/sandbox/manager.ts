@@ -337,25 +337,37 @@ export function createSandboxManager(
 
   async function ensureTemplate(): Promise<void> {
     if (imageReady) return
-    const exists = await runtime.templateExists(config.image)
-    if (!exists) {
+    const status = await runtime.checkTemplate(config.image)
+    if (status.kind === 'present') {
+      imageReady = true
+      return
+    }
+    if (status.kind === 'failed') {
       const availability = await runtime.checkAvailable()
-      if (!availability.available) {
-        if (availability.reason === 'unknown') return
+      if (!availability.available && availability.reason === 'not-installed') {
         throw new Error(describeMsbUnavailable(availability))
       }
-      const buildHint = `  ${formatTemplateBuildCommands(
-        config.buildContextDir ?? '<build-context-dir>',
-        config.image,
-        config.templateBuildArgs ?? [],
-        config.templateImageExtensions ?? [],
-      )}`
-      throw new Error(
-        `Sandbox template "${config.image}" not found. Build and load it first:\n${buildHint}\n\n` +
-        `To disable the sandbox, set "sandbox": { "enabled": false } in your forge config.`
-      )
+      throw new Error(`Sandbox template check failed: msb images: ${status.detail}`)
     }
-    imageReady = true
+    if (status.kind === 'unknown') {
+      logger.log(`Sandbox: could not query sandbox templates (${status.detail}); continuing`)
+      return
+    }
+    const availability = await runtime.checkAvailable()
+    if (!availability.available) {
+      if (availability.reason === 'unknown') return
+      throw new Error(describeMsbUnavailable(availability))
+    }
+    const buildHint = `  ${formatTemplateBuildCommands(
+      config.buildContextDir ?? '<build-context-dir>',
+      config.image,
+      config.templateBuildArgs ?? [],
+      config.templateImageExtensions ?? [],
+    )}`
+    throw new Error(
+      `Sandbox template "${config.image}" not found. Build and load it first:\n${buildHint}\n\n` +
+      `To disable the sandbox, set "sandbox": { "enabled": false } in your forge config.`
+    )
   }
 
   async function refreshSkillDirs(projectDir: string): Promise<void> {

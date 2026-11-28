@@ -1,6 +1,5 @@
 import type { Logger, LoopConfig } from '../types'
 import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
-import { LOOP_STATUSES } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
@@ -26,7 +25,7 @@ import {
 } from './prompts'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
-import { MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { MAX_TOTAL_SECTIONS, LOOP_STATUSES, type LoopStatus } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { errorMessage } from '../utils/error-message'
 import { blockingBugFindings, isFindingInSectionScope, resolveSectionScope, type SectionScope } from './section-scope'
@@ -104,10 +103,11 @@ export interface LoopService {
   setPostActionReport(name: string, text: string): void
   setSandboxContainer(name: string, containerName: string | null): void
   setStandbySessionId(name: string, sessionId: string | null): void
-  setStatus(name: string, status: LoopRow['status']): void
+  setStatus(name: string, status: LoopStatus): void
+  recordFirstPromptSent(name: string): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
-  terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
+  terminate(name: string, opts: { status: Exclude<LoopStatus, 'running' | 'paused'>; reason: string; completedAt: number; summary?: string }): void
   replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getSectionPlans(state: LoopState): SectionPlanRow[]
@@ -258,9 +258,15 @@ export function createLoopService(
     persistState(name, state, 'restore')
   }
 
-  function setStatus(name: string, status: LoopRow['status']): void {
+  function setStatus(name: string, status: LoopStatus): void {
     const state = getAnyState(name)
     loopsRepo.setStatus(projectId, name, status)
+    notifyLoopChange('status', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
+  function recordFirstPromptSent(name: string): void {
+    const state = getAnyState(name)
+    loopsRepo.setFirstPromptSentAt(projectId, name, Date.now())
     notifyLoopChange('status', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -648,7 +654,7 @@ export function createLoopService(
     notifyLoopChange('post-action-report', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
+  function terminate(name: string, opts: { status: Exclude<LoopStatus, 'running' | 'paused'>; reason: string; completedAt: number; summary?: string }): void {
     const state = getAnyState(name)
     loopsRepo.terminate(projectId, name, opts)
     coderDecisionsByLoop.delete(name)
@@ -1107,6 +1113,7 @@ export function createLoopService(
     resolveActiveLoopForSession,
     findActiveByWorktreeDir,
     setStatus,
+    recordFirstPromptSent,
     buildContinuationPrompt,
     buildCoderFollowUpPrompt,
     buildAuditFollowUpPrompt,

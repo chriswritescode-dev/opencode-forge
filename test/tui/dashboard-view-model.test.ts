@@ -277,14 +277,15 @@ describe('status filters and sort cycling', () => {
   })
 
   test('LOOP_STATUS_FILTERS lists all then every persisted status', () => {
-    expect(LOOP_STATUS_FILTERS).toEqual(['all', 'running', 'paused', 'completed', 'cancelled', 'errored', 'stalled'])
+    expect(LOOP_STATUS_FILTERS).toEqual(['all', 'running', 'paused', 'completed', 'cancelled', 'errored', 'stalled', 'interrupted'])
   })
 
   test('nextStatusFilter cycles and wraps', () => {
     expect(nextStatusFilter('all')).toBe('running')
     expect(nextStatusFilter('running')).toBe('paused')
     expect(nextStatusFilter('paused')).toBe('completed')
-    expect(nextStatusFilter('stalled')).toBe('all')
+    expect(nextStatusFilter('stalled')).toBe('interrupted')
+    expect(nextStatusFilter('interrupted')).toBe('all')
   })
 
   test('filterLoopsByStatus keeps the input for all and filters otherwise', () => {
@@ -315,6 +316,7 @@ describe('status filters and sort cycling', () => {
       cancelled: 0,
       errored: 0,
       stalled: 1,
+      interrupted: 0,
     })
   })
 })

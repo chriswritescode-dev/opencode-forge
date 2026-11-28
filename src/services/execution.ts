@@ -1,6 +1,7 @@
 import type { PluginConfig, Logger, LoopSandboxSettings, SandboxSecretConfig } from '../types'
 import type { ForgeClient } from '../client/port'
 import { publishToast } from '../utils/toast'
+import { errorMessage } from '../utils/error-message'
 
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo, LoopRow } from '../storage/repos/loops-repo'
@@ -13,7 +14,7 @@ import { createUsageCapture } from '../loop/runtime-usage'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopPermissionOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopPermissionOptions, type LoopStatus } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -38,6 +39,7 @@ import { defaultGitService, type GitService } from '../utils/git-service'
 import { z } from 'zod'
 import type { SessionPromptAsyncParams } from '../client/port'
 import type { JsonObject } from '../utils/json-schema'
+import { currentStartOwner, markStartInFlight, clearStartInFlight } from '../loop/start-owner'
 
 function stringifyCause(cause: unknown): string {
   try {
@@ -115,6 +117,7 @@ export interface AttachLoopInput {
   startWatchdog?: boolean
   sendInitialPrompt?: boolean
   abortSourceSessionOnSuccess?: boolean
+  requestKey?: string
   onStarted?: (info: {
     sessionId: string
     loopName: string
@@ -171,6 +174,7 @@ export interface StartLoopCommand {
   sandbox?: LoopSandboxSettings
   baseRef?: string
   branch?: string
+  requestKey?: string
   lifecycle?: {
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
@@ -202,6 +206,7 @@ export interface BuildStartLoopCommandInput {
   sandbox?: LoopSandboxSettings
   baseRef?: string
   branch?: string
+  requestKey?: string
   lifecycle?: StartLoopCommand['lifecycle']
 }
 
@@ -225,6 +230,7 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     sandbox: input.sandbox,
     baseRef: input.baseRef,
     branch: input.branch,
+    requestKey: input.requestKey,
     lifecycle: input.lifecycle,
   }
 }
@@ -318,6 +324,7 @@ export interface LoopStartedResult {
   modelUsed: string | null
   maxIterations: number
   deduped?: boolean
+  status?: LoopStatus
 }
 
 export interface LoopRestartedResult {
@@ -347,7 +354,7 @@ export interface LoopCancelledResult {
 export interface LoopStatusView {
   loopName: string
   displayName: string
-  status: LoopRow['status']
+  status: LoopStatus
   phase?: string
   iteration: number
   maxIterations: number
@@ -447,16 +454,12 @@ export interface ForgeExecutionServiceDeps {
   gitService?: GitService
 }
 
-type AttachLoopFailureCode = 'already_attached' | 'conflict' | 'internal_error' | 'prompt_failed' | 'provider_limit'
+type AttachLoopFailureCode = 'already_attached' | 'conflict' | 'internal_error'
 
 function executionCodeForAttachFailure(code: AttachLoopFailureCode): ForgeExecutionError['code'] {
   switch (code) {
     case 'conflict':
       return 'conflict'
-    case 'prompt_failed':
-      return 'prompt_failed'
-    case 'provider_limit':
-      return 'provider_limit'
     case 'internal_error':
       return 'internal_error'
     case 'already_attached':
@@ -537,7 +540,7 @@ export async function attachLoopToSession(
   deps: ForgeExecutionServiceDeps,
   ctx: ForgeExecutionRequestContext,
   input: AttachLoopInput,
-): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'conflict' | 'internal_error' | 'prompt_failed' | 'provider_limit'; message: string }> {
+): Promise<{ ok: true; loopName: string } | { ok: false; code: AttachLoopFailureCode; message: string }> {
   const {
     sessionId,
     workspaceId,
@@ -593,7 +596,104 @@ export async function attachLoopToSession(
     (await resolveHostSessionDirectory(deps.client, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
 
   let releaseFirstPromptHold = (): void => {}
+  let handedOff = false
+  let startInFlightToken: string | undefined
   const attachOwnsLoop = (): boolean => deps.loop.service.getActiveState(loopName)?.sessionId === sessionId
+
+  async function sendAttachFirstPrompt(updatedState: import('../loop/state').LoopState, totalSections: number, executionAgentName: string): Promise<void> {
+    try {
+      try {
+        if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
+        if (!attachOwnsLoop()) {
+          deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled or restarted before its first prompt was built; skipping prompt and watchdog`)
+          return
+        }
+        const promptText = totalSections > 0
+          ? deps.loop.service.buildSectionInitialPrompt(updatedState)
+          : deps.loop.service.buildPlanInitialPrompt(planText)
+        const sessionDir = worktreeDir
+        const promptParts = [{ type: 'text' as const, text: promptText }]
+        const promptResult = await sendLoopPrompt({
+          projectId: ctx.projectId,
+          loopName,
+          sessionId,
+          agent: executionAgentName,
+          logger: deps.logger,
+          primaryModel: loopModel,
+          useInFlightGuard: false,
+          performPrompt: async (model) => {
+            markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
+            releaseFirstPromptHold()
+            try {
+              const promptParams: SessionPromptAsyncParams = {
+                sessionID: sessionId,
+                directory: sessionDir,
+                parts: promptParts,
+                agent: executionAgentName,
+              }
+              if (workspaceId) promptParams.workspace = workspaceId
+              if (model) promptParams.model = model
+              if (model && executionVariant) promptParams.variant = executionVariant
+              await deps.client.session.promptAsync(promptParams)
+              return {}
+            } catch (err) {
+              return { error: err }
+            }
+          },
+        })
+
+        if (promptResult.result.error) {
+          if (!attachOwnsLoop()) {
+            deps.logger.error(`attachLoopToSession: initial prompt failed after loop ${loopName} moved to another session; leaving its state alone`, promptResult.result.error)
+            return
+          }
+          const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
+          if (limitReason) {
+            deps.logger.error('attachLoopToSession: initial prompt hit provider limit, terminating loop', promptResult.result.error)
+            await deps.loop.terminate(loopName, { kind: 'provider_limit', message: limitReason })
+            return
+          }
+          deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
+          await deps.loop.terminate(loopName, { kind: 'first_prompt_failed', message: errorMessage(promptResult.result.error) })
+          return
+        }
+      } catch (err) {
+        deps.logger.error('attachLoopToSession: unexpected error while sending the first prompt', err)
+        if (attachOwnsLoop()) {
+          try {
+            await deps.loop.terminate(loopName, { kind: 'first_prompt_failed', message: errorMessage(err) })
+          } catch (terminateErr) {
+            deps.logger.error('attachLoopToSession: failed to terminate after a first prompt error', terminateErr)
+          }
+        }
+        return
+      }
+
+      if (!attachOwnsLoop()) {
+        deps.logger.log(`attachLoopToSession: loop ${loopName} moved to another session after its first prompt; skipping first-prompt bookkeeping`)
+        return
+      }
+
+      try {
+        deps.loop.service.recordFirstPromptSent(loopName)
+
+        if (startWatchdog && deps.loopHandler) {
+          deps.loopHandler.startWatchdog(loopName)
+        }
+
+        if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
+          deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((cause: unknown) => {
+            deps.logger.error('attachLoopToSession: failed to abort source session', cause)
+          })
+        }
+      } catch (err) {
+        deps.logger.error('attachLoopToSession: failed to finish first-prompt bookkeeping after the prompt was sent', err)
+      }
+    } finally {
+      releaseFirstPromptHold()
+      if (startInFlightToken) clearStartInFlight(ctx.projectId, loopName, startInFlightToken)
+    }
+  }
 
   try {
     const state: import('../loop/state').LoopState = {
@@ -629,10 +729,13 @@ export async function attachLoopToSession(
       hostSessionId: input.hostSessionId,
       currentSectionIndex: 0,
       totalSections: 0,
+      requestKey: input.requestKey,
+      startOwner: currentStartOwner(),
     }
 
     const executionAgentName = resolveLoopExecutionAgent(deps.config, state)
 
+    startInFlightToken = markStartInFlight(ctx.projectId, loopName)
     deps.loop.service.setState(loopName, state)
     deps.loop.service.registerLoopSession(sessionId, loopName)
     deps.loop.registerSessionReverseIndex(sessionId, loopName)
@@ -691,6 +794,7 @@ export async function attachLoopToSession(
     }
 
     if (!sendInitialPrompt) {
+      deps.loop.service.recordFirstPromptSent(loopName)
       if (startWatchdog && deps.loopHandler) {
         deps.loopHandler.startWatchdog(loopName)
       }
@@ -698,75 +802,9 @@ export async function attachLoopToSession(
       return { ok: true, loopName }
     }
 
-    const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
-    if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
-    if (!attachOwnsLoop()) {
-      deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled or restarted before its first prompt was built; skipping prompt and watchdog`)
-      return { ok: true, loopName }
-    }
-    const promptText = totalSections > 0
-      ? deps.loop.service.buildSectionInitialPrompt(updatedState)
-      : deps.loop.service.buildPlanInitialPrompt(planText)
-
-    const sessionDir = worktreeDir
-    const promptParts = [{ type: 'text' as const, text: promptText }]
-
-    const promptResult = await sendLoopPrompt({
-      projectId: ctx.projectId,
-      loopName,
-      sessionId,
-      agent: executionAgentName,
-      logger: deps.logger,
-      primaryModel: loopModel,
-      useInFlightGuard: false,
-      performPrompt: async (model) => {
-        markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
-        releaseFirstPromptHold()
-        try {
-          const promptParams: SessionPromptAsyncParams = {
-            sessionID: sessionId,
-            directory: sessionDir,
-            parts: promptParts,
-            agent: executionAgentName,
-          }
-          if (workspaceId) promptParams.workspace = workspaceId
-          if (model) promptParams.model = model
-          if (model && executionVariant) promptParams.variant = executionVariant
-          await deps.client.session.promptAsync(promptParams)
-          return {}
-        } catch (err) {
-          return { error: err }
-        }
-      },
-    })
-
-    if (promptResult.result.error) {
-      if (!attachOwnsLoop()) {
-        deps.logger.error(`attachLoopToSession: initial prompt failed after loop ${loopName} moved to another session; leaving its state alone`, promptResult.result.error)
-        return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
-      }
-      const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
-      if (limitReason) {
-        deps.logger.error('attachLoopToSession: initial prompt hit provider limit, terminating loop', promptResult.result.error)
-        await deps.loop.terminate(loopName, { kind: 'provider_limit', message: limitReason })
-        return { ok: false, code: 'provider_limit', message: `Provider limit on initial prompt: ${limitReason}` }
-      }
-      deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
-      deps.loop.unregisterSessionReverseIndex(sessionId)
-      deps.loop.service.deleteState(loopName)
-      return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
-    }
-
-    if (startWatchdog && deps.loopHandler) {
-      deps.loopHandler.startWatchdog(loopName)
-    }
-
-    if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
-      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((cause: unknown) => {
-        deps.logger.error('attachLoopToSession: failed to abort source session', cause)
-      })
-    }
-
+    const updatedState: import('../loop/state').LoopState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
+    handedOff = true
+    void sendAttachFirstPrompt(updatedState, totalSections, executionAgentName)
     return { ok: true, loopName }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -784,7 +822,10 @@ export async function attachLoopToSession(
       message: isAlreadyExists ? `Loop ${loopName} already attached` : 'Failed to attach loop to session',
     }
   } finally {
-    releaseFirstPromptHold()
+    if (!handedOff) {
+      releaseFirstPromptHold()
+      if (startInFlightToken) clearStartInFlight(ctx.projectId, loopName, startInFlightToken)
+    }
   }
 }
 
@@ -962,6 +1003,31 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const projectGuard = guardCommittedProject(ctx)
     if (projectGuard) return projectGuard
 
+    const loopStartedFromRow = (row: LoopRow): LoopStartedResult => ({
+      operation: 'loop.start',
+      sessionId: row.currentSessionId,
+      loopName: row.loopName,
+      displayName: row.loopName,
+      executionName: row.loopName,
+      worktreeDir: row.worktreeDir,
+      worktreeBranch: row.worktreeBranch ?? undefined,
+      workspaceId: row.workspaceId ?? undefined,
+      modelUsed: row.executionModel,
+      maxIterations: row.maxIterations,
+      deduped: true,
+      status: row.status,
+    })
+
+    const requestKey = command.requestKey
+    if (requestKey) {
+      await deps.loop.reconcileInterruptedStarts()
+      const existingRow = deps.loopsRepo.getByRequestKey(ctx.projectId, requestKey)
+      if (existingRow) {
+        deps.logger.log(`handleStartLoop: dedupe — request key ${requestKey} already started loop=${existingRow.loopName}`)
+        return ok(loopStartedFromRow(existingRow))
+      }
+    }
+
     const planResult = await resolvePlanSource(ctx, command.source, deps)
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
@@ -981,7 +1047,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       (name) => git.branchExists(ctx.directory, forgeBranchName(name)),
     )
 
-    const dedupeKey = `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`
+    const dedupeKey = requestKey
+      ? `${ctx.projectId}::key::${requestKey}`
+      : `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`
     const existing = inFlightLoopStarts.get(dedupeKey)
     if (existing) {
       deps.logger.log(`handleStartLoop: dedupe — concurrent start suppressed for key=${dedupeKey}`)
@@ -1157,7 +1225,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           } catch (err) {
             deps.logger.error('handleStartLoop: failed to start sandbox; rolling back loop start', err)
             await rollbackLoopStart()
-            return fail('internal_error', 500, 'Failed to start sandbox')
+            return fail('internal_error', 500, `Failed to start sandbox: ${errorMessage(err)}`)
           }
         }
       }
@@ -1188,12 +1256,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         planText,
         startWatchdog: command.lifecycle?.startWatchdog,
         abortSourceSessionOnSuccess: command.lifecycle?.abortSourceSessionOnSuccess,
+        requestKey,
         onStarted: command.lifecycle?.onStarted,
       })
 
       if (!attachResult.ok) {
-        if (attachResult.code !== 'provider_limit') {
-          await rollbackLoopStart()
+        await rollbackLoopStart()
+        if (requestKey) {
+          const winnerRow = deps.loopsRepo.getByRequestKey(ctx.projectId, requestKey)
+          if (winnerRow && winnerRow.loopName !== uniqueLoopName) return ok(loopStartedFromRow(winnerRow))
         }
         return fail(executionCodeForAttachFailure(attachResult.code), 503, attachResult.message)
       }
@@ -1215,6 +1286,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId,
         modelUsed,
         maxIterations,
+        status: 'running',
       })
       
     } catch (err) {
@@ -1482,6 +1554,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const name = command.selector.name
+    await deps.loop.reconcileInterruptedStarts()
     const active = deps.loop.listActive()
     const recent = deps.loop.listRecent()
     const allStates = [...active, ...recent]
@@ -1536,6 +1609,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       | { ok: false; error: string }
       | { ok: false; error: string; providerLimitMessage: string }
 
+    const restartStartToken = markStartInFlight(ctx.projectId, stoppedState.loopName)
     const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
       const latestState = deps.loop.service.getActiveState(stoppedState.loopName)
       if (command.expectedStartedAt !== undefined) {
@@ -1839,6 +1913,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         totalSections: newState.totalSections,
         sandboxSettings: newState.sandboxSettings ?? null,
         startedAt: new Date(newState.startedAt).getTime(),
+        startOwner: currentStartOwner(),
       })
 
       deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
@@ -1979,10 +2054,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
       }
 
+      deps.loop.service.recordFirstPromptSent(stoppedState.loopName)
       deps.loopHandler!.startWatchdog(stoppedState.loopName)
 
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
-    })
+    }).then(async (result) => {
+      if (!result.ok && 'providerLimitMessage' in result) {
+        await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: result.providerLimitMessage })
+      }
+      return result
+    }).finally(() => clearStartInFlight(ctx.projectId, stoppedState.loopName, restartStartToken))
 
     const restartSucceeded = (
       sessionId: string,
@@ -2013,7 +2094,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     if (!outcome.ok && 'providerLimitMessage' in outcome) {
-      await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: outcome.providerLimitMessage })
       if (restartSandbox && deps.sandboxManager) {
         await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
       }

@@ -3,7 +3,8 @@ import { generateUniqueName } from '../../src/loop/name-uniqueness'
 import { createForgeExecutionService } from '../../src/services/execution'
 import type { Logger, PluginConfig } from '../../src/types'
 import { buildLoopPermissionRuleset, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS } from '../../src/constants/loop'
-import type { LoopService } from '../../src/loop/service'
+import { createLoopService, type LoopService } from '../../src/loop/service'
+import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { buildExecutionDeps } from '../helpers/loop-fixtures'
@@ -335,7 +336,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(createArgs.permission).toContainEqual({ permission: 'webfetch', pattern: '*', action: 'deny' })
   })
 
-  test('fails and rolls back when sandbox manager present but start throws', async () => {
+  test('fails and rolls back when sandbox start throws, propagating the msb detail', async () => {
     const { client } = createFakeForgeClient({
       workspace: {
         create: async () => ({
@@ -353,7 +354,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     const mockSandboxManager = {
       docker: {} as any,
-      start: vi.fn().mockRejectedValue(new Error('Docker is not available. Please ensure Docker is running.')),
+      start: vi.fn().mockRejectedValue(new Error('Sandbox template check failed: msb images: catalog ancestor /home/u/.microsandbox permits path substitution')),
       stop: vi.fn().mockResolvedValue(undefined),
       getActive: vi.fn().mockReturnValue(null),
       isActive: vi.fn().mockReturnValue(false),
@@ -388,6 +389,8 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(result).toHaveProperty('error')
     if (!result.ok) {
       expect(result.error.code).toBe('internal_error')
+      expect(result.error.message).toContain('catalog ancestor')
+      expect(result.error.message).toContain('Failed to start sandbox')
     }
 
     // Verify rollback was invoked (session aborted, workspace removed)
@@ -599,6 +602,161 @@ describe('handleStartLoop concurrent-start dedupe', () => {
   })
 })
 
+describe('handleStartLoop request key dedupe', () => {
+  function buildRequestKeyMocks() {
+    let sessionCounter = 0
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_test',
+          directory: '/tmp/wt/abc',
+          branch: 'opencode/abc',
+          type: 'worktree',
+          name: 'opencode/abc',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+        warp: async () => {},
+      },
+      session: {
+        create: async () => ({ id: `session_test_${++sessionCounter}` }),
+        get: async () => ({}),
+      },
+    })
+
+    const sandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
+    return { client, sandboxManager }
+  }
+
+  function buildRequestKeyService(
+    db: ReturnType<typeof createTestDb>['db'],
+    mocks: ReturnType<typeof buildRequestKeyMocks>,
+  ) {
+    const built = buildExecutionDeps(db, {
+      client: mocks.client,
+      gitService: mockGitService,
+      sandboxManager: mocks.sandboxManager as any,
+      loop: {
+        generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(built.loopService, baseName, isTaken),
+      },
+    })
+    return { ...built, service: createForgeExecutionService(built.deps) }
+  }
+
+  test('a repeated request key returns the same loop without creating anything', async () => {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
+    const mocks = buildRequestKeyMocks()
+    const firstInstance = buildRequestKeyService(db, mocks)
+    const secondInstance = buildRequestKeyService(db, mocks)
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Keyed Plan\n\nDo the thing.' },
+      requestKey: 'req-1',
+    }
+
+    const first = await firstInstance.service.dispatch(ctx, command)
+    const second = await secondInstance.service.dispatch(ctx, command)
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+
+    expect(second.data.loopName).toBe(first.data.loopName)
+    expect(second.data.sessionId).toBe(first.data.sessionId)
+    expect(second.data.worktreeBranch).toBe(first.data.worktreeBranch)
+    expect(second.data.worktreeDir).toBe(first.data.worktreeDir)
+    expect(first.data.status).toBe('running')
+    expect(first.data.deduped).toBeUndefined()
+    expect(second.data.deduped).toBe(true)
+    expect(second.data.status).toBe('running')
+
+    expect(mocks.client.workspace.create).toHaveBeenCalledTimes(1)
+    expect(mocks.client.session.create).toHaveBeenCalledTimes(1)
+    expect(firstInstance.loopsRepo.listAll(PROJECT_ID)).toHaveLength(1)
+  })
+
+  test('a same-key start after cancellation returns the cancelled loop without creating anything', async () => {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
+    const mocks = buildRequestKeyMocks()
+    const firstInstance = buildRequestKeyService(db, mocks)
+    const secondInstance = buildRequestKeyService(db, mocks)
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Cancel Keyed Plan\n\nDo the thing.' },
+      requestKey: 'req-cancel',
+    }
+
+    const first = await firstInstance.service.dispatch(ctx, command)
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+
+    firstInstance.loopService.terminate(first.data.loopName, {
+      status: 'cancelled',
+      reason: 'user_aborted',
+      completedAt: Date.now(),
+    })
+
+    const second = await secondInstance.service.dispatch(ctx, command)
+
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
+    expect(second.data.loopName).toBe(first.data.loopName)
+    expect(second.data.deduped).toBe(true)
+    expect(second.data.status).toBe('cancelled')
+
+    expect(mocks.client.workspace.create).toHaveBeenCalledTimes(1)
+    expect(mocks.client.session.create).toHaveBeenCalledTimes(1)
+    expect(secondInstance.loopsRepo.listAll(PROJECT_ID)).toHaveLength(1)
+  })
+
+  test('a start without a request key still gets a suffixed name on the second start', async () => {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
+    const mocks = buildRequestKeyMocks()
+    const instance = buildRequestKeyService(db, mocks)
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Suffix Plan\n\nDo the thing.' },
+    }
+
+    const first = await instance.service.dispatch(ctx, command)
+    const second = await instance.service.dispatch(ctx, command)
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+    expect(second.data.loopName).not.toBe(first.data.loopName)
+    expect(second.data.loopName.startsWith('suffix-plan')).toBe(true)
+    expect(second.data.deduped).toBeUndefined()
+
+    expect(mocks.client.workspace.create).toHaveBeenCalledTimes(2)
+    expect(mocks.client.session.create).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('handleStartLoop variant config fallback', () => {
   const PROJECT_ID = 'test-project'
 
@@ -713,7 +871,7 @@ describe('handleStartLoop variant config fallback', () => {
 describe('handleStartLoop base ref, branch, and base commit', () => {
   function buildHarness(
     workspaceCreate?: () => Promise<Record<string, unknown>>,
-    overrides: { gitService?: any; logger?: Logger } = {},
+    overrides: { gitService?: any; logger?: Logger; loop?: Record<string, unknown> } = {},
   ) {
     const testDb = createTestDb()
     openDbs.push(testDb)
@@ -734,9 +892,10 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
       logger: overrides.logger ?? mockLogger,
       loop: {
         generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(built.loopService, baseName, isTaken),
+        ...(overrides.loop ?? {}),
       },
     })
-    return { ...built, client }
+    return { ...built, client, db }
   }
 
   test('forwards baseRef to workspace creation and persists the resolved base commit', async () => {
@@ -1112,6 +1271,102 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.data.loopName).toBe('taken-branch-1')
+  })
+
+  test('answers the start before the code-graph snapshot and records the first prompt when it resolves', async () => {
+    const planText = '<!-- forge-section -->\n## Setup\n### Files\n- package.json\nInstall.\n<!-- forge-section -->\n## Build\n### Files\n- src/index.ts\nCompile.'
+    let resolveStarted = (): void => {}
+    const snapshotStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    let resolveSnapshot = (): void => {}
+    const pending = new Promise<void>((resolve) => {
+      resolveSnapshot = resolve
+    })
+
+    const h = buildHarness(undefined, {
+      loop: {
+        snapshotSectionCodeGraph: () => {
+          resolveStarted()
+          return pending
+        },
+      },
+    })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(h.deps)
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.sessionId).toBe('sess-base')
+    expect(result.data.loopName).toBe('setup')
+    expect(result.data.worktreeBranch).toBe('forge/base-loop')
+    expect(result.data.worktreeDir).toBe('/tmp/wt/base')
+    expect(result.data.workspaceId).toBe('ws_base')
+
+    await snapshotStarted
+    expect(h.client.session.promptAsync).not.toHaveBeenCalled()
+
+    resolveSnapshot()
+    await vi.waitFor(() => expect(h.client.session.promptAsync).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() =>
+      expect(h.loopsRepo.get(PROJECT_ID, result.data.loopName)!.firstPromptSentAt).not.toBeNull(),
+    )
+  })
+
+  test('a failing first prompt after the reply terminates first_prompt_failed and keeps the restartable worktree row', async () => {
+    const notifySpy = vi.fn()
+    const h = buildHarness()
+    h.client.session.promptAsync.mockRejectedValue(new Error('network timeout'))
+
+    const serviceWithNotify = createLoopService(
+      h.loopsRepo,
+      h.plansRepo,
+      h.reviewFindingsRepo,
+      PROJECT_ID,
+      h.deps.logger,
+      undefined,
+      notifySpy,
+      h.sectionPlansRepo,
+      createLoopTransitionsRepo(h.db),
+    )
+    h.deps.loop.service = serviceWithNotify
+    h.deps.loop.terminate = vi.fn(async (name: string, reason: any) => {
+      h.loopsRepo.terminate(PROJECT_ID, name, {
+        status: 'errored',
+        reason: reason.kind === 'first_prompt_failed' ? `first_prompt_failed: ${reason.message}` : reason.kind,
+        completedAt: Date.now(),
+      })
+      notifySpy('settled', name)
+      return true
+    })
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(h.deps)
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText: '# Failing Prompt Plan\n\nBody.' } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    await vi.waitFor(() => expect(h.loopsRepo.get(PROJECT_ID, result.data.loopName)!.status).toBe('errored'))
+
+    const row = h.loopsRepo.get(PROJECT_ID, result.data.loopName)!
+    expect(row.terminationReason).toMatch(/^first_prompt_failed: /)
+    expect(row.worktree).toBe(true)
+    expect(row.worktreeDir).toBeTruthy()
+    expect(h.deps.loop.terminate).toHaveBeenCalledWith(result.data.loopName, {
+      kind: 'first_prompt_failed',
+      message: 'network timeout',
+    })
+    expect(notifySpy).toHaveBeenCalledWith('settled', result.data.loopName)
   })
 })
 

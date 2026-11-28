@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { dirname } from 'path'
 import type { SandboxManager } from '../../src/sandbox/manager'
-import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import { buildExecutionDeps, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
@@ -107,5 +107,23 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
 
     expect(sandboxManager.stop).not.toHaveBeenCalled()
     expect(result).toEqual({ ok: true, loopName: 'msb-loop' })
+  })
+
+  test('a TUI-owned first prompt is recorded and the attached loop survives reconciliation', async () => {
+    const { waitForSandboxReady } = await import('../../src/utils/sandbox-ready')
+    vi.mocked(waitForSandboxReady).mockResolvedValue({ ready: true, containerName: 'forge-msb-loop' })
+
+    const { deps } = buildDeps()
+
+    const result = await attach(deps, false)
+    expect(result).toEqual({ ok: true, loopName: 'msb-loop' })
+
+    const attached = deps.loopsRepo.get(PROJECT_ID, 'msb-loop')
+    expect(attached?.status).toBe('running')
+    expect(attached?.firstPromptSentAt).not.toBeNull()
+
+    const runtime = buildLoopRuntime(db)
+    expect(await runtime.loop.reconcileInterruptedStarts()).toEqual([])
+    expect(deps.loopsRepo.get(PROJECT_ID, 'msb-loop')?.status).toBe('running')
   })
 })

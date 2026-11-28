@@ -600,8 +600,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
           }
           return
         }
-        const exists = await runtime.templateExists(sandboxImage)
-        if (!exists) {
+        const status = await runtime.checkTemplate(sandboxImage)
+        if (status.kind === 'missing') {
           logger.log(`Sandbox template "${sandboxImage}" not found — publishing toast`)
           publishToast({
             client: forgeClient,
@@ -612,6 +612,19 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
             variant: 'warning',
             duration: 10_000,
           })
+        } else if (status.kind === 'failed') {
+          logger.log(`Sandbox template check failed: ${status.detail}`)
+          publishToast({
+            client: forgeClient,
+            directory,
+            logger,
+            title: 'Sandbox template check failed',
+            message: status.detail,
+            variant: 'warning',
+            duration: 10_000,
+          })
+        } else if (status.kind === 'unknown') {
+          logger.log(`Sandbox template check could not run: ${status.detail}`)
         }
       } catch (err: unknown) {
         logger.log(`Sandbox image check: ${errorMessage(err)}`)
@@ -916,6 +929,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     loopsRepo,
     plansRepo,
     sandboxPreferences,
+    reconcileInterruptedStarts: () => loopHandler.loop.reconcileInterruptedStarts(),
     async restartLoop(request) {
       if (request.sandbox) {
         const invalid = describeInvalidLoopSecrets(request.sandbox)
@@ -1105,6 +1119,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       postActionVariant: input.postActionVariant || undefined,
       hostSessionId: input.sessionId || undefined,
       sandbox: readLoopSandboxSettings(input.sandbox),
+      requestKey: input.requestKey?.trim() || undefined,
       lifecycle: { startWatchdog: true },
     }))
     if (!response.ok) return { error: response.error.message }
@@ -1115,6 +1130,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     if (response.data.worktreeBranch) launched.branch = response.data.worktreeBranch
     if (response.data.worktreeDir) launched.worktreeDir = response.data.worktreeDir
     if (response.data.workspaceId) launched.workspaceId = response.data.workspaceId
+    if (response.data.deduped !== undefined) launched.deduped = response.data.deduped
+    if (response.data.status !== undefined) launched.status = response.data.status
     return launched
   }
 
