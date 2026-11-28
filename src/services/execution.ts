@@ -2054,8 +2054,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
       }
 
-      deps.loop.service.recordFirstPromptSent(stoppedState.loopName)
-      deps.loopHandler!.startWatchdog(stoppedState.loopName)
+      try {
+        deps.loop.service.recordFirstPromptSent(stoppedState.loopName)
+        deps.loopHandler!.startWatchdog(stoppedState.loopName)
+      } catch (err) {
+        deps.logger.error('loop-restart: failed to finish first-prompt bookkeeping after the prompt was sent', err)
+      }
 
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
     }).then(async (result) => {
