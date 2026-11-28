@@ -456,6 +456,20 @@ export interface ForgeExecutionServiceDeps {
 
 type AttachLoopFailureCode = 'already_attached' | 'conflict' | 'internal_error'
 
+function finishFirstPrompt(deps: ForgeExecutionServiceDeps, loopName: string, logPrefix: string, startWatchdog?: boolean): void {
+  try {
+    deps.loop.service.recordFirstPromptSent(loopName)
+  } catch (err) {
+    deps.logger.error(`${logPrefix}: failed to record the first prompt for ${loopName}`, err)
+  }
+  if (!startWatchdog || !deps.loopHandler) return
+  try {
+    deps.loopHandler.startWatchdog(loopName)
+  } catch (err) {
+    deps.logger.error(`${logPrefix}: failed to start the watchdog for ${loopName}`, err)
+  }
+}
+
 function executionCodeForAttachFailure(code: AttachLoopFailureCode): ForgeExecutionError['code'] {
   switch (code) {
     case 'conflict':
@@ -674,20 +688,12 @@ export async function attachLoopToSession(
         return
       }
 
-      try {
-        deps.loop.service.recordFirstPromptSent(loopName)
+      finishFirstPrompt(deps, loopName, 'attachLoopToSession', startWatchdog)
 
-        if (startWatchdog && deps.loopHandler) {
-          deps.loopHandler.startWatchdog(loopName)
-        }
-
-        if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
-          deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((cause: unknown) => {
-            deps.logger.error('attachLoopToSession: failed to abort source session', cause)
-          })
-        }
-      } catch (err) {
-        deps.logger.error('attachLoopToSession: failed to finish first-prompt bookkeeping after the prompt was sent', err)
+      if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
+        deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((cause: unknown) => {
+          deps.logger.error('attachLoopToSession: failed to abort source session', cause)
+        })
       }
     } finally {
       releaseFirstPromptHold()
@@ -2054,12 +2060,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
       }
 
-      try {
-        deps.loop.service.recordFirstPromptSent(stoppedState.loopName)
-        deps.loopHandler!.startWatchdog(stoppedState.loopName)
-      } catch (err) {
-        deps.logger.error('loop-restart: failed to finish first-prompt bookkeeping after the prompt was sent', err)
-      }
+      finishFirstPrompt(deps, stoppedState.loopName, 'loop-restart', true)
 
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
     }).then(async (result) => {
