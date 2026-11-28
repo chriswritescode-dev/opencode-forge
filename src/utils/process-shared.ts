@@ -25,6 +25,8 @@ export interface ForgeSharedRegistries {
   'loop-registry.v2': Map<string, Set<string>>
   'sandbox-secret-providers.v1': Map<string, SandboxSecretProvider>
   'sandbox-template-build.v1': SandboxTemplateBuildTracker
+  'start-owner.v1': string
+  'start-in-flight.v2': Map<string, Set<string>>
 }
 
 declare global {

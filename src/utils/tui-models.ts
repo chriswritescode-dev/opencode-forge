@@ -1,5 +1,4 @@
 import type { ProviderList } from '../client/port'
-import type { LoopRow } from '../storage/repos/loops-repo'
 import { z } from 'zod'
 
 export interface ModelVariantConfig {
@@ -41,6 +40,7 @@ const forgeLoopExtraSchema = z.looseObject({
 const workspaceExtraSchema = z.looseObject({
   forgeLoop: forgeLoopExtraSchema.optional(),
 })
+import type { LoopStatus } from '../constants/loop'
 
 export interface ModelInfo {
   id: string
@@ -89,7 +89,7 @@ export interface ModelSortOptions {
 
 export type LoopInfo = {
   name: string
-  status: LoopRow['status']
+  status: LoopStatus
   phase: string
   iteration: number
   maxIterations: number
@@ -98,6 +98,8 @@ export type LoopInfo = {
   restartRequiresForce: boolean
   restartBlockedMessage?: string
   startedAt?: string
+  firstPromptSent: boolean
+  requestKey?: string
   executionModel?: string
   executionVariant?: string
   auditorModel?: string

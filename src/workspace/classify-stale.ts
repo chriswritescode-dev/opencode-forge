@@ -1,6 +1,7 @@
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { ForgeWorkspaceEntry } from './forge-worktree'
 import { getForgeWorkspaceForgeLoop, getForgeWorkspaceLoopName, getForgeWorkspaceProjectDirectory, readForgeExtraNumber } from './forge-worktree'
+import { RESTARTABLE_ENDED_LOOP_STATUSES } from '../constants/loop'
 
 const PENDING_ATTACH_GRACE_MS = 5 * 60 * 1000
 
@@ -89,7 +90,7 @@ export function classifyForgeWorkspace(
     return { action: 'remove-fully', reason: 'completed', loopName }
   }
 
-  if (row.status === 'cancelled' || row.status === 'errored' || row.status === 'stalled') {
+  if (RESTARTABLE_ENDED_LOOP_STATUSES.includes(row.status)) {
     if (isPendingStartWorkspace(entry, options)) {
       return { action: 'keep', reason: 'pending-start' }
     }

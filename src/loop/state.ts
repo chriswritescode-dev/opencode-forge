@@ -41,6 +41,9 @@ interface LoopStateBase {
   postActionAgent?: string
   postActionModel?: string
   postActionVariant?: string
+  requestKey?: string
+  firstPromptSentAt?: string
+  startOwner?: string
 }
 
 export interface CodingState extends LoopStateBase {
@@ -101,6 +104,9 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     postActionAgent: row.postActionAgent ?? undefined,
     postActionModel: row.postActionModel ?? undefined,
     postActionVariant: row.postActionVariant ?? undefined,
+    requestKey: row.requestKey ?? undefined,
+    firstPromptSentAt: row.firstPromptSentAt ? new Date(row.firstPromptSentAt).toISOString() : undefined,
+    startOwner: row.startOwner ?? undefined,
   }
 
   switch (row.phase) {
@@ -156,5 +162,8 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     postActionAgent: state.postActionAgent ?? null,
     postActionModel: state.postActionModel ?? null,
     postActionVariant: state.postActionVariant ?? null,
+    requestKey: state.requestKey ?? null,
+    firstPromptSentAt: state.firstPromptSentAt ? new Date(state.firstPromptSentAt).getTime() : null,
+    startOwner: state.startOwner ?? null,
   }
 }

@@ -18,6 +18,14 @@ export const DEFAULT_LOOP_POST_ACTION_AGENT = 'code-loop'
 
 export const REPLACED_BUILTIN_AGENTS: readonly string[] = ['build', 'plan']
 
+export const LOOP_STATUSES = ['running', 'paused', 'completed', 'cancelled', 'errored', 'stalled', 'interrupted'] as const
+
+export type LoopStatus = (typeof LOOP_STATUSES)[number]
+
+export const ENDED_LOOP_STATUSES: readonly LoopStatus[] = LOOP_STATUSES.filter((status) => status !== 'running' && status !== 'paused')
+
+export const RESTARTABLE_ENDED_LOOP_STATUSES: readonly LoopStatus[] = ['cancelled', 'errored', 'stalled', 'interrupted']
+
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 export const MAX_TOTAL_SECTIONS = 24

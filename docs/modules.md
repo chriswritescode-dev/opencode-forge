@@ -74,7 +74,7 @@ Host-neutral core plus the thin adapter that maps the OpenCode V2 plugin context
 | `forge-core.ts` | `createForgeCore()` — shared services, handlers, tools, cleanup, sandbox resolution, lookups |
 | `v2.ts` | `setupForgeV2(ctx)` — V2 setup: client, registrations, event pump, cleanup |
 | `v2-events.ts` | Normalizes V2 events into Forge's event shape; busy, idle, and retry derive only from `session.execution.*` and `session.retry.scheduled` |
-| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `loopDefaults`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `loopPause`/`loopResume`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `dashboardSummary`, `loopDetail`, `projectFindings`, `amendmentDiff`, `planDelete`, `version`); `loopPause`/`loopResume` are served by `src/services/tui-rpc-service.ts` through the execution service, and `version` reports the plugin version plus a `capabilities` list (currently `loopPause`) so callers can detect pause support; `executePlan` takes the optional `branch` and `baseRef` (validated before any side effect) and reports the loop's `branch` in its result, and `loops` reports each loop's `branch`; `sessionPlan` accepts an optional `projectId`; it also declares the `toast`/`sessionDelete`/`loopsChanged`/`plansChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
+| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `loopDefaults`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `loopPause`/`loopResume`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `dashboardSummary`, `loopDetail`, `projectFindings`, `amendmentDiff`, `planDelete`, `version`); `loopPause`/`loopResume` are served by `src/services/tui-rpc-service.ts` through the execution service, and `version` reports the plugin version plus a `capabilities` list (currently `loopPause`) so callers can detect pause support; `executePlan` takes the optional `branch` and `baseRef` (validated before any side effect) and reports the loop's `branch` in its result, and an optional `requestKey` makes a launch idempotent (the same key returns the existing loop's row as `deduped: true` with its `status` before plan resolution or any side effect, while a fresh launch returns `status: 'running'`), and `loops` reports each loop's `branch`, whether its first prompt was sent (`firstPromptSent`), and its optional `requestKey`; `sessionPlan` accepts an optional `projectId`; it also declares the `toast`/`sessionDelete`/`loopsChanged`/`plansChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
 | `forge-rpc-dashboard.ts` | Dashboard RPC method schemas, null-free DTOs, and result readers |
 | `v2-hooks.ts` | Registers the core handlers through V2's hook API |
 | `v2-tools.ts` | Registers the shared Forge tools on V2 |
@@ -201,6 +201,7 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `post-action-config.ts` | `ResolvedPostActionConfig` interface and `resolvePostActionConfig()` resolver |
 | `idle-gate.ts` | Session busy detection and timeout tracking |
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
+| `start-owner.ts` | Start ownership: `currentStartOwner()` returns `<hostname>:<pid>:<process-shared random token>`; `markStartInFlight()`/`clearStartInFlight()`/`isStartInFlight()` track in-flight starts in process-shared state keyed by `projectLoopKey`; `START_INTERRUPTED_BACKSTOP_MS` and `isInterruptedStart()` decide when a `running` loop that never sent its first prompt is `interrupted` (the owner process is gone, this process's own token has no in-flight start, or the backstop elapsed; a legacy NULL `start_owner` never matches) |
 | `code-graph.ts` | Sole owner of `codegraph` execution in loop sandboxes: `resolveLoopCodeGraphTarget()`, `createCodeGraphSnapshotter()` (installation probe, the `.codegraph` cache link, exactly one runner exec per snapshot, report formatting with tests that import each file directly and, at audit checkpoints, the callers of changed symbols plus the code still referencing removed or renamed symbols; no `codegraph` CLI call), report paths under `.forge/codegraph/` with the in-sandbox report write (the host never writes into the agent-writable worktree), and the `## Code graph` prompt block, which points at the report and, at audit checkpoints, also inlines the changed files, the tests that import them, the callers of changed symbols, and the references to removed or renamed symbols |
 | `code-graph-runner.ts` | The in-sandbox half of a snapshot: `runCodeGraphSnapshot()` runs under codegraph's bundled Node against the pinned codegraph library (creates a missing index, syncs an existing one and rebuilds it when the sync fails, holding codegraph's `rebuild.pid` while it creates or rebuilds; reports `locked` and leaves the index alone when another live process holds it; exits with a `deadline` result at `deadlineMs`; then per-file symbols and dependents, the `affected`-style reverse-import walk to test files) and must stay self-contained because `buildCodeGraphRunnerScript()` serializes it with `toString()`; `parseCodeGraphRunnerResult()` validates the typed JSON result on the host |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
@@ -232,6 +233,8 @@ type TerminationReason =
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
   | { kind: 'provider_limit'; message: string }
+  | { kind: 'start_interrupted' }
+  | { kind: 'first_prompt_failed'; message: string }
 ```
 
 ### Public API
@@ -369,7 +372,7 @@ Drives the `msb` CLI to provision isolated sandboxes for loop execution.
 ```typescript
 interface SandboxRuntime {
   checkAvailable(): Promise<MsbAvailability>
-  templateExists(ref: string): Promise<boolean>
+  checkTemplate(ref: string): Promise<MsbTemplateStatus>
   loadTemplate(tarPath: string, ref: string): Promise<void>
   createSandbox(name: string, workspaces: SandboxWorkspace[], opts: CreateSandboxOpts): Promise<void>
   removeSandbox(name: string): Promise<void>
@@ -382,6 +385,8 @@ interface SandboxRuntime {
   resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
 ```
+
+`checkTemplate` resolves `'present'` when `msb images` lists the reference, `'missing'` when the query succeeds without it, and `'failed'` with the `msb images` stderr (falling back to stdout, then the exit code) on a non-zero exit. A query that throws or exceeds the command timeout resolves `'unknown'` with a detail instead, because no answer is not evidence that the template is absent.
 
 ### SandboxManager Interface
 

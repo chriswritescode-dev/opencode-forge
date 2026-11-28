@@ -15,6 +15,7 @@ function loop(overrides: Partial<LoopInfo>): LoopInfo {
     sessionId: 'ses_loop',
     restartable: true,
     restartRequiresForce: false,
+    firstPromptSent: false,
     startedAt: '2026-09-01T00:00:00.000Z',
     ...overrides,
   }

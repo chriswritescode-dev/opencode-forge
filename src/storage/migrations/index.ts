@@ -627,4 +627,13 @@ export const migrations: Migration[] = [
       db.run(loadSql('162_add_loops_paused_status.sql'))
     },
   },
+  {
+    id: '163',
+    description: "Loops start tracking: 'interrupted' status, request_key, first_prompt_sent_at, start_owner",
+    apply: (db: Database) => {
+      const row = sqliteSqlRowSchema.nullish().parse(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get())
+      if (row?.sql?.includes("'interrupted'") && row.sql.includes("'paused'")) return
+      db.run(loadSql('163_loops_start_tracking.sql'))
+    },
+  },
 ]

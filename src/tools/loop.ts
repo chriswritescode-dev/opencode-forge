@@ -217,6 +217,7 @@ export function createLoopTools(ctx: ToolContext) {
         force: z.boolean().optional().default(false).describe('Force restart an active/stuck loop'),
       },
       execute: async (args) => {
+        await ctx.loop.reconcileInterruptedStarts()
         const { config, logger, loopHandler } = ctx
         const active = ctx.loop.listActive()
 
@@ -284,6 +285,7 @@ export function createLoopTools(ctx: ToolContext) {
               const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
               lines.push(`${i + 1}. ${s.loopName}`)
               lines.push(`   Status: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
+              lines.push(`   First prompt: ${s.firstPromptSentAt ? 'sent' : 'not sent'}${s.requestKey ? ` | Request key: ${s.requestKey}` : ''}`)
               lines.push('')
             })
             lines.push('Use loop-status <name> for detailed info.')
@@ -318,6 +320,7 @@ export function createLoopTools(ctx: ToolContext) {
             const stallSuffix = stallCount > 0 ? ` | Stalls: ${stallCount}${stallReason}` : ''
             lines.push(`${i + 1}. ${s.loopName}`)
             lines.push(`   Phase: ${s.phase} | Iteration: ${iterInfo} | Duration: ${duration} | Status: ${sessionStatus}${stallSuffix}`)
+            lines.push(`   First prompt: ${s.firstPromptSentAt ? 'sent' : 'not sent'}${s.requestKey ? ` | Request key: ${s.requestKey}` : ''}`)
             lines.push('')
           })
 
@@ -329,6 +332,7 @@ export function createLoopTools(ctx: ToolContext) {
               const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
               lines.push(`${i + 1}. ${s.loopName}`)
               lines.push(`   Status: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
+              lines.push(`   First prompt: ${s.firstPromptSentAt ? 'sent' : 'not sent'}${s.requestKey ? ` | Request key: ${s.requestKey}` : ''}`)
               lines.push('')
             })
             if (recent.length > 10) {
@@ -365,6 +369,8 @@ export function createLoopTools(ctx: ToolContext) {
             `Iteration: ${maxInfo}`,
             `Duration: ${durationStr}`,
             `Reason: ${state.terminationReason ?? 'unknown'}`,
+            `First prompt: ${state.firstPromptSentAt ? 'sent' : 'not sent'}`,
+            ...(state.requestKey ? [`Request key: ${state.requestKey}`] : []),
           )
           if (state.worktreeBranch) {
             statusLines.push(`Branch: ${state.worktreeBranch}`)
@@ -542,6 +548,8 @@ export function createLoopTools(ctx: ToolContext) {
           `Started: ${state.startedAt}`,
           `Error count: ${state.errorCount} (retries before termination: ${MAX_RETRIES})`,
           `Audit count: ${state.auditCount ?? 0}`,
+          `First prompt: ${state.firstPromptSentAt ? 'sent' : 'not sent'}`,
+          ...(state.requestKey ? [`Request key: ${state.requestKey}`] : []),
           `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
           `Auditor model: ${auditorModelStatusLabel(state)}`,
           ...(resolveLoopExecutionAgent(ctx.config, state) !== DEFAULT_LOOP_EXECUTION_AGENT

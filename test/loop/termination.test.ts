@@ -54,6 +54,14 @@ describe('terminationStatusFor', () => {
   it('maps provider_limit with message to errored', () => {
     expect(terminationStatusFor({ kind: 'provider_limit', message: 'usage limit hit' })).toBe('errored')
   })
+
+  it('maps start_interrupted to interrupted', () => {
+    expect(terminationStatusFor({ kind: 'start_interrupted' })).toBe('interrupted')
+  })
+
+  it('maps first_prompt_failed with message to errored', () => {
+    expect(terminationStatusFor({ kind: 'first_prompt_failed', message: 'boom' })).toBe('errored')
+  })
 })
 
 describe('terminationReasonToString', () => {
@@ -107,6 +115,14 @@ describe('terminationReasonToString', () => {
     const reason: TerminationReason = { kind: 'provider_limit', message: 'usage limit hit' }
     expect(terminationReasonToString(reason)).toBe('provider_limit: usage limit hit')
   })
+
+  it('stringifies first_prompt_failed with message', () => {
+    expect(terminationReasonToString({ kind: 'first_prompt_failed', message: 'boom' })).toBe('first_prompt_failed: boom')
+  })
+
+  it('stringifies start_interrupted exactly', () => {
+    expect(terminationReasonToString({ kind: 'start_interrupted' })).toBe('start_interrupted')
+  })
 })
 
 describe('parseTerminationReasonString', () => {
@@ -118,6 +134,19 @@ describe('parseTerminationReasonString', () => {
 
   it('parses handoff_missing', () => {
     expect(parseTerminationReasonString('handoff_missing')).toEqual({ kind: 'handoff_missing' })
+  })
+
+  it('parses first_prompt_failed with its message', () => {
+    expect(parseTerminationReasonString('first_prompt_failed: boom')).toEqual({ kind: 'first_prompt_failed', message: 'boom' })
+  })
+
+  it('parses start_interrupted', () => {
+    expect(parseTerminationReasonString('start_interrupted')).toEqual({ kind: 'start_interrupted' })
+  })
+
+  it('round-trips first_prompt_failed', () => {
+    const reason: TerminationReason = { kind: 'first_prompt_failed', message: 'prompt send failed: timeout' }
+    expect(parseTerminationReasonString(terminationReasonToString(reason))).toEqual(reason)
   })
 
   it('parses retired reason strings as error_max_retries', () => {

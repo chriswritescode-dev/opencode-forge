@@ -1,6 +1,7 @@
 import type { Rpc } from '@opencode/plugin/rpc'
 import { z } from 'zod'
 import { FORGE_PLUGIN_ID } from '../constants/plugin'
+import { LOOP_STATUSES } from '../constants/loop'
 import type { SandboxBuildStage } from '../sandbox/template'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import {
@@ -93,6 +94,7 @@ export interface ForgeExecutePlanInput {
   postActionVariant?: string
   maxIterations?: number
   sandbox?: LoopSandboxSettings
+  requestKey?: string
 }
 
 export interface ForgeExecutePlanSuccess {
@@ -101,6 +103,8 @@ export interface ForgeExecutePlanSuccess {
   branch?: string
   worktreeDir?: string
   workspaceId?: string
+  deduped?: boolean
+  status?: string
 }
 
 export type ForgeExecutePlanOutput = ForgeExecutePlanSuccess | { error: string }
@@ -317,6 +321,8 @@ const LOOP_INFO_SCHEMA = {
     restartRequiresForce: { type: 'boolean' },
     restartBlockedMessage: OPTIONAL_STRING,
     startedAt: OPTIONAL_STRING,
+    firstPromptSent: { type: 'boolean' },
+    requestKey: OPTIONAL_STRING,
     executionModel: OPTIONAL_STRING,
     executionVariant: OPTIONAL_STRING,
     auditorModel: OPTIONAL_STRING,
@@ -328,7 +334,7 @@ const LOOP_INFO_SCHEMA = {
     postActionVariant: OPTIONAL_STRING,
     branch: OPTIONAL_STRING,
   },
-  required: ['name', 'status', 'phase', 'iteration', 'maxIterations', 'sessionId', 'restartable', 'restartRequiresForce', 'startedAt'],
+  required: ['name', 'status', 'phase', 'iteration', 'maxIterations', 'sessionId', 'restartable', 'restartRequiresForce', 'startedAt', 'firstPromptSent'],
   additionalProperties: false,
 } as const
 
@@ -478,6 +484,7 @@ export const FORGE_RPC = {
           postActionVariant: OPTIONAL_STRING,
           maxIterations: { type: 'integer', minimum: 0 },
           sandbox: SANDBOX_SETTINGS_SCHEMA,
+          requestKey: { type: 'string', minLength: 1 },
         },
         required: ['sessionId', 'mode', 'title', 'plan'],
         additionalProperties: false,
@@ -490,6 +497,8 @@ export const FORGE_RPC = {
           branch: OPTIONAL_STRING,
           worktreeDir: OPTIONAL_STRING,
           workspaceId: OPTIONAL_STRING,
+          deduped: { type: 'boolean' },
+          status: OPTIONAL_STRING,
           error: OPTIONAL_STRING,
         },
         additionalProperties: false,
@@ -724,6 +733,8 @@ const executePlanOutputSchema = z.looseObject({
   branch: optionalStringFieldSchema,
   worktreeDir: optionalStringFieldSchema,
   workspaceId: optionalStringFieldSchema,
+  deduped: z.boolean().optional().catch(undefined),
+  status: optionalStringFieldSchema,
 })
 
 export function readForgeExecutePlanOutput<P>(payload: P): ForgeExecutePlanOutput {
@@ -737,11 +748,13 @@ export function readForgeExecutePlanOutput<P>(payload: P): ForgeExecutePlanOutpu
     if (data.branch !== undefined) launched.branch = data.branch
     if (data.worktreeDir !== undefined) launched.worktreeDir = data.worktreeDir
     if (data.workspaceId !== undefined) launched.workspaceId = data.workspaceId
+    if (data.deduped !== undefined) launched.deduped = data.deduped
+    if (data.status !== undefined) launched.status = data.status
     return launched
   })
 }
 
-const LOOP_STATUS_SCHEMA = z.enum(['running', 'paused', 'completed', 'cancelled', 'errored', 'stalled'])
+const LOOP_STATUS_SCHEMA = z.enum(LOOP_STATUSES)
 const LOOP_PHASE_SCHEMA = z.enum(['coding', 'auditing', 'post_action'])
 
 const loopInfoSchema = z.looseObject({
@@ -755,6 +768,8 @@ const loopInfoSchema = z.looseObject({
   restartRequiresForce: z.boolean(),
   restartBlockedMessage: optionalStringFieldSchema,
   startedAt: z.string().optional().catch(undefined),
+  firstPromptSent: z.boolean().default(false),
+  requestKey: optionalStringFieldSchema,
   executionModel: optionalStringFieldSchema,
   executionVariant: optionalStringFieldSchema,
   auditorModel: optionalStringFieldSchema,

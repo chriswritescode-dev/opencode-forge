@@ -1,3 +1,4 @@
+import { LOOP_STATUSES } from '../../constants/loop'
 import type {
   ForgeDashboardLoopSummary,
   ForgeDashboardProjectSummary,
@@ -175,7 +176,7 @@ export function sortLoops(loops: ForgeDashboardLoopSummary[], mode: SortMode): F
   return sorted
 }
 
-export const LOOP_STATUS_FILTERS = ['all', 'running', 'paused', 'completed', 'cancelled', 'errored', 'stalled'] as const
+export const LOOP_STATUS_FILTERS = ['all', ...LOOP_STATUSES] as const
 
 export type LoopStatusFilter = (typeof LOOP_STATUS_FILTERS)[number]
 
@@ -200,6 +201,7 @@ export interface LoopStatusCounts {
   cancelled: number
   errored: number
   stalled: number
+  interrupted: number
 }
 
 export function statusCounts(loops: ForgeDashboardLoopSummary[]): LoopStatusCounts {
@@ -211,6 +213,7 @@ export function statusCounts(loops: ForgeDashboardLoopSummary[]): LoopStatusCoun
     cancelled: 0,
     errored: 0,
     stalled: 0,
+    interrupted: 0,
   }
   for (const loop of loops) counts[loop.status] += 1
   return counts
