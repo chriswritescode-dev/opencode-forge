@@ -100,7 +100,7 @@ export function isInterruptedStart(row: InterruptedStartRow, opts: InterruptedSt
   }
 
   const isProcessAlive = opts.isProcessAlive ?? defaultIsProcessAlive
-  if (owner.host === hostname() && !isProcessAlive(owner.pid)) return true
+  if (owner.host === hostname() && (owner.pid === process.pid || !isProcessAlive(owner.pid))) return true
 
   const startedMs = startedAtEpochMs(row.startedAt)
   if (startedMs === null) return false

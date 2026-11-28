@@ -745,9 +745,9 @@ describe('FORGE_RPC', () => {
     expect(readForgeLoops({ loops: [pausedLoop] })).toEqual({ loops: [pausedLoop] })
     const loopWithRequestKey = { ...loops[0], firstPromptSent: true, requestKey: 'req-1' }
     expect(readForgeLoops({ loops: [loopWithRequestKey] })).toEqual({ loops: [loopWithRequestKey] })
+    const { firstPromptSent: _omitted, ...loopFromOlderServer } = loopWithRequestKey
+    expect(readForgeLoops({ loops: [loopFromOlderServer] })).toEqual({ loops: [{ ...loopFromOlderServer, firstPromptSent: false }] })
     expect(readForgeLoops({ loops: [{ name: 'loop-a', status: 'running', restartable: true }] }))
-      .toEqual({ error: 'Forge returned an invalid loop list' })
-    expect(readForgeLoops({ loops: [{ ...loops[0], firstPromptSent: undefined }] }))
       .toEqual({ error: 'Forge returned an invalid loop list' })
     expect(readForgeLoops({ loops: [{ ...loops[0], firstPromptSent: 'yes' }] }))
       .toEqual({ error: 'Forge returned an invalid loop list' })

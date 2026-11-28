@@ -768,7 +768,7 @@ const loopInfoSchema = z.looseObject({
   restartRequiresForce: z.boolean(),
   restartBlockedMessage: optionalStringFieldSchema,
   startedAt: z.string().optional().catch(undefined),
-  firstPromptSent: z.boolean(),
+  firstPromptSent: z.boolean().default(false),
   requestKey: optionalStringFieldSchema,
   executionModel: optionalStringFieldSchema,
   executionVariant: optionalStringFieldSchema,

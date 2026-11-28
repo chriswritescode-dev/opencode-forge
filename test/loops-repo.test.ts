@@ -997,6 +997,15 @@ describe('LoopsRepo', () => {
       expect(repo.getByRequestKey(testRow.projectId, 'req-missing')).toBeNull()
     })
 
+    test('restore keeps a recorded firstPromptSentAt when the restored row has none', () => {
+      repo.insert(testRow, testLarge)
+      repo.setFirstPromptSentAt(testRow.projectId, testRow.loopName, 4321)
+
+      repo.restore({ ...testRow, firstPromptSentAt: null }, testLarge)
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.firstPromptSentAt).toBe(4321)
+    })
+
     test('setFirstPromptSentAt persists the timestamp', () => {
       repo.insert(testRow, testLarge)
 

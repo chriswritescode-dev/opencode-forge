@@ -5771,6 +5771,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(isInterruptedStart(interruptedRow(), { isProcessAlive: deadProbe })).toBe(true)
     })
 
+    test('a same-host owner with this process id but another token is interrupted without the backstop', () => {
+      const now = Date.now()
+      expect(isInterruptedStart(
+        interruptedRow({ startOwner: `${hostname()}:${process.pid}:previous-run-token`, startedAt: now }),
+        { now, isProcessAlive: aliveProbe },
+      )).toBe(true)
+    })
+
     test('a live same-host owner younger than the backstop is not interrupted', () => {
       const now = Date.now()
       expect(isInterruptedStart(

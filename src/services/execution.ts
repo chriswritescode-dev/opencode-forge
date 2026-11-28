@@ -1264,7 +1264,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await rollbackLoopStart()
         if (requestKey) {
           const winnerRow = deps.loopsRepo.getByRequestKey(ctx.projectId, requestKey)
-          if (winnerRow && winnerRow.loopName !== uniqueLoopName) return ok(loopStartedFromRow(winnerRow))
+          if (winnerRow && winnerRow.currentSessionId !== sessionId) return ok(loopStartedFromRow(winnerRow))
         }
         return fail(executionCodeForAttachFailure(attachResult.code), 503, attachResult.message)
       }

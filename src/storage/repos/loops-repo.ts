@@ -645,7 +645,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       execution_variant = ?, auditor_variant = ?, auditor_fallback_index = ?,
       sandbox_settings = ?, base_commit = ?, standby_session_id = ?,
       execution_agent = ?, auditor_agent = ?, post_action_agent = ?, post_action_model = ?,
-      post_action_variant = ?, request_key = ?, first_prompt_sent_at = ?, start_owner = ?
+      post_action_variant = ?, request_key = ?, first_prompt_sent_at = COALESCE(?, first_prompt_sent_at), start_owner = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
